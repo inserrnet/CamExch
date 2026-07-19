@@ -73,6 +73,7 @@ final class MjpegServer extends NanoHTTPD {
         response.addHeader("Access-Control-Allow-Origin", "*");
         response.addHeader("Access-Control-Allow-Headers", "Content-Type");
         response.addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        response.addHeader("Access-Control-Allow-Private-Network", "true");
         response.addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
         return response;
     }
