@@ -13,7 +13,9 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.VideoSize;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.rtsp.RtspMediaSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -134,7 +136,15 @@ public class SourceForegroundService extends Service {
             return;
         }
         try {
-            player.setMediaItem(MediaItem.fromUri(Uri.parse(uriText)));
+            MediaItem mediaItem = MediaItem.fromUri(Uri.parse(uriText));
+            if ("RTSP".equals(mode)) {
+                AppLog.info(this, "RTSP low-latency transport=TCP maxBufferMs=1000");
+                player.setMediaSource(new RtspMediaSource.Factory()
+                        .setForceUseRtpTcp(true)
+                        .createMediaSource(mediaItem));
+            } else {
+                player.setMediaItem(mediaItem);
+            }
             player.prepare();
             player.play();
             reportStatus(mode + " starting");
@@ -152,7 +162,14 @@ public class SourceForegroundService extends Service {
             AppLog.info(this, "Initializing WebRTC publisher");
             publisher = new WebRtcPublisher(this);
             AppLog.info(this, "WebRTC publisher initialized");
-            player = new ExoPlayer.Builder(this).build();
+            DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
+                    .setBufferDurationsMs(250, 1000, 100, 250)
+                    .setBackBuffer(0, false)
+                    .setPrioritizeTimeOverSizeThresholds(true)
+                    .build();
+            player = new ExoPlayer.Builder(this)
+                    .setLoadControl(loadControl)
+                    .build();
             player.setVideoSurface(publisher.getVideoSurface());
             player.setRepeatMode(Player.REPEAT_MODE_ONE);
             player.addListener(new Player.Listener() {
