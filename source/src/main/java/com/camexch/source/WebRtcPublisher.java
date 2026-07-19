@@ -14,6 +14,8 @@ import org.webrtc.MediaStream;
 import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.RtpReceiver;
+import org.webrtc.RtpParameters;
+import org.webrtc.RtpSender;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
 import org.webrtc.SurfaceTextureHelper;
@@ -93,7 +95,13 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
             throw new IllegalStateException("Unable to create WebRTC peer");
         }
         peerConnections.add(peerConnection);
-        peerConnection.addTrack(videoTrack, Collections.singletonList("camexch"));
+        RtpSender sender = peerConnection.addTrack(videoTrack, Collections.singletonList("camexch"));
+        if (sender == null) {
+            closePeer(peerConnection);
+            peerConnections.remove(peerConnection);
+            throw new IllegalStateException("Unable to add transcoded video track");
+        }
+        configureHighQualitySender(sender);
 
         awaitDescription(observer -> peerConnection.setRemoteDescription(
                 observer,
@@ -108,6 +116,22 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
         }
         AppLog.info(context, "WebRTC answer ready, length=" + local.description.length());
         return local.description;
+    }
+
+    private void configureHighQualitySender(RtpSender sender) {
+        RtpParameters parameters = sender.getParameters();
+        parameters.degradationPreference = RtpParameters.DegradationPreference.DISABLED;
+        for (RtpParameters.Encoding encoding : parameters.encodings) {
+            encoding.scaleResolutionDownBy = VideoPipelinePolicy.RESOLUTION_SCALE;
+            encoding.minBitrateBps = VideoPipelinePolicy.MIN_BITRATE_BPS;
+            encoding.maxBitrateBps = VideoPipelinePolicy.MAX_BITRATE_BPS;
+            encoding.bitratePriority = 4.0;
+        }
+        boolean applied = sender.setParameters(parameters);
+        AppLog.info(context, "Transcoded WebRTC quality lock applied=" + applied
+                + " scale=" + VideoPipelinePolicy.RESOLUTION_SCALE
+                + " bitrate=" + VideoPipelinePolicy.MIN_BITRATE_BPS
+                + "-" + VideoPipelinePolicy.MAX_BITRATE_BPS);
     }
 
     @Override

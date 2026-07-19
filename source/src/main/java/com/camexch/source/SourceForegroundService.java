@@ -156,8 +156,8 @@ public class SourceForegroundService extends Service {
             return;
         }
         releaseVideoPipeline();
-        directH264 = "RTSP".equals(mode);
-        if (!ensureVideoPipeline(directH264)) {
+        directH264 = false;
+        if (!ensureVideoPipeline(false)) {
             return;
         }
         prepareVideoSource(uriText);
@@ -167,10 +167,9 @@ public class SourceForegroundService extends Service {
         try {
             MediaItem mediaItem = MediaItem.fromUri(Uri.parse(uriText));
             if ("RTSP".equals(mode)) {
-                AppLog.info(this, "RTSP transport=TCP maxBufferMs=1000 directH264=" + directH264);
-                player.setMediaSource(new RtspMediaSource.Factory()
-                        .setForceUseRtpTcp(true)
-                        .createMediaSource(mediaItem));
+                AppLog.info(this, "RTSP transport=UDP preferred maxBufferMs="
+                        + VideoPipelinePolicy.MAX_BUFFER_MS + " hardwareTranscode=true");
+                player.setMediaSource(new RtspMediaSource.Factory().createMediaSource(mediaItem));
             } else {
                 player.setMediaItem(mediaItem);
             }
@@ -189,7 +188,11 @@ public class SourceForegroundService extends Service {
         releaseVideoPipeline();
         try {
             DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
-                    .setBufferDurationsMs(250, 1000, 100, 250)
+                    .setBufferDurationsMs(
+                            VideoPipelinePolicy.MIN_BUFFER_MS,
+                            VideoPipelinePolicy.MAX_BUFFER_MS,
+                            VideoPipelinePolicy.PLAYBACK_BUFFER_MS,
+                            VideoPipelinePolicy.REBUFFER_MS)
                     .setBackBuffer(0, false)
                     .setPrioritizeTimeOverSizeThresholds(true)
                     .build();
@@ -215,7 +218,7 @@ public class SourceForegroundService extends Service {
                 public void onPlaybackStateChanged(int state) {
                     if (state == Player.STATE_READY) {
                         AppLog.info(SourceForegroundService.this, "Player STATE_READY");
-                        reportStatus(directH264 ? "RTSP direct H264 active" : mode + " active");
+                        reportStatus("RTSP".equals(mode) ? "RTSP hardware transcode active" : mode + " active");
                     }
                 }
 

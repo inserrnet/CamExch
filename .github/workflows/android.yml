@@ -28,6 +28,9 @@ jobs:
       - name: Test media pipeline
         run: gradle testDebugUnitTest
 
+      - name: Validate browser camera hook
+        run: node tools/check-virtual-camera-script.mjs
+
       - name: Build debug APKs
         run: gradle assembleDebug
 
