@@ -14,13 +14,17 @@ final class MjpegServer extends NanoHTTPD {
         String getMode();
     }
 
+    interface PublisherProvider {
+        WebRtcPublisher getPublisher();
+    }
+
     static final int PORT = 8765;
-    private final WebRtcPublisher publisher;
+    private final PublisherProvider publisherProvider;
     private final ModeProvider modeProvider;
 
-    MjpegServer(WebRtcPublisher publisher, ModeProvider modeProvider) {
+    MjpegServer(PublisherProvider publisherProvider, ModeProvider modeProvider) {
         super("127.0.0.1", PORT);
-        this.publisher = publisher;
+        this.publisherProvider = publisherProvider;
         this.modeProvider = modeProvider;
     }
 
@@ -43,6 +47,10 @@ final class MjpegServer extends NanoHTTPD {
                 String offer = files.get("postData");
                 if (offer == null || offer.trim().isEmpty()) {
                     return cors(newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "missing SDP offer"));
+                }
+                WebRtcPublisher publisher = publisherProvider.getPublisher();
+                if (publisher == null) {
+                    return cors(newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "WebRTC source is unavailable"));
                 }
                 String answer = publisher.answerOffer(offer);
                 return cors(newFixedLengthResponse(Response.Status.OK, "application/sdp", answer));
