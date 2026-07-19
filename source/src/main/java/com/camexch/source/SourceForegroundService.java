@@ -423,6 +423,7 @@ public class SourceForegroundService extends Service {
         AppLog.error(this, error, throwable);
         mode = "Error";
         reportStatus(error);
+        new Handler(Looper.getMainLooper()).post(this::releaseVideoPipeline);
     }
 
     private void reportStatus(String status) {

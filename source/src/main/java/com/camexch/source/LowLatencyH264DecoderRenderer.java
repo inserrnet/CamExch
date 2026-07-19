@@ -250,13 +250,19 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
                 && codec != null
                 && currentFormat.width == format.width
                 && currentFormat.height == format.height
-                && currentFormat.initializationData.equals(format.initializationData)) {
+                && currentFormat.rotationDegrees == format.rotationDegrees) {
             currentFormat = format;
             return;
         }
         releaseCodec();
         currentFormat = format;
-        listener.onVideoSize(format.width, format.height);
+        VideoGeometry.Size displaySize = VideoGeometry.displaySize(
+                format.width,
+                format.height,
+                format.rotationDegrees,
+                format.pixelWidthHeightRatio
+        );
+        listener.onVideoSize(displaySize.width, displaySize.height);
         MediaFormat mediaFormat = MediaFormat.createVideoFormat(
                 MimeTypes.VIDEO_H264,
                 format.width,
@@ -267,6 +273,9 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
         }
         float frameRate = format.frameRate > 0 ? format.frameRate : VideoPipelinePolicy.TARGET_FPS;
         mediaFormat.setFloat(MediaFormat.KEY_FRAME_RATE, frameRate);
+        if (format.rotationDegrees != 0) {
+            mediaFormat.setInteger(MediaFormat.KEY_ROTATION, format.rotationDegrees);
+        }
         MediaCodecList codecList = new MediaCodecList(MediaCodecList.ALL_CODECS);
         String codecName = codecList.findDecoderForFormat(mediaFormat);
         if (codecName == null) {
@@ -278,6 +287,11 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
             mediaFormat.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
         }
         MediaCodecInfo codecInfo = findCodecInfo(codecList, codecName);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                && (codecInfo == null || !codecInfo.isHardwareAccelerated())) {
+            throw new IllegalStateException("Only a software H264 decoder supports "
+                    + format.width + "x" + format.height + "; refusing high-latency fallback");
+        }
         codec = MediaCodec.createByCodecName(codecName);
         codec.configure(mediaFormat, outputSurface, null, 0);
         codec.start();
@@ -285,6 +299,9 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
                 + " hardware=" + (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
                 || (codecInfo != null && codecInfo.isHardwareAccelerated()))
                 + " size=" + format.width + "x" + format.height
+                + " display=" + displaySize.width + "x" + displaySize.height
+                + " rotation=" + format.rotationDegrees
+                + " codecs=" + format.codecs
                 + " fps=" + frameRate + " lowLatency=" + (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R));
     }
 
@@ -304,8 +321,15 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
         int height = outputFormat.containsKey(MediaFormat.KEY_HEIGHT)
                 ? outputFormat.getInteger(MediaFormat.KEY_HEIGHT)
                 : currentFormat.height;
-        listener.onVideoSize(width, height);
-        AppLog.info(context, "LowLatency decoder output size=" + width + "x" + height);
+        VideoGeometry.Size displaySize = VideoGeometry.displaySize(
+                currentFormat.width,
+                currentFormat.height,
+                currentFormat.rotationDegrees,
+                currentFormat.pixelWidthHeightRatio
+        );
+        listener.onVideoSize(displaySize.width, displaySize.height);
+        AppLog.info(context, "LowLatency decoder output codedSize=" + width + "x" + height
+                + " displaySize=" + displaySize.width + "x" + displaySize.height);
     }
 
     private void logMetrics(long newestAgeNs) {
