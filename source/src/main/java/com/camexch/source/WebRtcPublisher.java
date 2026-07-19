@@ -42,11 +42,7 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
 
     WebRtcPublisher(Context context) {
         this.context = context.getApplicationContext();
-        AppLog.info(this.context, "PeerConnectionFactory.initialize");
-        PeerConnectionFactory.initialize(
-                PeerConnectionFactory.InitializationOptions.builder(context.getApplicationContext())
-                        .createInitializationOptions()
-        );
+        WebRtcRuntime.initialize(this.context);
         eglBase = EglBase.create();
         AppLog.info(this.context, "EGL base created");
         factory = PeerConnectionFactory.builder()

@@ -50,6 +50,7 @@ final class H264FrameBridge {
 
     H264FrameBridge(Context context) {
         this.context = context.getApplicationContext();
+        WebRtcRuntime.initialize(this.context);
     }
 
     void onFormat(Format format) {

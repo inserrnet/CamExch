@@ -39,10 +39,7 @@ final class H264PassthroughPublisher implements WebRtcSessionPublisher {
         this.context = context.getApplicationContext();
         this.bridge = bridge;
         AppLog.info(this.context, "Initializing direct H264 WebRTC publisher codecs=" + bridge.getCodecs());
-        PeerConnectionFactory.initialize(
-                PeerConnectionFactory.InitializationOptions.builder(this.context)
-                        .createInitializationOptions()
-        );
+        WebRtcRuntime.initialize(this.context);
         eglBase = EglBase.create();
         factory = PeerConnectionFactory.builder()
                 .setVideoEncoderFactory(new H264PassthroughEncoderFactory(bridge))
