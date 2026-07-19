@@ -114,7 +114,11 @@ public class SourceForegroundService extends Service {
             throw new IllegalStateException("WebRTC source is not active; mode=" + mode);
         }
         AppLog.info(this, "Answering offer through Android IPC");
-        return publisher.answerOffer(offer);
+        String answer = publisher.answerOffer(offer);
+        if (directH264) {
+            scheduleDirectRtspRefresh();
+        }
+        return answer;
     }
 
     @Override
@@ -304,6 +308,21 @@ public class SourceForegroundService extends Service {
                 prepareVideoSource(currentUri);
             }
         });
+    }
+
+    private void scheduleDirectRtspRefresh() {
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (!directH264 || player == null || currentUri.isEmpty()) {
+                return;
+            }
+            AppLog.info(this, "Restarting RTSP session to request an immediate H264 keyframe");
+            try {
+                player.stop();
+                prepareVideoSource(currentUri);
+            } catch (Throwable throwable) {
+                reportError("RTSP keyframe refresh", throwable);
+            }
+        }, 300);
     }
 
     private void stopSource() {

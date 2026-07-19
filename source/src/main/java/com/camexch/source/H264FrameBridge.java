@@ -47,6 +47,7 @@ final class H264FrameBridge {
     private int height;
     private String codecs = "";
     private volatile boolean firstSampleLogged;
+    private long lastKeyFrameAtNs;
 
     H264FrameBridge(Context context) {
         this.context = context.getApplicationContext();
@@ -98,6 +99,13 @@ final class H264FrameBridge {
         ByteBuffer encoded = ByteBuffer.allocateDirect(payload.length);
         encoded.put(payload).flip();
         long timestampNs = System.nanoTime();
+        if (keyFrame) {
+            if (lastKeyFrameAtNs != 0) {
+                AppLog.info(context, "Direct H264 keyframe intervalMs="
+                        + ((timestampNs - lastKeyFrameAtNs) / 1_000_000));
+            }
+            lastKeyFrameAtNs = timestampNs;
+        }
         Sample sample = new Sample(encoded.asReadOnlyBuffer(), keyFrame, sampleWidth, sampleHeight, timestampNs);
         synchronized (lock) {
             samples.put(timestampNs, sample);
