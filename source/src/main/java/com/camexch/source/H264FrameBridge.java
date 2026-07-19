@@ -11,10 +11,7 @@ import org.webrtc.VideoFrame;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
-import java.util.ArrayDeque;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 final class H264FrameBridge {
     private static final int MAX_SAMPLES = 120;
@@ -37,8 +34,7 @@ final class H264FrameBridge {
 
     private final Context context;
     private final Object lock = new Object();
-    private final Map<Long, Sample> samples = new HashMap<>();
-    private final ArrayDeque<Long> sampleOrder = new ArrayDeque<>();
+    private final H264SampleStore<Sample> samples = new H264SampleStore<>(MAX_SAMPLES);
 
     private volatile CapturerObserver observer;
     private JavaI420Buffer frameBuffer;
@@ -66,6 +62,7 @@ final class H264FrameBridge {
             height = nextHeight;
             codecs = format.codecs == null ? "" : format.codecs;
             codecConfig = nextConfig;
+            samples.clear();
             if (frameBuffer != null) {
                 frameBuffer.release();
             }
@@ -108,12 +105,7 @@ final class H264FrameBridge {
         }
         Sample sample = new Sample(encoded.asReadOnlyBuffer(), keyFrame, sampleWidth, sampleHeight, timestampNs);
         synchronized (lock) {
-            samples.put(timestampNs, sample);
-            sampleOrder.addLast(timestampNs);
-            while (sampleOrder.size() > MAX_SAMPLES) {
-                Long expired = sampleOrder.removeFirst();
-                samples.remove(expired);
-            }
+            samples.add(timestampNs, sample, keyFrame);
         }
 
         if (!firstSampleLogged) {
@@ -136,8 +128,13 @@ final class H264FrameBridge {
 
     Sample findSample(long timestampNs) {
         synchronized (lock) {
-            Sample exact = samples.get(timestampNs);
-            return exact != null || sampleOrder.isEmpty() ? exact : samples.get(sampleOrder.peekLast());
+            return samples.findClosest(timestampNs);
+        }
+    }
+
+    Sample findKeyFrameAtOrAfter(long timestampNs) {
+        synchronized (lock) {
+            return samples.findKeyFrameAtOrAfter(timestampNs);
         }
     }
 
@@ -184,7 +181,6 @@ final class H264FrameBridge {
     void release() {
         synchronized (lock) {
             samples.clear();
-            sampleOrder.clear();
             if (frameBuffer != null) {
                 frameBuffer.release();
                 frameBuffer = null;

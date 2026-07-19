@@ -25,6 +25,9 @@ jobs:
         with:
           gradle-version: "8.10.2"
 
+      - name: Test media pipeline
+        run: gradle testDebugUnitTest
+
       - name: Build debug APKs
         run: gradle assembleDebug
 

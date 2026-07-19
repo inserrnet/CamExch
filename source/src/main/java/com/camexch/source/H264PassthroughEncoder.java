@@ -13,6 +13,7 @@ final class H264PassthroughEncoder implements VideoEncoder {
     private boolean waitingForKeyLogged;
     private boolean firstOutputLogged;
     private boolean initialized;
+    private long initializedAtNs;
     private long lastSourceTimestampNs = Long.MIN_VALUE;
 
     H264PassthroughEncoder(H264FrameBridge bridge) {
@@ -24,6 +25,7 @@ final class H264PassthroughEncoder implements VideoEncoder {
         callback = encodeCallback;
         if (!initialized) {
             initialized = true;
+            initializedAtNs = System.nanoTime();
             keyFrameSeen = false;
             missingSampleLogged = false;
             waitingForKeyLogged = false;
@@ -61,6 +63,13 @@ final class H264PassthroughEncoder implements VideoEncoder {
         }
         if (sample.sourceTimestampNs == lastSourceTimestampNs) {
             return VideoCodecStatus.NO_OUTPUT;
+        }
+        if (!keyFrameSeen && !sample.keyFrame) {
+            H264FrameBridge.Sample recoveredKeyFrame = bridge.findKeyFrameAtOrAfter(initializedAtNs);
+            if (recoveredKeyFrame != null) {
+                sample = recoveredKeyFrame;
+                bridge.log("Direct encoder recovered the first H264 key frame after timestamp remap");
+            }
         }
         if (!keyFrameSeen && !sample.keyFrame) {
             if (!waitingForKeyLogged) {
