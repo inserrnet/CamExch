@@ -65,7 +65,7 @@ public class SourceForegroundService extends Service {
                 : new Notification.Builder(this);
         return builder
                 .setContentTitle("Virtual camera source active")
-                .setContentText("Serving http://127.0.0.1:" + MjpegServer.PORT + "/frame.jpg")
+                .setContentText("Serving http://127.0.0.1:" + MjpegServer.PORT + "/stream.mjpeg")
                 .setSmallIcon(android.R.drawable.presence_video_online)
                 .setOngoing(true)
                 .build();
