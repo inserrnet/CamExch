@@ -32,6 +32,8 @@ The `!` button near the address bar shows `Front Camera 4 source active`. Long-p
 
 Source starts its native WebRTC pipeline only for RTSP and video after `Start` is tapped. Photo mode does not load WebRTC. Native initialization and playback failures are reported in the Source screen instead of closing the app.
 
+WebRTC frame ownership remains with `SurfaceTextureHelper`; the capture listener forwards frames without releasing them a second time.
+
 ## Architecture
 
 ```mermaid

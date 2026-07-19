@@ -59,10 +59,7 @@ final class WebRtcPublisher {
         videoSource = factory.createVideoSource(false);
         CapturerObserver observer = videoSource.getCapturerObserver();
         observer.onCapturerStarted(true);
-        textureHelper.startListening(frame -> {
-            observer.onFrameCaptured(frame);
-            frame.release();
-        });
+        textureHelper.startListening(observer::onFrameCaptured);
         videoTrack = factory.createVideoTrack("camexch-video", videoSource);
         videoTrack.setEnabled(true);
         videoSurface = new Surface(textureHelper.getSurfaceTexture());
