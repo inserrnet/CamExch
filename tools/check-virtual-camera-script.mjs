@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import vm from "node:vm";
 
 const source = readFileSync(
   "browser/src/main/java/com/camexch/browser/VirtualCameraScript.java",
@@ -29,4 +30,55 @@ for (const marker of [
   }
 }
 
-console.log(`Virtual camera hook syntax OK (${script.length} chars)`);
+const nativeDevices = [
+  { kind: "videoinput", deviceId: "rear-id", label: "camera2 1", groupId: "rear" },
+  { kind: "videoinput", deviceId: "front-id", label: "camera2 2, facing front", groupId: "front" },
+];
+const context = {
+  location: { href: "https://camera-routing.test/" },
+  navigator: {
+    mediaDevices: {
+      getUserMedia: async () => ({ getVideoTracks: () => [], getTracks: () => [] }),
+      enumerateDevices: async () => nativeDevices,
+    },
+  },
+  addEventListener: () => {},
+  setTimeout,
+  clearInterval,
+  setInterval,
+};
+context.window = context;
+context.globalThis = context;
+const testScript = script.replace(
+  /\}\)\(\);$/,
+  "globalThis.__camexchRouteForTest=isVirtualRequest;})();",
+);
+vm.runInNewContext(testScript, context);
+await context.navigator.mediaDevices.enumerateDevices();
+
+const route = context.__camexchRouteForTest;
+const cases = [
+  [{ video: { facingMode: "user" } }, true, "explicit user"],
+  [{ video: { facingMode: { exact: "environment" } } }, false, "explicit environment"],
+  [{ video: { deviceId: { exact: "camexch-front-camera-4" } } }, true, "virtual id"],
+  [{ video: { deviceId: { exact: "front-id" } } }, true, "enumerated front id"],
+  [{ video: { deviceId: { exact: "rear-id" } } }, false, "enumerated rear id"],
+  [{ video: true }, false, "browser default"],
+  [{ video: {} }, false, "empty constraints"],
+];
+for (const [constraints, expected, name] of cases) {
+  const actual = route(constraints);
+  if (actual !== expected) {
+    throw new Error(`Camera route ${name}: expected ${expected}, got ${actual}`);
+  }
+}
+
+const mapped = await context.navigator.mediaDevices.enumerateDevices();
+if (mapped.find((device) => device.deviceId === "rear-id")?.label !== "camera2 1") {
+  throw new Error("Rear camera label was incorrectly replaced");
+}
+if (mapped.find((device) => device.deviceId === "front-id")?.label !== "Front Camera 4") {
+  throw new Error("Front camera label was not replaced");
+}
+
+console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);
