@@ -6,10 +6,12 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
 import android.net.Uri;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.PowerManager;
 
 import androidx.media3.common.Format;
 import androidx.media3.common.MediaItem;
@@ -48,6 +50,8 @@ public class SourceForegroundService extends Service {
     private String currentUri = "";
     private boolean directH264;
     private boolean fallbackScheduled;
+    private PowerManager.WakeLock wakeLock;
+    private WifiManager.WifiLock wifiLock;
 
     @Override
     public void onCreate() {
@@ -160,6 +164,7 @@ public class SourceForegroundService extends Service {
         if (!ensureVideoPipeline(false)) {
             return;
         }
+        acquirePipelineLocks();
         prepareVideoSource(uriText);
     }
 
@@ -169,7 +174,9 @@ public class SourceForegroundService extends Service {
             if ("RTSP".equals(mode)) {
                 AppLog.info(this, "RTSP transport=UDP preferred maxBufferMs="
                         + VideoPipelinePolicy.MAX_BUFFER_MS + " hardwareTranscode=true");
-                player.setMediaSource(new RtspMediaSource.Factory().createMediaSource(mediaItem));
+                player.setMediaSource(new RtspMediaSource.Factory()
+                        .setTimeoutMs(VideoPipelinePolicy.RTSP_TIMEOUT_MS)
+                        .createMediaSource(mediaItem));
             } else {
                 player.setMediaItem(mediaItem);
             }
@@ -207,10 +214,23 @@ public class SourceForegroundService extends Service {
                 AppLog.info(this, "Initializing decoded WebRTC publisher");
                 WebRtcPublisher decodedPublisher = new WebRtcPublisher(this);
                 publisher = decodedPublisher;
-                player = new ExoPlayer.Builder(this)
-                        .setLoadControl(loadControl)
-                        .build();
-                player.setVideoSurface(decodedPublisher.getVideoSurface());
+                if ("RTSP".equals(mode)) {
+                    AppLog.info(this, "Initializing custom low-latency H264 decoder renderer");
+                    LowLatencyH264DecoderRenderer renderer = new LowLatencyH264DecoderRenderer(
+                            this,
+                            decodedPublisher.getVideoSurface(),
+                            decodedPublisher::setVideoSize
+                    );
+                    player = new ExoPlayer.Builder(this, (eventHandler, videoListener, audioListener,
+                                                           textOutput, metadataOutput) -> new Renderer[]{renderer})
+                            .setLoadControl(loadControl)
+                            .build();
+                } else {
+                    player = new ExoPlayer.Builder(this)
+                            .setLoadControl(loadControl)
+                            .build();
+                    player.setVideoSurface(decodedPublisher.getVideoSurface());
+                }
             }
             player.setRepeatMode(Player.REPEAT_MODE_ONE);
             player.addListener(new Player.Listener() {
@@ -293,6 +313,42 @@ public class SourceForegroundService extends Service {
         if (directBridge != null) {
             directBridge.release();
             directBridge = null;
+        }
+        releasePipelineLocks();
+    }
+
+    private void acquirePipelineLocks() {
+        if (wakeLock == null) {
+            PowerManager powerManager = getSystemService(PowerManager.class);
+            wakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "CamExch:SourcePipeline"
+            );
+            wakeLock.setReferenceCounted(false);
+        }
+        if (!wakeLock.isHeld()) {
+            wakeLock.acquire();
+        }
+        if (wifiLock == null) {
+            WifiManager wifiManager = getApplicationContext().getSystemService(WifiManager.class);
+            wifiLock = wifiManager.createWifiLock(
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                    "CamExch:RtspPipeline"
+            );
+            wifiLock.setReferenceCounted(false);
+        }
+        if (!wifiLock.isHeld()) {
+            wifiLock.acquire();
+        }
+        AppLog.info(this, "Pipeline WakeLock and WifiLock acquired");
+    }
+
+    private void releasePipelineLocks() {
+        if (wifiLock != null && wifiLock.isHeld()) {
+            wifiLock.release();
+        }
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
         }
     }
 

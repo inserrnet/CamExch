@@ -24,7 +24,9 @@ import org.webrtc.VideoTrack;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -41,6 +43,9 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
     private final VideoTrack videoTrack;
     private final Surface videoSurface;
     private final List<PeerConnection> peerConnections = new ArrayList<>();
+    private final Map<PeerConnection, RtpSender> peerSenders = new HashMap<>();
+    private int videoWidth = 640;
+    private int videoHeight = 480;
 
     WebRtcPublisher(Context context) {
         this.context = context.getApplicationContext();
@@ -70,12 +75,17 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
         return videoSurface;
     }
 
-    void setVideoSize(int width, int height) {
+    synchronized void setVideoSize(int width, int height) {
         if (width <= 0 || height <= 0) {
             return;
         }
+        videoWidth = width;
+        videoHeight = height;
         AppLog.info(context, "WebRTC texture size=" + width + "x" + height);
         textureHelper.setTextureSize(width, height);
+        for (RtpSender sender : peerSenders.values()) {
+            configureHighQualitySender(sender);
+        }
     }
 
     @Override
@@ -101,6 +111,7 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
             peerConnections.remove(peerConnection);
             throw new IllegalStateException("Unable to add transcoded video track");
         }
+        peerSenders.put(peerConnection, sender);
         configureHighQualitySender(sender);
 
         awaitDescription(observer -> peerConnection.setRemoteDescription(
@@ -120,18 +131,22 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
 
     private void configureHighQualitySender(RtpSender sender) {
         RtpParameters parameters = sender.getParameters();
-        parameters.degradationPreference = RtpParameters.DegradationPreference.DISABLED;
+        parameters.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION;
+        int maxBitrateBps = VideoPipelinePolicy.maxBitrateForSize(videoWidth, videoHeight);
         for (RtpParameters.Encoding encoding : parameters.encodings) {
             encoding.scaleResolutionDownBy = VideoPipelinePolicy.RESOLUTION_SCALE;
-            encoding.minBitrateBps = VideoPipelinePolicy.MIN_BITRATE_BPS;
-            encoding.maxBitrateBps = VideoPipelinePolicy.MAX_BITRATE_BPS;
+            encoding.minBitrateBps = null;
+            encoding.maxBitrateBps = maxBitrateBps;
+            encoding.maxFramerate = VideoPipelinePolicy.TARGET_FPS;
             encoding.bitratePriority = 4.0;
         }
         boolean applied = sender.setParameters(parameters);
         AppLog.info(context, "Transcoded WebRTC quality lock applied=" + applied
                 + " scale=" + VideoPipelinePolicy.RESOLUTION_SCALE
-                + " bitrate=" + VideoPipelinePolicy.MIN_BITRATE_BPS
-                + "-" + VideoPipelinePolicy.MAX_BITRATE_BPS);
+                + " size=" + videoWidth + "x" + videoHeight
+                + " maxBitrate=" + maxBitrateBps
+                + " maxFps=" + VideoPipelinePolicy.TARGET_FPS
+                + " degradation=MAINTAIN_RESOLUTION");
     }
 
     @Override
@@ -140,6 +155,7 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
             closePeer(peerConnection);
         }
         peerConnections.clear();
+        peerSenders.clear();
         videoSurface.release();
         textureHelper.stopListening();
         videoSource.getCapturerObserver().onCapturerStopped();
@@ -152,6 +168,7 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
 
     private void closePeer(PeerConnection peerConnection) {
         if (peerConnection != null) {
+            peerSenders.remove(peerConnection);
             peerConnection.close();
             peerConnection.dispose();
         }

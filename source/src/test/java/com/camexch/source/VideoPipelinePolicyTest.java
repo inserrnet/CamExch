@@ -17,7 +17,9 @@ public class VideoPipelinePolicyTest {
 
     @Test
     public void reservesHighQualityLocalWebRtcBitrate() {
-        assertTrue(VideoPipelinePolicy.MIN_BITRATE_BPS >= 4_000_000);
-        assertTrue(VideoPipelinePolicy.MAX_BITRATE_BPS >= VideoPipelinePolicy.MIN_BITRATE_BPS);
+        assertEquals(6_589_440, VideoPipelinePolicy.maxBitrateForSize(704, 1248));
+        assertTrue(VideoPipelinePolicy.maxBitrateForSize(1920, 1080) > 10_000_000);
+        assertTrue(VideoPipelinePolicy.maxBitrateForSize(7680, 4320)
+                <= VideoPipelinePolicy.MAX_BITRATE_BPS);
     }
 }

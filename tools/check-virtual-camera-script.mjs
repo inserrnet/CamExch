@@ -21,6 +21,7 @@ for (const marker of [
   "WebRTC preferred codec=H264",
   "WebRTC track settings size=",
   "WebRTC inbound size=",
+  "WebRTC receiver low-latency hints",
 ]) {
   if (!script.includes(marker)) {
     throw new Error(`Missing browser telemetry marker: ${marker}`);
