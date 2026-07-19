@@ -6,8 +6,10 @@ import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.util.Base64;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
@@ -174,6 +176,7 @@ public class BrowserActivity extends Activity {
         settings.setUseWideViewPort(true);
         settings.setUserAgentString(settings.getUserAgentString() + " CamExchBrowser/0.1");
         webView.addJavascriptInterface(new JsLogBridge(), "CamExchLog");
+        webView.addJavascriptInterface(new SourceBridge(), "CamExchBridge");
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(
                     webView,
@@ -374,6 +377,58 @@ public class BrowserActivity extends Activity {
         @JavascriptInterface
         public void log(String message) {
             AppLog.info(BrowserActivity.this, "JS " + message);
+        }
+    }
+
+    private final class SourceBridge {
+        private static final String BRIDGE_URI = "content://com.camexch.source.bridge";
+
+        @JavascriptInterface
+        public String getMode() {
+            return callString("mode", null);
+        }
+
+        @JavascriptInterface
+        public String answerOffer(String offer) {
+            AppLog.info(BrowserActivity.this, "IPC offer length=" + (offer == null ? 0 : offer.length()));
+            return callString("offer", offer);
+        }
+
+        @JavascriptInterface
+        public String getPhotoDataUrl() {
+            try {
+                Bundle result = getContentResolver().call(Uri.parse(BRIDGE_URI), "photo", null, null);
+                String error = result == null ? "No response from Source" : result.getString("error");
+                if (error != null) {
+                    return "ERROR:" + error;
+                }
+                byte[] jpeg = result.getByteArray("value");
+                if (jpeg == null || jpeg.length == 0) {
+                    return "ERROR:Source returned an empty photo";
+                }
+                AppLog.info(BrowserActivity.this, "IPC photo bytes=" + jpeg.length);
+                return "data:image/jpeg;base64," + Base64.encodeToString(jpeg, Base64.NO_WRAP);
+            } catch (Throwable throwable) {
+                AppLog.info(BrowserActivity.this, "IPC photo failed: " + throwable);
+                return "ERROR:" + throwable;
+            }
+        }
+
+        private String callString(String method, String arg) {
+            try {
+                Bundle result = getContentResolver().call(Uri.parse(BRIDGE_URI), method, arg, null);
+                String error = result == null ? "No response from Source" : result.getString("error");
+                if (error != null) {
+                    AppLog.info(BrowserActivity.this, "IPC " + method + " error=" + error);
+                    return "ERROR:" + error;
+                }
+                String value = result.getString("value", "");
+                AppLog.info(BrowserActivity.this, "IPC " + method + " success length=" + value.length());
+                return value;
+            } catch (Throwable throwable) {
+                AppLog.info(BrowserActivity.this, "IPC " + method + " failed: " + throwable);
+                return "ERROR:" + throwable;
+            }
         }
     }
 

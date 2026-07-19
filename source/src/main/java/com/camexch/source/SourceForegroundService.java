@@ -18,6 +18,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 
 public class SourceForegroundService extends Service {
+    private static volatile SourceForegroundService instance;
     static final String ACTION_START_SOURCE = "com.camexch.source.START_SOURCE";
     static final String ACTION_STOP_SOURCE = "com.camexch.source.STOP_SOURCE";
     static final String ACTION_STATUS = "com.camexch.source.STATUS";
@@ -38,6 +39,7 @@ public class SourceForegroundService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         AppLog.info(this, "SourceForegroundService.onCreate");
         createChannel();
         startForeground(NOTIFICATION_ID, buildNotification());
@@ -62,12 +64,30 @@ public class SourceForegroundService extends Service {
 
     @Override
     public void onDestroy() {
+        instance = null;
         releaseVideoPipeline();
         if (server != null) {
             server.stop();
             server = null;
         }
         super.onDestroy();
+    }
+
+    static SourceForegroundService getInstance() {
+        return instance;
+    }
+
+    String getBridgeMode() {
+        return mode;
+    }
+
+    String answerBridgeOffer(String offer) throws Exception {
+        WebRtcPublisher activePublisher = publisher;
+        if (activePublisher == null) {
+            throw new IllegalStateException("WebRTC source is not active; mode=" + mode);
+        }
+        AppLog.info(this, "Answering offer through Android IPC");
+        return activePublisher.answerOffer(offer);
     }
 
     @Override

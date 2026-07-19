@@ -32,7 +32,7 @@ The `!` button near the address bar shows `Front Camera 4 source active`. Long-p
 
 Source starts its native WebRTC pipeline only for RTSP and video after `Start` is tapped. Photo mode does not load WebRTC. Native initialization and playback failures are reported in the Source screen instead of closing the app.
 
-WebRTC frame ownership remains with `SurfaceTextureHelper`; the capture listener forwards frames without releasing them a second time.
+WebRTC frame ownership remains with `SurfaceTextureHelper`; the capture listener forwards frames without releasing them a second time. Source and Browser exchange mode, SDP, and photo data through a signature-protected Android `ContentProvider`, avoiding WebView mixed-content and Private Network Access restrictions. If Source is unavailable, Browser falls back to the phone camera.
 
 ## Architecture
 
