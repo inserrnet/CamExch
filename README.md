@@ -29,7 +29,7 @@ The project is designed to build on GitHub Actions, so no Android Studio, Gradle
 8. Choose the virtual/front camera. The browser injects a `CamExch Virtual Front Camera` device and serves frames from:
 
    ```text
-   http://127.0.0.1:8765/frame.jpg
+   http://127.0.0.1:8765/stream.mjpeg
    ```
 
 The `!` button near the address bar shows `virtual camera source active`.
@@ -41,13 +41,13 @@ flowchart LR
     A["RTSP / video / photo"] --> B["CamExch Source"]
     B --> C["TextureView preview"]
     C --> D["JPEG frame store"]
-    D --> E["127.0.0.1:8765/frame.jpg"]
+    D --> E["127.0.0.1:8765/stream.mjpeg"]
     E --> F["CamExch Browser JS hook"]
     F --> G["canvas.captureStream()"]
     G --> H["Website getUserMedia()"]
 ```
 
-The first version uses repeated JPEG frames because it is simple and robust in Android WebView. A later version can replace this bridge with WebRTC for lower latency.
+The browser installs its camera hook at document start, before site scripts can capture the original `getUserMedia()` function. Frames use one persistent MJPEG connection instead of polling a JPEG URL for every frame. A later version can replace the JPEG bridge with WebRTC for substantially lower latency.
 
 ## Browser Features
 
@@ -56,7 +56,7 @@ The first version uses repeated JPEG frames because it is simple and robust in A
 - Reload button.
 - Multiple tabs.
 - Long-press a tab to close it.
-- Front-camera override for `facingMode: "user"` or `deviceId: "camexch-virtual-front"`.
+- Automatic front-camera override for `video: true`, `facingMode: "user"`, an unconstrained default camera request, or `deviceId: "camexch-virtual-front"`.
 - Rear camera requests are passed through to the real Android camera.
 
 ## Build
