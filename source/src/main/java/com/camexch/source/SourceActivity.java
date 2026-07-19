@@ -18,9 +18,6 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-
 public class SourceActivity extends Activity {
     private static final int PICK_FILE = 42;
 
@@ -162,10 +159,6 @@ public class SourceActivity extends Activity {
                 return;
             }
             uriText = selectedUri.toString();
-            if ("Photo".equals(mode) && !loadPhoto(selectedUri)) {
-                showError("Unable to read the selected image");
-                return;
-            }
         }
 
         Intent intent = new Intent(this, SourceForegroundService.class);
@@ -174,24 +167,6 @@ public class SourceActivity extends Activity {
         intent.putExtra(SourceForegroundService.EXTRA_URI, uriText);
         startServiceCompat(intent);
         statusLabel.setText(mode + " active\nYou can switch to CamExch Browser");
-    }
-
-    private boolean loadPhoto(Uri uri) {
-        try (InputStream in = getContentResolver().openInputStream(uri);
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            if (in == null) {
-                return false;
-            }
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = in.read(buffer)) != -1) {
-                out.write(buffer, 0, read);
-            }
-            FrameStore.setJpeg(out.toByteArray());
-            return true;
-        } catch (Exception ignored) {
-            return false;
-        }
     }
 
     private void stopSource() {
