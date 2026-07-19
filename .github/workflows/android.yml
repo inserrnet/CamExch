@@ -34,6 +34,15 @@ jobs:
       - name: Android static analysis
         run: gradle lintDebug
 
+      - name: Upload lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: camexch-lint-reports
+          path: |
+            source/build/reports/lint-results-debug.*
+            browser/build/reports/lint-results-debug.*
+
       - name: Build debug APKs
         run: gradle assembleDebug
 

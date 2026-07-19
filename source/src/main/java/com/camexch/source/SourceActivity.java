@@ -93,10 +93,12 @@ public class SourceActivity extends Activity {
         if (requestCode == PICK_FILE && resultCode == RESULT_OK && data != null && data.getData() != null) {
             selectedUri = data.getData();
             try {
-                getContentResolver().takePersistableUriPermission(
-                        selectedUri,
-                        data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION
-                );
+                int permissionFlags = data.getFlags()
+                        & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                if (permissionFlags != 0) {
+                    getContentResolver().takePersistableUriPermission(selectedUri, permissionFlags);
+                }
             } catch (SecurityException ignored) {
             }
             selectedFileLabel.setText(selectedUri.toString());
