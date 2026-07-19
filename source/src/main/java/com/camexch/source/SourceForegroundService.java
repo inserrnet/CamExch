@@ -7,14 +7,20 @@ import android.app.Service;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 
+import androidx.media3.common.Format;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.Tracks;
 import androidx.media3.common.VideoSize;
 import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.Renderer;
 import androidx.media3.exoplayer.rtsp.RtspMediaSource;
 
 import java.io.ByteArrayOutputStream;
@@ -34,10 +40,14 @@ public class SourceForegroundService extends Service {
     private static final int NOTIFICATION_ID = 1001;
 
     private MjpegServer server;
-    private WebRtcPublisher publisher;
+    private WebRtcSessionPublisher publisher;
+    private H264FrameBridge directBridge;
     private ExoPlayer player;
     private String mode = "Idle";
     private String error = "";
+    private String currentUri = "";
+    private boolean directH264;
+    private boolean fallbackScheduled;
 
     @Override
     public void onCreate() {
@@ -87,16 +97,24 @@ public class SourceForegroundService extends Service {
         if ("Idle".equals(mode)) {
             throw new IllegalStateException("Source is idle");
         }
+        if (directH264 && (directBridge == null || !directBridge.isReady())) {
+            throw new IllegalStateException("Direct H264 source is still waiting for its first frame");
+        }
         return mode;
     }
 
-    String answerBridgeOffer(String offer) throws Exception {
-        WebRtcPublisher activePublisher = publisher;
-        if (activePublisher == null) {
+    synchronized String answerBridgeOffer(String offer) throws Exception {
+        if (publisher == null && directH264) {
+            if (directBridge == null || !directBridge.isReady()) {
+                throw new IllegalStateException("Direct H264 source is not ready");
+            }
+            publisher = new H264PassthroughPublisher(this, directBridge);
+        }
+        if (publisher == null) {
             throw new IllegalStateException("WebRTC source is not active; mode=" + mode);
         }
         AppLog.info(this, "Answering offer through Android IPC");
-        return activePublisher.answerOffer(offer);
+        return publisher.answerOffer(offer);
     }
 
     @Override
@@ -109,6 +127,8 @@ public class SourceForegroundService extends Service {
             return;
         }
         mode = requestedMode;
+        currentUri = uriText == null ? "" : uriText;
+        fallbackScheduled = false;
         AppLog.info(this, "startSource mode=" + requestedMode + " uri=" + uriText);
         error = "";
         getSharedPreferences("source", MODE_PRIVATE).edit()
@@ -117,9 +137,8 @@ public class SourceForegroundService extends Service {
                 .apply();
 
         if ("Photo".equals(mode)) {
-            if (player != null) {
-                player.stop();
-            }
+            releaseVideoPipeline();
+            directH264 = false;
             if (!loadPhoto(uriText)) {
                 reportError("Photo", new IllegalStateException("Unable to read the selected image"));
                 return;
@@ -132,13 +151,19 @@ public class SourceForegroundService extends Service {
             reportError(mode, new IllegalArgumentException("Source address is empty"));
             return;
         }
-        if (!ensureVideoPipeline()) {
+        releaseVideoPipeline();
+        directH264 = "RTSP".equals(mode);
+        if (!ensureVideoPipeline(directH264)) {
             return;
         }
+        prepareVideoSource(uriText);
+    }
+
+    private void prepareVideoSource(String uriText) {
         try {
             MediaItem mediaItem = MediaItem.fromUri(Uri.parse(uriText));
             if ("RTSP".equals(mode)) {
-                AppLog.info(this, "RTSP low-latency transport=TCP maxBufferMs=1000");
+                AppLog.info(this, "RTSP transport=TCP maxBufferMs=1000 directH264=" + directH264);
                 player.setMediaSource(new RtspMediaSource.Factory()
                         .setForceUseRtpTcp(true)
                         .createMediaSource(mediaItem));
@@ -153,31 +178,40 @@ public class SourceForegroundService extends Service {
         }
     }
 
-    private boolean ensureVideoPipeline() {
+    private boolean ensureVideoPipeline(boolean direct) {
         if (publisher != null && player != null) {
             return true;
         }
         releaseVideoPipeline();
         try {
-            AppLog.info(this, "Initializing WebRTC publisher");
-            publisher = new WebRtcPublisher(this);
-            AppLog.info(this, "WebRTC publisher initialized");
             DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
                     .setBufferDurationsMs(250, 1000, 100, 250)
                     .setBackBuffer(0, false)
                     .setPrioritizeTimeOverSizeThresholds(true)
                     .build();
-            player = new ExoPlayer.Builder(this)
-                    .setLoadControl(loadControl)
-                    .build();
-            player.setVideoSurface(publisher.getVideoSurface());
+            if (direct) {
+                AppLog.info(this, "Initializing direct H264 Media3 renderer");
+                directBridge = new H264FrameBridge(this);
+                player = new ExoPlayer.Builder(this, (eventHandler, videoListener, audioListener,
+                                                       textOutput, metadataOutput) -> new Renderer[]{
+                        new H264PassthroughRenderer(directBridge)
+                }).setLoadControl(loadControl).build();
+            } else {
+                AppLog.info(this, "Initializing decoded WebRTC publisher");
+                WebRtcPublisher decodedPublisher = new WebRtcPublisher(this);
+                publisher = decodedPublisher;
+                player = new ExoPlayer.Builder(this)
+                        .setLoadControl(loadControl)
+                        .build();
+                player.setVideoSurface(decodedPublisher.getVideoSurface());
+            }
             player.setRepeatMode(Player.REPEAT_MODE_ONE);
             player.addListener(new Player.Listener() {
                 @Override
                 public void onPlaybackStateChanged(int state) {
                     if (state == Player.STATE_READY) {
                         AppLog.info(SourceForegroundService.this, "Player STATE_READY");
-                        reportStatus(mode + " active");
+                        reportStatus(directH264 ? "RTSP direct H264 active" : mode + " active");
                     }
                 }
 
@@ -190,15 +224,40 @@ public class SourceForegroundService extends Service {
                 public void onVideoSizeChanged(VideoSize videoSize) {
                     AppLog.info(SourceForegroundService.this, "Player video size="
                             + videoSize.width + "x" + videoSize.height);
-                    WebRtcPublisher activePublisher = publisher;
-                    if (activePublisher != null) {
+                    if (publisher instanceof WebRtcPublisher) {
+                        WebRtcPublisher activePublisher = (WebRtcPublisher) publisher;
                         activePublisher.setVideoSize(videoSize.width, videoSize.height);
                     }
                 }
 
                 @Override
+                public void onTracksChanged(Tracks tracks) {
+                    if (!directH264 || fallbackScheduled) {
+                        return;
+                    }
+                    boolean videoFound = false;
+                    boolean h264Found = false;
+                    for (Tracks.Group group : tracks.getGroups()) {
+                        for (int i = 0; i < group.length; i++) {
+                            Format format = group.getTrackFormat(i);
+                            if (MimeTypes.isVideo(format.sampleMimeType)) {
+                                videoFound = true;
+                                h264Found |= MimeTypes.VIDEO_H264.equals(format.sampleMimeType);
+                            }
+                        }
+                    }
+                    if (videoFound && !h264Found) {
+                        scheduleDecodedFallback("RTSP codec is not H264");
+                    }
+                }
+
+                @Override
                 public void onPlayerError(PlaybackException playbackError) {
-                    reportError(mode, playbackError);
+                    if (directH264 && !fallbackScheduled) {
+                        scheduleDecodedFallback("Direct H264 failed: " + playbackError.getMessage());
+                    } else {
+                        reportError(mode, playbackError);
+                    }
                 }
             });
             return true;
@@ -224,15 +283,35 @@ public class SourceForegroundService extends Service {
             }
             publisher = null;
         }
+        if (directBridge != null) {
+            directBridge.release();
+            directBridge = null;
+        }
+    }
+
+    private void scheduleDecodedFallback(String reason) {
+        fallbackScheduled = true;
+        AppLog.info(this, reason + "; switching to decoded fallback");
+        new Handler(Looper.getMainLooper()).post(() -> {
+            if (!directH264 || currentUri.isEmpty()) {
+                return;
+            }
+            releaseVideoPipeline();
+            directH264 = false;
+            fallbackScheduled = false;
+            if (ensureVideoPipeline(false)) {
+                reportStatus("RTSP decoded fallback starting");
+                prepareVideoSource(currentUri);
+            }
+        });
     }
 
     private void stopSource() {
         mode = "Idle";
         error = "";
+        directH264 = false;
         getSharedPreferences("source", MODE_PRIVATE).edit().clear().apply();
-        if (player != null) {
-            player.stop();
-        }
+        releaseVideoPipeline();
         reportStatus("Idle");
     }
 

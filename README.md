@@ -26,7 +26,7 @@ The project is designed to build on GitHub Actions, so no Android Studio, Gradle
    https://webcamtests.com/
    ```
 
-8. Choose `Front Camera 4`. The browser receives RTSP/video through a local WebRTC connection. Photos use the local MJPEG fallback.
+8. Choose `Front Camera 4`. The browser receives RTSP/video through a local WebRTC connection. Photos use the local image bridge.
 
 The `!` button near the address bar shows `Front Camera 4 source active`. Long-press it to open the Browser log and copy it to the clipboard. Source has a `Logs` button with the same copy action. After a crash, either app opens its saved crash log before retrying normal startup.
 
@@ -47,7 +47,7 @@ flowchart LR
     G --> H["Website MediaStreamTrack"]
 ```
 
-The browser installs its camera hook at document start, before site scripts can capture the original `getUserMedia()` function. RTSP and video frames remain on the hardware-accelerated Surface/WebRTC path and are not converted to JPEG. Playback belongs to the foreground service, so switching from Source to Browser does not destroy the decoder surface. The selected source is restored if Android restarts the service.
+The browser installs its camera hook at document start, before site scripts can capture the original `getUserMedia()` function. H.264 RTSP access units pass directly into WebRTC without decoding or re-encoding. Other RTSP codecs automatically use the decoded Surface/WebRTC fallback. Video-file frames remain on the hardware-accelerated Surface/WebRTC path and are not converted to JPEG. Playback belongs to the foreground service, so switching from Source to Browser does not destroy the media pipeline. The selected source is restored if Android restarts the service.
 
 ## Browser Features
 

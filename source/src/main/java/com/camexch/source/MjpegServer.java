@@ -15,7 +15,7 @@ final class MjpegServer extends NanoHTTPD {
     }
 
     interface PublisherProvider {
-        WebRtcPublisher getPublisher();
+        WebRtcSessionPublisher getPublisher();
     }
 
     static final int PORT = 8765;
@@ -48,7 +48,7 @@ final class MjpegServer extends NanoHTTPD {
                 if (offer == null || offer.trim().isEmpty()) {
                     return cors(newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "missing SDP offer"));
                 }
-                WebRtcPublisher publisher = publisherProvider.getPublisher();
+                WebRtcSessionPublisher publisher = publisherProvider.getPublisher();
                 if (publisher == null) {
                     return cors(newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "WebRTC source is unavailable"));
                 }

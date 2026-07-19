@@ -1,12 +1,9 @@
 package com.camexch.source;
 
 import android.content.Context;
-import android.view.Surface;
 
-import org.webrtc.CapturerObserver;
 import org.webrtc.DataChannel;
 import org.webrtc.DefaultVideoDecoderFactory;
-import org.webrtc.DefaultVideoEncoderFactory;
 import org.webrtc.EglBase;
 import org.webrtc.IceCandidate;
 import org.webrtc.MediaConstraints;
@@ -16,7 +13,6 @@ import org.webrtc.PeerConnectionFactory;
 import org.webrtc.RtpReceiver;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
-import org.webrtc.SurfaceTextureHelper;
 import org.webrtc.VideoSource;
 import org.webrtc.VideoTrack;
 
@@ -27,57 +23,35 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-final class WebRtcPublisher implements WebRtcSessionPublisher {
+final class H264PassthroughPublisher implements WebRtcSessionPublisher {
     private static final long SIGNAL_TIMEOUT_SECONDS = 10;
     private static final int MAX_PEERS = 4;
 
-    private final EglBase eglBase;
     private final Context context;
+    private final H264FrameBridge bridge;
+    private final EglBase eglBase;
     private final PeerConnectionFactory factory;
-    private final SurfaceTextureHelper textureHelper;
     private final VideoSource videoSource;
     private final VideoTrack videoTrack;
-    private final Surface videoSurface;
     private final List<PeerConnection> peerConnections = new ArrayList<>();
 
-    WebRtcPublisher(Context context) {
+    H264PassthroughPublisher(Context context, H264FrameBridge bridge) {
         this.context = context.getApplicationContext();
-        AppLog.info(this.context, "PeerConnectionFactory.initialize");
+        this.bridge = bridge;
+        AppLog.info(this.context, "Initializing direct H264 WebRTC publisher codecs=" + bridge.getCodecs());
         PeerConnectionFactory.initialize(
-                PeerConnectionFactory.InitializationOptions.builder(context.getApplicationContext())
+                PeerConnectionFactory.InitializationOptions.builder(this.context)
                         .createInitializationOptions()
         );
         eglBase = EglBase.create();
-        AppLog.info(this.context, "EGL base created");
         factory = PeerConnectionFactory.builder()
-                .setVideoEncoderFactory(new DefaultVideoEncoderFactory(eglBase.getEglBaseContext(), true, true))
+                .setVideoEncoderFactory(new H264PassthroughEncoderFactory(bridge))
                 .setVideoDecoderFactory(new DefaultVideoDecoderFactory(eglBase.getEglBaseContext()))
                 .createPeerConnectionFactory();
-        textureHelper = SurfaceTextureHelper.create("CamExchVideo", eglBase.getEglBaseContext());
-        if (textureHelper == null) {
-            throw new IllegalStateException("Unable to create WebRTC video surface");
-        }
-        textureHelper.setTextureSize(640, 480);
         videoSource = factory.createVideoSource(false);
-        CapturerObserver observer = videoSource.getCapturerObserver();
-        observer.onCapturerStarted(true);
-        textureHelper.startListening(observer::onFrameCaptured);
-        videoTrack = factory.createVideoTrack("camexch-video", videoSource);
+        bridge.attach(videoSource.getCapturerObserver());
+        videoTrack = factory.createVideoTrack("camexch-h264-direct", videoSource);
         videoTrack.setEnabled(true);
-        videoSurface = new Surface(textureHelper.getSurfaceTexture());
-        AppLog.info(this.context, "WebRTC video surface ready");
-    }
-
-    Surface getVideoSurface() {
-        return videoSurface;
-    }
-
-    void setVideoSize(int width, int height) {
-        if (width <= 0 || height <= 0) {
-            return;
-        }
-        AppLog.info(context, "WebRTC texture size=" + width + "x" + height);
-        textureHelper.setTextureSize(width, height);
     }
 
     @Override
@@ -85,7 +59,6 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
         if (offerSdp == null || offerSdp.trim().isEmpty()) {
             throw new IllegalArgumentException("WebRTC offer is empty");
         }
-        AppLog.info(context, "WebRTC offer received, length=" + offerSdp.length());
         while (peerConnections.size() >= MAX_PEERS) {
             closePeer(peerConnections.remove(0));
         }
@@ -94,7 +67,7 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
         configuration.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
         PeerConnection peerConnection = factory.createPeerConnection(configuration, new PeerObserver(iceComplete));
         if (peerConnection == null) {
-            throw new IllegalStateException("Unable to create WebRTC peer");
+            throw new IllegalStateException("Unable to create direct H264 WebRTC peer");
         }
         peerConnections.add(peerConnection);
         peerConnection.addTrack(videoTrack, Collections.singletonList("camexch"));
@@ -103,14 +76,16 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
                 observer,
                 new SessionDescription(SessionDescription.Type.OFFER, offerSdp)
         ));
-        SessionDescription answer = awaitDescription(observer -> peerConnection.createAnswer(observer, new MediaConstraints()));
+        SessionDescription answer = awaitDescription(
+                observer -> peerConnection.createAnswer(observer, new MediaConstraints())
+        );
         awaitDescription(observer -> peerConnection.setLocalDescription(observer, answer));
         iceComplete.await(SIGNAL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         SessionDescription local = peerConnection.getLocalDescription();
         if (local == null) {
-            throw new IllegalStateException("WebRTC answer was not created");
+            throw new IllegalStateException("Direct H264 WebRTC answer was not created");
         }
-        AppLog.info(context, "WebRTC answer ready, length=" + local.description.length());
+        AppLog.info(context, "Direct H264 WebRTC answer ready, length=" + local.description.length());
         return local.description;
     }
 
@@ -120,10 +95,7 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
             closePeer(peerConnection);
         }
         peerConnections.clear();
-        videoSurface.release();
-        textureHelper.stopListening();
-        videoSource.getCapturerObserver().onCapturerStopped();
-        textureHelper.dispose();
+        bridge.detach(videoSource.getCapturerObserver());
         videoTrack.dispose();
         videoSource.dispose();
         factory.dispose();
@@ -131,10 +103,8 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
     }
 
     private void closePeer(PeerConnection peerConnection) {
-        if (peerConnection != null) {
-            peerConnection.close();
-            peerConnection.dispose();
-        }
+        peerConnection.close();
+        peerConnection.dispose();
     }
 
     private SessionDescription awaitDescription(SdpAction action) throws Exception {
@@ -142,31 +112,13 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
         AtomicReference<SessionDescription> description = new AtomicReference<>();
         AtomicReference<String> error = new AtomicReference<>();
         action.run(new SdpObserver() {
-            @Override
-            public void onCreateSuccess(SessionDescription value) {
-                description.set(value);
-                latch.countDown();
-            }
-
-            @Override
-            public void onSetSuccess() {
-                latch.countDown();
-            }
-
-            @Override
-            public void onCreateFailure(String message) {
-                error.set(message);
-                latch.countDown();
-            }
-
-            @Override
-            public void onSetFailure(String message) {
-                error.set(message);
-                latch.countDown();
-            }
+            @Override public void onCreateSuccess(SessionDescription value) { description.set(value); latch.countDown(); }
+            @Override public void onSetSuccess() { latch.countDown(); }
+            @Override public void onCreateFailure(String message) { error.set(message); latch.countDown(); }
+            @Override public void onSetFailure(String message) { error.set(message); latch.countDown(); }
         });
         if (!latch.await(SIGNAL_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-            throw new IllegalStateException("WebRTC signaling timed out");
+            throw new IllegalStateException("Direct H264 WebRTC signaling timed out");
         }
         if (error.get() != null) {
             throw new IllegalStateException(error.get());
@@ -187,13 +139,11 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
 
         @Override public void onSignalingChange(PeerConnection.SignalingState state) {}
         @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
-            AppLog.info(context, "WebRTC ICE state=" + state);
+            AppLog.info(context, "Direct H264 ICE state=" + state);
         }
         @Override public void onIceConnectionReceivingChange(boolean receiving) {}
         @Override public void onIceGatheringChange(PeerConnection.IceGatheringState state) {
-            if (state == PeerConnection.IceGatheringState.COMPLETE) {
-                iceComplete.countDown();
-            }
+            if (state == PeerConnection.IceGatheringState.COMPLETE) iceComplete.countDown();
         }
         @Override public void onIceCandidate(IceCandidate candidate) {}
         @Override public void onIceCandidatesRemoved(IceCandidate[] candidates) {}
