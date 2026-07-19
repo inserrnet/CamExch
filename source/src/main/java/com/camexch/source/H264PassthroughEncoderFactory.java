@@ -10,25 +10,38 @@ import java.util.Map;
 
 final class H264PassthroughEncoderFactory implements VideoEncoderFactory {
     private final H264FrameBridge bridge;
-    private final VideoCodecInfo codecInfo;
+    private final VideoCodecInfo[] codecInfos;
 
     H264PassthroughEncoderFactory(H264FrameBridge bridge) {
         this.bridge = bridge;
-        Map<String, String> parameters = new HashMap<>();
-        parameters.put(VideoCodecInfo.H264_FMTP_PROFILE_LEVEL_ID, normalizedProfile(bridge.getCodecs()));
-        parameters.put(VideoCodecInfo.H264_FMTP_LEVEL_ASYMMETRY_ALLOWED, "1");
-        parameters.put(VideoCodecInfo.H264_FMTP_PACKETIZATION_MODE, "1");
-        codecInfo = new VideoCodecInfo("H264", parameters, Collections.emptyList());
+        String sourceProfile = normalizedProfile(bridge.getCodecs());
+        VideoCodecInfo preferred = codec(sourceProfile);
+        VideoCodecInfo baseline = codec(VideoCodecInfo.H264_CONSTRAINED_BASELINE_3_1);
+        codecInfos = sourceProfile.equals(VideoCodecInfo.H264_CONSTRAINED_BASELINE_3_1)
+                ? new VideoCodecInfo[]{baseline}
+                : new VideoCodecInfo[]{preferred, baseline};
     }
 
     @Override
     public VideoEncoder createEncoder(VideoCodecInfo info) {
-        return "H264".equalsIgnoreCase(info.name) ? new H264PassthroughEncoder(bridge) : null;
+        if (!"H264".equalsIgnoreCase(info.name)) {
+            return null;
+        }
+        bridge.log("Direct encoder selected WebRTC codec=" + info);
+        return new H264PassthroughEncoder(bridge);
     }
 
     @Override
     public VideoCodecInfo[] getSupportedCodecs() {
-        return new VideoCodecInfo[]{codecInfo};
+        return codecInfos.clone();
+    }
+
+    private static VideoCodecInfo codec(String profile) {
+        Map<String, String> parameters = new HashMap<>();
+        parameters.put(VideoCodecInfo.H264_FMTP_PROFILE_LEVEL_ID, profile);
+        parameters.put(VideoCodecInfo.H264_FMTP_LEVEL_ASYMMETRY_ALLOWED, "1");
+        parameters.put(VideoCodecInfo.H264_FMTP_PACKETIZATION_MODE, "1");
+        return new VideoCodecInfo("H264", parameters, Collections.emptyList());
     }
 
     private static String normalizedProfile(String codecs) {

@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 final class H264PassthroughPublisher implements WebRtcSessionPublisher {
     private static final long SIGNAL_TIMEOUT_SECONDS = 10;
+    private static final long ICE_GATHER_TIMEOUT_MS = 750;
     private static final int MAX_PEERS = 4;
 
     private final Context context;
@@ -77,7 +78,8 @@ final class H264PassthroughPublisher implements WebRtcSessionPublisher {
                 observer -> peerConnection.createAnswer(observer, new MediaConstraints())
         );
         awaitDescription(observer -> peerConnection.setLocalDescription(observer, answer));
-        iceComplete.await(SIGNAL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        boolean gathered = iceComplete.await(ICE_GATHER_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        AppLog.info(context, "Direct H264 ICE gathering complete=" + gathered);
         SessionDescription local = peerConnection.getLocalDescription();
         if (local == null) {
             throw new IllegalStateException("Direct H264 WebRTC answer was not created");
