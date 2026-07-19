@@ -2,7 +2,10 @@ package com.camexch.source;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
@@ -26,13 +29,47 @@ public class SourceActivity extends Activity {
     private TextView statusLabel;
     private Uri selectedUri;
     private String mode = "RTSP";
+    private boolean receiverRegistered;
+    private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String status = intent.getStringExtra(SourceForegroundService.EXTRA_STATUS);
+            String error = intent.getStringExtra(SourceForegroundService.EXTRA_ERROR);
+            if (status != null) {
+                statusLabel.setText(status);
+            }
+            if (error != null && !error.isEmpty()) {
+                showError(error);
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestNotificationPermission();
         buildUi();
-        ensureSourceService();
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        IntentFilter filter = new IntentFilter(SourceForegroundService.ACTION_STATUS);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(statusReceiver, filter);
+        }
+        receiverRegistered = true;
+    }
+
+    @Override
+    protected void onStop() {
+        if (receiverRegistered) {
+            unregisterReceiver(statusReceiver);
+            receiverRegistered = false;
+        }
+        super.onStop();
     }
 
     @Override
@@ -166,7 +203,7 @@ public class SourceActivity extends Activity {
         intent.putExtra(SourceForegroundService.EXTRA_MODE, mode);
         intent.putExtra(SourceForegroundService.EXTRA_URI, uriText);
         startServiceCompat(intent);
-        statusLabel.setText(mode + " active\nYou can switch to CamExch Browser");
+        statusLabel.setText(mode + " starting");
     }
 
     private void stopSource() {
@@ -174,10 +211,6 @@ public class SourceActivity extends Activity {
         intent.setAction(SourceForegroundService.ACTION_STOP_SOURCE);
         startServiceCompat(intent);
         statusLabel.setText("Idle");
-    }
-
-    private void ensureSourceService() {
-        startServiceCompat(new Intent(this, SourceForegroundService.class));
     }
 
     private void startServiceCompat(Intent intent) {
