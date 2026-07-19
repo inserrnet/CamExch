@@ -4,14 +4,10 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.view.Gravity;
-import android.view.TextureView;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
@@ -20,28 +16,17 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.TextView;
+import android.widget.Toast;
 
-import androidx.media3.common.MediaItem;
-import androidx.media3.exoplayer.ExoPlayer;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 
 public class SourceActivity extends Activity {
     private static final int PICK_FILE = 42;
-    private final Handler handler = new Handler(Looper.getMainLooper());
-    private final Runnable captureLoop = new Runnable() {
-        @Override
-        public void run() {
-            captureCurrentFrame();
-            handler.postDelayed(this, 100);
-        }
-    };
 
-    private Spinner modeSpinner;
     private EditText rtspInput;
     private TextView selectedFileLabel;
-    private TextureView textureView;
-    private ExoPlayer player;
+    private TextView statusLabel;
     private Uri selectedUri;
     private String mode = "RTSP";
 
@@ -50,17 +35,7 @@ public class SourceActivity extends Activity {
         super.onCreate(savedInstanceState);
         requestNotificationPermission();
         buildUi();
-        startSourceService();
-    }
-
-    @Override
-    protected void onDestroy() {
-        handler.removeCallbacks(captureLoop);
-        if (player != null) {
-            player.release();
-            player = null;
-        }
-        super.onDestroy();
+        ensureSourceService();
     }
 
     @Override
@@ -71,16 +46,11 @@ public class SourceActivity extends Activity {
             try {
                 getContentResolver().takePersistableUriPermission(
                         selectedUri,
-                        data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                        data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION
                 );
             } catch (SecurityException ignored) {
             }
             selectedFileLabel.setText(selectedUri.toString());
-            if ("Photo".equals(mode)) {
-                loadPhoto(selectedUri);
-            } else {
-                play(selectedUri);
-            }
         }
     }
 
@@ -94,8 +64,12 @@ public class SourceActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
 
-        modeSpinner = new Spinner(this);
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new String[]{"RTSP", "Video", "Photo"});
+        Spinner modeSpinner = new Spinner(this);
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(
+                this,
+                android.R.layout.simple_spinner_item,
+                new String[]{"RTSP", "Video", "Photo"}
+        );
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         modeSpinner.setAdapter(adapter);
         row.addView(modeSpinner, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -109,7 +83,10 @@ public class SourceActivity extends Activity {
         rtspInput.setSingleLine(true);
         rtspInput.setHint("rtsp://192.168.4.132/live");
         rtspInput.setText("rtsp://192.168.4.132/live");
-        root.addView(rtspInput, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        root.addView(rtspInput, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
 
         selectedFileLabel = new TextView(this);
         selectedFileLabel.setText("No file selected");
@@ -126,15 +103,22 @@ public class SourceActivity extends Activity {
         buttons.addView(stopButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         root.addView(buttons);
 
-        TextView endpoint = new TextView(this);
-        endpoint.setText("Browser source: http://127.0.0.1:8765/stream.mjpeg");
-        endpoint.setTextColor(0xff263238);
-        endpoint.setPadding(0, 8, 0, 8);
-        root.addView(endpoint);
+        statusLabel = new TextView(this);
+        statusLabel.setText("Idle");
+        statusLabel.setTextSize(18);
+        statusLabel.setTextColor(0xff263238);
+        statusLabel.setGravity(Gravity.CENTER);
+        root.addView(statusLabel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
 
-        textureView = new TextureView(this);
-        textureView.setBackgroundColor(0xff202124);
-        root.addView(textureView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        TextView endpoint = new TextView(this);
+        endpoint.setText("Browser transport: local WebRTC");
+        endpoint.setTextColor(0xff263238);
+        endpoint.setGravity(Gravity.CENTER_HORIZONTAL);
+        root.addView(endpoint);
 
         setContentView(root);
 
@@ -143,6 +127,7 @@ public class SourceActivity extends Activity {
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 mode = (String) parent.getItemAtPosition(position);
                 rtspInput.setVisibility("RTSP".equals(mode) ? View.VISIBLE : View.GONE);
+                pickButton.setEnabled(!"RTSP".equals(mode));
             }
 
             @Override
@@ -152,7 +137,7 @@ public class SourceActivity extends Activity {
 
         pickButton.setOnClickListener(view -> pickFile());
         startButton.setOnClickListener(view -> startSelectedSource());
-        stopButton.setOnClickListener(view -> stopPlayback());
+        stopButton.setOnClickListener(view -> stopSource());
     }
 
     private void pickFile() {
@@ -164,59 +149,63 @@ public class SourceActivity extends Activity {
     }
 
     private void startSelectedSource() {
-        startSourceService();
+        String uriText;
         if ("RTSP".equals(mode)) {
-            play(Uri.parse(rtspInput.getText().toString().trim()));
-        } else if ("Photo".equals(mode) && selectedUri != null) {
-            loadPhoto(selectedUri);
-        } else if (selectedUri != null) {
-            play(selectedUri);
+            uriText = rtspInput.getText().toString().trim();
+            if (uriText.isEmpty()) {
+                showError("Enter an RTSP address");
+                return;
+            }
+        } else {
+            if (selectedUri == null) {
+                showError("Choose a file first");
+                return;
+            }
+            uriText = selectedUri.toString();
+            if ("Photo".equals(mode) && !loadPhoto(selectedUri)) {
+                showError("Unable to read the selected image");
+                return;
+            }
         }
+
+        Intent intent = new Intent(this, SourceForegroundService.class);
+        intent.setAction(SourceForegroundService.ACTION_START_SOURCE);
+        intent.putExtra(SourceForegroundService.EXTRA_MODE, mode);
+        intent.putExtra(SourceForegroundService.EXTRA_URI, uriText);
+        startServiceCompat(intent);
+        statusLabel.setText(mode + " active\nYou can switch to CamExch Browser");
     }
 
-    private void play(Uri uri) {
-        if (player == null) {
-            player = new ExoPlayer.Builder(this).build();
-            player.setVideoTextureView(textureView);
-        }
-        player.setMediaItem(MediaItem.fromUri(uri));
-        player.setRepeatMode(ExoPlayer.REPEAT_MODE_ONE);
-        player.prepare();
-        player.play();
-        handler.removeCallbacks(captureLoop);
-        handler.post(captureLoop);
-    }
-
-    private void loadPhoto(Uri uri) {
+    private boolean loadPhoto(Uri uri) {
         try (InputStream in = getContentResolver().openInputStream(uri);
              ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            if (in == null) {
+                return false;
+            }
             byte[] buffer = new byte[8192];
             int read;
-            while (in != null && (read = in.read(buffer)) != -1) {
+            while ((read = in.read(buffer)) != -1) {
                 out.write(buffer, 0, read);
             }
             FrameStore.setJpeg(out.toByteArray());
+            return true;
         } catch (Exception ignored) {
+            return false;
         }
     }
 
-    private void stopPlayback() {
-        handler.removeCallbacks(captureLoop);
-        if (player != null) {
-            player.stop();
-        }
-    }
-
-    private void captureCurrentFrame() {
-        Bitmap bitmap = textureView.getBitmap(640, 480);
-        if (bitmap != null) {
-            FrameStore.setBitmap(bitmap);
-            bitmap.recycle();
-        }
-    }
-
-    private void startSourceService() {
+    private void stopSource() {
         Intent intent = new Intent(this, SourceForegroundService.class);
+        intent.setAction(SourceForegroundService.ACTION_STOP_SOURCE);
+        startServiceCompat(intent);
+        statusLabel.setText("Idle");
+    }
+
+    private void ensureSourceService() {
+        startServiceCompat(new Intent(this, SourceForegroundService.class));
+    }
+
+    private void startServiceCompat(Intent intent) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent);
         } else {
@@ -224,8 +213,13 @@ public class SourceActivity extends Activity {
         }
     }
 
+    private void showError(String message) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
     private void requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 12);
         }
     }
