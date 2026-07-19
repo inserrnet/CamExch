@@ -9,6 +9,9 @@ final class H264PassthroughEncoder implements VideoEncoder {
     private final H264FrameBridge bridge;
     private Callback callback;
     private boolean keyFrameSeen;
+    private boolean missingSampleLogged;
+    private boolean waitingForKeyLogged;
+    private boolean firstOutputLogged;
     private long lastSourceTimestampNs = Long.MIN_VALUE;
 
     H264PassthroughEncoder(H264FrameBridge bridge) {
@@ -19,7 +22,12 @@ final class H264PassthroughEncoder implements VideoEncoder {
     public VideoCodecStatus initEncode(Settings settings, Callback encodeCallback) {
         callback = encodeCallback;
         keyFrameSeen = false;
+        missingSampleLogged = false;
+        waitingForKeyLogged = false;
+        firstOutputLogged = false;
         lastSourceTimestampNs = Long.MIN_VALUE;
+        bridge.log("Direct encoder initialized input=" + settings.width + "x" + settings.height
+                + " fps=" + settings.maxFramerate);
         return VideoCodecStatus.OK;
     }
 
@@ -38,12 +46,20 @@ final class H264PassthroughEncoder implements VideoEncoder {
         long timestampNs = frame.getTimestampNs();
         H264FrameBridge.Sample sample = bridge.findSample(timestampNs);
         if (sample == null) {
+            if (!missingSampleLogged) {
+                missingSampleLogged = true;
+                bridge.log("Direct encoder is waiting for a matching H264 access unit");
+            }
             return VideoCodecStatus.NO_OUTPUT;
         }
         if (sample.sourceTimestampNs == lastSourceTimestampNs) {
             return VideoCodecStatus.NO_OUTPUT;
         }
         if (!keyFrameSeen && !sample.keyFrame) {
+            if (!waitingForKeyLogged) {
+                waitingForKeyLogged = true;
+                bridge.log("Direct encoder is waiting for the next H264 key frame");
+            }
             return VideoCodecStatus.NO_OUTPUT;
         }
         keyFrameSeen |= sample.keyFrame;
@@ -61,6 +77,11 @@ final class H264PassthroughEncoder implements VideoEncoder {
                 .createEncodedImage();
         try {
             activeCallback.onEncodedFrame(image, new CodecSpecificInfo());
+            if (!firstOutputLogged) {
+                firstOutputLogged = true;
+                bridge.log("Direct encoder sent first H264 frame bytes=" + sample.data.remaining()
+                        + " keyFrame=" + sample.keyFrame);
+            }
         } finally {
             image.release();
         }

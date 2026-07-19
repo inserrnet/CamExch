@@ -156,6 +156,10 @@ final class H264FrameBridge {
         }
     }
 
+    void log(String message) {
+        AppLog.info(context, message);
+    }
+
     void release() {
         synchronized (lock) {
             samples.clear();
