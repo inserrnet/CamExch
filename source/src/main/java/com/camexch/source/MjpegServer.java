@@ -6,42 +6,79 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 
 final class MjpegServer extends NanoHTTPD {
-    static final int PORT = 8765;
+    interface ModeProvider {
+        String getMode();
+    }
 
-    MjpegServer() {
+    static final int PORT = 8765;
+    private final WebRtcPublisher publisher;
+    private final ModeProvider modeProvider;
+
+    MjpegServer(WebRtcPublisher publisher, ModeProvider modeProvider) {
         super("127.0.0.1", PORT);
+        this.publisher = publisher;
+        this.modeProvider = modeProvider;
     }
 
     @Override
     public Response serve(IHTTPSession session) {
+        if (Method.OPTIONS.equals(session.getMethod())) {
+            return cors(newFixedLengthResponse(Response.Status.NO_CONTENT, "text/plain", ""));
+        }
         String path = session.getUri();
         if ("/health".equals(path)) {
-            return newFixedLengthResponse(Response.Status.OK, "text/plain", "ok");
+            return cors(newFixedLengthResponse(Response.Status.OK, "text/plain", "ok"));
+        }
+        if ("/mode".equals(path)) {
+            return cors(newFixedLengthResponse(Response.Status.OK, "text/plain", modeProvider.getMode()));
+        }
+        if ("/webrtc/offer".equals(path) && Method.POST.equals(session.getMethod())) {
+            try {
+                Map<String, String> files = new HashMap<>();
+                session.parseBody(files);
+                String offer = files.get("postData");
+                if (offer == null || offer.trim().isEmpty()) {
+                    return cors(newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "missing SDP offer"));
+                }
+                String answer = publisher.answerOffer(offer);
+                return cors(newFixedLengthResponse(Response.Status.OK, "application/sdp", answer));
+            } catch (Exception exception) {
+                return cors(newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", exception.getMessage()));
+            }
         }
         if ("/frame.jpg".equals(path)) {
             byte[] jpeg = FrameStore.getJpeg();
-            Response response = newFixedLengthResponse(Response.Status.OK, "image/jpeg", new ByteArrayInputStream(jpeg), jpeg.length);
-            response.addHeader("Cache-Control", "no-store");
-            response.addHeader("Access-Control-Allow-Origin", "*");
-            return response;
+            return cors(newFixedLengthResponse(
+                    Response.Status.OK,
+                    "image/jpeg",
+                    new ByteArrayInputStream(jpeg),
+                    jpeg.length
+            ));
         }
         if ("/stream.mjpeg".equals(path)) {
-            Response response = newChunkedResponse(
+            return cors(newChunkedResponse(
                     Response.Status.OK,
                     "multipart/x-mixed-replace; boundary=frame",
                     new MjpegInputStream()
-            );
-            response.addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-            response.addHeader("Access-Control-Allow-Origin", "*");
-            return response;
+            ));
         }
-        return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found");
+        return cors(newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found"));
+    }
+
+    private Response cors(Response response) {
+        response.addHeader("Access-Control-Allow-Origin", "*");
+        response.addHeader("Access-Control-Allow-Headers", "Content-Type");
+        response.addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        response.addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+        return response;
     }
 
     private static final class MjpegInputStream extends InputStream {
-        private static final long FRAME_INTERVAL_MS = 50;
+        private static final long FRAME_INTERVAL_MS = 100;
         private byte[] part = new byte[0];
         private int offset;
         private long nextFrameAt;
