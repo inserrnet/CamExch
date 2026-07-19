@@ -165,6 +165,18 @@ final class H264FrameBridge {
         }
     }
 
+    int getWidth() {
+        synchronized (lock) {
+            return width;
+        }
+    }
+
+    int getHeight() {
+        synchronized (lock) {
+            return height;
+        }
+    }
+
     void log(String message) {
         AppLog.info(context, message);
     }

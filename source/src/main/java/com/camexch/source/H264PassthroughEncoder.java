@@ -12,6 +12,7 @@ final class H264PassthroughEncoder implements VideoEncoder {
     private boolean missingSampleLogged;
     private boolean waitingForKeyLogged;
     private boolean firstOutputLogged;
+    private boolean initialized;
     private long lastSourceTimestampNs = Long.MIN_VALUE;
 
     H264PassthroughEncoder(H264FrameBridge bridge) {
@@ -21,13 +22,19 @@ final class H264PassthroughEncoder implements VideoEncoder {
     @Override
     public VideoCodecStatus initEncode(Settings settings, Callback encodeCallback) {
         callback = encodeCallback;
-        keyFrameSeen = false;
-        missingSampleLogged = false;
-        waitingForKeyLogged = false;
-        firstOutputLogged = false;
-        lastSourceTimestampNs = Long.MIN_VALUE;
-        bridge.log("Direct encoder initialized input=" + settings.width + "x" + settings.height
-                + " fps=" + settings.maxFramerate);
+        if (!initialized) {
+            initialized = true;
+            keyFrameSeen = false;
+            missingSampleLogged = false;
+            waitingForKeyLogged = false;
+            firstOutputLogged = false;
+            lastSourceTimestampNs = Long.MIN_VALUE;
+        }
+        int sourceWidth = bridge.getWidth();
+        int sourceHeight = bridge.getHeight();
+        bridge.log("Direct encoder initialized requested=" + settings.width + "x" + settings.height
+                + " source=" + sourceWidth + "x" + sourceHeight
+                + " preserveSourceResolution=true fps=" + settings.maxFramerate);
         return VideoCodecStatus.OK;
     }
 

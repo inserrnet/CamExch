@@ -11,6 +11,8 @@ import org.webrtc.MediaStream;
 import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.RtpReceiver;
+import org.webrtc.RtpParameters;
+import org.webrtc.RtpSender;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
 import org.webrtc.VideoSource;
@@ -68,7 +70,13 @@ final class H264PassthroughPublisher implements WebRtcSessionPublisher {
             throw new IllegalStateException("Unable to create direct H264 WebRTC peer");
         }
         peerConnections.add(peerConnection);
-        peerConnection.addTrack(videoTrack, Collections.singletonList("camexch"));
+        RtpSender sender = peerConnection.addTrack(videoTrack, Collections.singletonList("camexch"));
+        if (sender == null) {
+            closePeer(peerConnection);
+            peerConnections.remove(peerConnection);
+            throw new IllegalStateException("Unable to add direct H264 video track");
+        }
+        preserveSourceResolution(sender);
 
         awaitDescription(observer -> peerConnection.setRemoteDescription(
                 observer,
@@ -86,6 +94,17 @@ final class H264PassthroughPublisher implements WebRtcSessionPublisher {
         }
         AppLog.info(context, "Direct H264 WebRTC answer ready, length=" + local.description.length());
         return local.description;
+    }
+
+    private void preserveSourceResolution(RtpSender sender) {
+        RtpParameters parameters = sender.getParameters();
+        parameters.degradationPreference = RtpParameters.DegradationPreference.DISABLED;
+        for (RtpParameters.Encoding encoding : parameters.encodings) {
+            encoding.scaleResolutionDownBy = 1.0;
+        }
+        boolean applied = sender.setParameters(parameters);
+        AppLog.info(context, "Direct H264 source resolution lock applied=" + applied
+                + " size=" + bridge.getWidth() + "x" + bridge.getHeight());
     }
 
     @Override
