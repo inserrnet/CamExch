@@ -2,6 +2,7 @@ package com.camexch.source;
 
 import android.content.Context;
 
+import androidx.annotation.OptIn;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.UnstableApi;
@@ -14,7 +15,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.util.List;
 
-@UnstableApi
+@OptIn(markerClass = UnstableApi.class)
 final class H264FrameBridge {
     private static final int MAX_SAMPLES = 120;
 

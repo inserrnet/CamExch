@@ -13,6 +13,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 
+import androidx.annotation.OptIn;
 import androidx.media3.common.Format;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
@@ -29,7 +30,7 @@ import androidx.media3.exoplayer.rtsp.RtspMediaSource;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 
-@UnstableApi
+@OptIn(markerClass = UnstableApi.class)
 public class SourceForegroundService extends Service {
     private static volatile SourceForegroundService instance;
     static final String ACTION_START_SOURCE = "com.camexch.source.START_SOURCE";

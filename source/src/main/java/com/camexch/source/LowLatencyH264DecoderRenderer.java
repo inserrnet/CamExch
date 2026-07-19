@@ -12,6 +12,7 @@ import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
+import androidx.annotation.OptIn;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.decoder.DecoderInputBuffer;
 import androidx.media3.exoplayer.BaseRenderer;
@@ -21,7 +22,7 @@ import androidx.media3.exoplayer.RendererCapabilities;
 
 import java.nio.ByteBuffer;
 
-@UnstableApi
+@OptIn(markerClass = UnstableApi.class)
 final class LowLatencyH264DecoderRenderer extends BaseRenderer {
     interface Listener {
         void onVideoSize(int width, int height);
