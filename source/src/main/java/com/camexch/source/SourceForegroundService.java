@@ -12,6 +12,7 @@ import android.os.IBinder;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.VideoSize;
 import androidx.media3.exoplayer.ExoPlayer;
 
 import java.io.ByteArrayOutputStream;
@@ -78,6 +79,12 @@ public class SourceForegroundService extends Service {
     }
 
     String getBridgeMode() {
+        if ("Error".equals(mode)) {
+            throw new IllegalStateException(error.isEmpty() ? "Source is in an error state" : error);
+        }
+        if ("Idle".equals(mode)) {
+            throw new IllegalStateException("Source is idle");
+        }
         return mode;
     }
 
@@ -155,6 +162,17 @@ public class SourceForegroundService extends Service {
                         AppLog.info(SourceForegroundService.this, "Player STATE_READY");
                         reportStatus(mode + " active");
                     }
+                }
+
+                @Override
+                public void onRenderedFirstFrame() {
+                    AppLog.info(SourceForegroundService.this, "Player rendered first video frame");
+                }
+
+                @Override
+                public void onVideoSizeChanged(VideoSize videoSize) {
+                    AppLog.info(SourceForegroundService.this, "Player video size="
+                            + videoSize.width + "x" + videoSize.height);
                 }
 
                 @Override

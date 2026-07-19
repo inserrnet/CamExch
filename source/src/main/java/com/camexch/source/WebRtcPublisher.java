@@ -22,12 +22,14 @@ import org.webrtc.VideoTrack;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 final class WebRtcPublisher {
     private static final long SIGNAL_TIMEOUT_SECONDS = 10;
+    private static final int MAX_PEERS = 4;
 
     private final EglBase eglBase;
     private final Context context;
@@ -36,7 +38,7 @@ final class WebRtcPublisher {
     private final VideoSource videoSource;
     private final VideoTrack videoTrack;
     private final Surface videoSurface;
-    private PeerConnection peerConnection;
+    private final List<PeerConnection> peerConnections = new ArrayList<>();
 
     WebRtcPublisher(Context context) {
         this.context = context.getApplicationContext();
@@ -71,15 +73,21 @@ final class WebRtcPublisher {
     }
 
     synchronized String answerOffer(String offerSdp) throws Exception {
+        if (offerSdp == null || offerSdp.trim().isEmpty()) {
+            throw new IllegalArgumentException("WebRTC offer is empty");
+        }
         AppLog.info(context, "WebRTC offer received, length=" + offerSdp.length());
-        closePeer();
+        while (peerConnections.size() >= MAX_PEERS) {
+            closePeer(peerConnections.remove(0));
+        }
         CountDownLatch iceComplete = new CountDownLatch(1);
         PeerConnection.RTCConfiguration configuration = new PeerConnection.RTCConfiguration(new ArrayList<>());
         configuration.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
-        peerConnection = factory.createPeerConnection(configuration, new PeerObserver(iceComplete));
+        PeerConnection peerConnection = factory.createPeerConnection(configuration, new PeerObserver(iceComplete));
         if (peerConnection == null) {
             throw new IllegalStateException("Unable to create WebRTC peer");
         }
+        peerConnections.add(peerConnection);
         peerConnection.addTrack(videoTrack, Collections.singletonList("camexch"));
 
         awaitDescription(observer -> peerConnection.setRemoteDescription(
@@ -98,7 +106,10 @@ final class WebRtcPublisher {
     }
 
     synchronized void release() {
-        closePeer();
+        for (PeerConnection peerConnection : peerConnections) {
+            closePeer(peerConnection);
+        }
+        peerConnections.clear();
         videoSurface.release();
         textureHelper.stopListening();
         videoSource.getCapturerObserver().onCapturerStopped();
@@ -109,11 +120,10 @@ final class WebRtcPublisher {
         eglBase.release();
     }
 
-    private void closePeer() {
+    private void closePeer(PeerConnection peerConnection) {
         if (peerConnection != null) {
             peerConnection.close();
             peerConnection.dispose();
-            peerConnection = null;
         }
     }
 
@@ -158,7 +168,7 @@ final class WebRtcPublisher {
         void run(SdpObserver observer);
     }
 
-    private static final class PeerObserver implements PeerConnection.Observer {
+    private final class PeerObserver implements PeerConnection.Observer {
         private final CountDownLatch iceComplete;
 
         PeerObserver(CountDownLatch iceComplete) {
@@ -166,7 +176,9 @@ final class WebRtcPublisher {
         }
 
         @Override public void onSignalingChange(PeerConnection.SignalingState state) {}
-        @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {}
+        @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
+            AppLog.info(context, "WebRTC ICE state=" + state);
+        }
         @Override public void onIceConnectionReceivingChange(boolean receiving) {}
         @Override public void onIceGatheringChange(PeerConnection.IceGatheringState state) {
             if (state == PeerConnection.IceGatheringState.COMPLETE) {
