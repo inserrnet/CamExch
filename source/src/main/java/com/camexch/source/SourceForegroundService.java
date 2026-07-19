@@ -20,6 +20,7 @@ import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.Tracks;
 import androidx.media3.common.VideoSize;
+import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.Renderer;
@@ -28,6 +29,7 @@ import androidx.media3.exoplayer.rtsp.RtspMediaSource;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 
+@UnstableApi
 public class SourceForegroundService extends Service {
     private static volatile SourceForegroundService instance;
     static final String ACTION_START_SOURCE = "com.camexch.source.START_SOURCE";

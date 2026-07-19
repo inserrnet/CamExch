@@ -4,6 +4,7 @@ import android.content.Context;
 
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
+import androidx.media3.common.util.UnstableApi;
 
 import org.webrtc.CapturerObserver;
 import org.webrtc.JavaI420Buffer;
@@ -13,6 +14,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.util.List;
 
+@UnstableApi
 final class H264FrameBridge {
     private static final int MAX_SAMPLES = 120;
 

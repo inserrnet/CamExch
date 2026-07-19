@@ -1,5 +1,6 @@
 package com.camexch.source;
 
+import android.annotation.SuppressLint;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -64,6 +65,7 @@ public class SourceActivity extends Activity {
     }
 
     @Override
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     protected void onStart() {
         super.onStart();
         if (diagnosticsOnly) {
@@ -93,11 +95,11 @@ public class SourceActivity extends Activity {
         if (requestCode == PICK_FILE && resultCode == RESULT_OK && data != null && data.getData() != null) {
             selectedUri = data.getData();
             try {
-                int permissionFlags = data.getFlags()
-                        & (Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                if (permissionFlags != 0) {
-                    getContentResolver().takePersistableUriPermission(selectedUri, permissionFlags);
+                if ((data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
+                    getContentResolver().takePersistableUriPermission(
+                            selectedUri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    );
                 }
             } catch (SecurityException ignored) {
             }
