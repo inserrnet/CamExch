@@ -2,7 +2,7 @@
 
 CamExch is an Android MVP made of two apps:
 
-- **CamExch Source** chooses a virtual camera source: RTSP URL, video file, or photo file.
+- **CamExch Source** chooses the `Front Camera 4` source: RTSP URL, video file, or photo file.
 - **CamExch Browser** is a small WebView browser with tabs. It leaves the rear camera untouched and replaces front-camera `getUserMedia()` requests with the Source app frame stream.
 
 The project is designed to build on GitHub Actions, so no Android Studio, Gradle, or Git installation is required on the local computer.
@@ -26,9 +26,9 @@ The project is designed to build on GitHub Actions, so no Android Studio, Gradle
    https://webcamtests.com/
    ```
 
-8. Choose the virtual/front camera. The browser injects a `CamExch Virtual Front Camera` device and receives RTSP/video through a local WebRTC connection. Photos use the local MJPEG fallback.
+8. Choose `Front Camera 4`. The browser receives RTSP/video through a local WebRTC connection. Photos use the local MJPEG fallback.
 
-The `!` button near the address bar shows `virtual camera source active`.
+The `!` button near the address bar shows `Front Camera 4 source active`. Long-press it to open the Browser log and copy it to the clipboard. Source has a `Logs` button with the same copy action. After a crash, either app opens its saved crash log before retrying normal startup.
 
 Source starts its native WebRTC pipeline only for RTSP and video after `Start` is tapped. Photo mode does not load WebRTC. Native initialization and playback failures are reported in the Source screen instead of closing the app.
 
@@ -54,7 +54,7 @@ The browser installs its camera hook at document start, before site scripts can 
 - Reload button.
 - Multiple tabs.
 - Long-press a tab to close it.
-- Automatic front-camera override for `video: true`, `facingMode: "user"`, an unconstrained default camera request, or `deviceId: "camexch-virtual-front"`.
+- Automatic front-camera override for `video: true`, `facingMode: "user"`, an unconstrained default camera request, or `deviceId: "camexch-front-camera-4"`.
 - A physical camera selected by `deviceId` is inspected through `MediaStreamTrack.getSettings()` and replaced automatically when it reports `facingMode: "user"`.
 - Rear camera requests are passed through to the real Android camera.
 
@@ -77,4 +77,4 @@ browser/build/outputs/apk/debug/browser-debug.apk
 
 ## Notes
 
-This is a testing/browser-controlled virtual camera. Android does not expose a normal public API that lets an ordinary app register a system-wide camera device for Chrome, Brave, Firefox, or arbitrary native apps without root/system privileges.
+This is a browser-controlled test camera source. Android does not expose a normal public API that lets an ordinary app register a system-wide camera device for Chrome, Brave, Firefox, or arbitrary native apps without root/system privileges.

@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
+        android:name=".CamExchApplication"
         android:allowBackup="true"
         android:theme="@style/AppTheme"
         android:label="CamExch Browser"

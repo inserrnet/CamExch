@@ -38,11 +38,13 @@ public class SourceForegroundService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        AppLog.info(this, "SourceForegroundService.onCreate");
         createChannel();
         startForeground(NOTIFICATION_ID, buildNotification());
         try {
             server = new MjpegServer(() -> publisher, () -> mode);
             server.start();
+            AppLog.info(this, "Local bridge started on 127.0.0.1:" + MjpegServer.PORT);
         } catch (Throwable throwable) {
             reportError("Local server", throwable);
         }
@@ -78,6 +80,7 @@ public class SourceForegroundService extends Service {
             return;
         }
         mode = requestedMode;
+        AppLog.info(this, "startSource mode=" + requestedMode + " uri=" + uriText);
         error = "";
         getSharedPreferences("source", MODE_PRIVATE).edit()
                 .putString(EXTRA_MODE, mode)
@@ -119,7 +122,9 @@ public class SourceForegroundService extends Service {
         }
         releaseVideoPipeline();
         try {
+            AppLog.info(this, "Initializing WebRTC publisher");
             publisher = new WebRtcPublisher(this);
+            AppLog.info(this, "WebRTC publisher initialized");
             player = new ExoPlayer.Builder(this).build();
             player.setVideoSurface(publisher.getVideoSurface());
             player.setRepeatMode(Player.REPEAT_MODE_ONE);
@@ -127,6 +132,7 @@ public class SourceForegroundService extends Service {
                 @Override
                 public void onPlaybackStateChanged(int state) {
                     if (state == Player.STATE_READY) {
+                        AppLog.info(SourceForegroundService.this, "Player STATE_READY");
                         reportStatus(mode + " active");
                     }
                 }
@@ -198,6 +204,7 @@ public class SourceForegroundService extends Service {
             detail = throwable.getClass().getSimpleName();
         }
         error = component + ": " + detail;
+        AppLog.error(this, error, throwable);
         mode = "Error";
         reportStatus(error);
     }
@@ -217,7 +224,7 @@ public class SourceForegroundService extends Service {
         }
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
-                "Virtual camera source",
+                "Front Camera 4 source",
                 NotificationManager.IMPORTANCE_LOW
         );
         getSystemService(NotificationManager.class).createNotificationChannel(channel);
@@ -233,7 +240,7 @@ public class SourceForegroundService extends Service {
                 : new Notification.Builder(this);
         String text = error.isEmpty() ? mode + " via local WebRTC" : error;
         return builder
-                .setContentTitle(error.isEmpty() ? "Virtual camera source" : "Virtual camera source error")
+                .setContentTitle(error.isEmpty() ? "Front Camera 4 source" : "Front Camera 4 source error")
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.presence_video_online)
                 .setOngoing(true)

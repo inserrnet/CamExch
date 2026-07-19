@@ -2,6 +2,9 @@ package com.camexch.browser;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -9,6 +12,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.PermissionRequest;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -18,6 +22,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -37,10 +42,17 @@ public class BrowserActivity extends Activity {
     private Button backButton;
     private Button forwardButton;
     private int activeTab = -1;
+    private boolean diagnosticsOnly;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        AppLog.info(this, "BrowserActivity.onCreate");
+        if (AppLog.hasCrash(this)) {
+            diagnosticsOnly = true;
+            showCrashScreen();
+            return;
+        }
         requestCameraPermissions();
         WebView.setWebContentsDebuggingEnabled(true);
         buildUi();
@@ -118,7 +130,11 @@ public class BrowserActivity extends Activity {
                 webView.reload();
             }
         });
-        indicatorButton.setOnClickListener(view -> Toast.makeText(this, "virtual camera source active", Toast.LENGTH_SHORT).show());
+        indicatorButton.setOnClickListener(view -> Toast.makeText(this, "Front Camera 4 source active", Toast.LENGTH_SHORT).show());
+        indicatorButton.setOnLongClickListener(view -> {
+            showLogDialog();
+            return true;
+        });
         addressBar.setOnEditorActionListener((TextView v, int actionId, KeyEvent event) -> {
             if (actionId == EditorInfo.IME_ACTION_GO || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
                 loadAddress();
@@ -157,6 +173,7 @@ public class BrowserActivity extends Activity {
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
         settings.setUserAgentString(settings.getUserAgentString() + " CamExchBrowser/0.1");
+        webView.addJavascriptInterface(new JsLogBridge(), "CamExchLog");
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(
                     webView,
@@ -167,6 +184,8 @@ public class BrowserActivity extends Activity {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onPermissionRequest(PermissionRequest request) {
+                AppLog.info(BrowserActivity.this, "Permission request origin=" + request.getOrigin()
+                        + " resources=" + java.util.Arrays.toString(request.getResources()));
                 runOnUiThread(() -> request.grant(request.getResources()));
             }
 
@@ -182,6 +201,7 @@ public class BrowserActivity extends Activity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                AppLog.info(BrowserActivity.this, "Page started: " + url);
                 addressBar.setText(url);
                 updateNavButtons();
                 injectVirtualCamera(view);
@@ -189,6 +209,7 @@ public class BrowserActivity extends Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                AppLog.info(BrowserActivity.this, "Page finished: " + url);
                 addressBar.setText(url);
                 updateNavButtons();
                 injectVirtualCamera(view);
@@ -284,6 +305,8 @@ public class BrowserActivity extends Activity {
     }
 
     private void injectVirtualCamera(WebView webView) {
+        AppLog.info(this, "Installing Front Camera 4 hook; documentStart="
+                + WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT));
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             webView.evaluateJavascript(VirtualCameraScript.SCRIPT, null);
         }
@@ -294,6 +317,63 @@ public class BrowserActivity extends Activity {
                 checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
                         || checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)) {
             requestPermissions(new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO}, 22);
+        }
+    }
+
+    private void showCrashScreen() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(18, 18, 18, 18);
+
+        TextView title = new TextView(this);
+        title.setText("CamExch Browser crash log");
+        title.setTextSize(20);
+        root.addView(title);
+
+        TextView log = new TextView(this);
+        log.setText(AppLog.read(this));
+        log.setTextSize(12);
+        log.setTextIsSelectable(true);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(log);
+        root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+
+        LinearLayout actions = new LinearLayout(this);
+        Button copy = new Button(this);
+        copy.setText("Copy log");
+        Button retry = new Button(this);
+        retry.setText("Clear and retry");
+        actions.addView(copy, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        actions.addView(retry, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        root.addView(actions);
+        setContentView(root);
+
+        copy.setOnClickListener(view -> copyLog());
+        retry.setOnClickListener(view -> {
+            AppLog.clearCrash(this);
+            recreate();
+        });
+    }
+
+    private void showLogDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("CamExch Browser log")
+                .setMessage(AppLog.read(this))
+                .setPositiveButton("Copy log", (dialog, which) -> copyLog())
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void copyLog() {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        clipboard.setPrimaryClip(ClipData.newPlainText("CamExch Browser log", AppLog.read(this)));
+        Toast.makeText(this, "Log copied", Toast.LENGTH_SHORT).show();
+    }
+
+    private final class JsLogBridge {
+        @JavascriptInterface
+        public void log(String message) {
+            AppLog.info(BrowserActivity.this, "JS " + message);
         }
     }
 

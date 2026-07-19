@@ -30,6 +30,7 @@ final class WebRtcPublisher {
     private static final long SIGNAL_TIMEOUT_SECONDS = 10;
 
     private final EglBase eglBase;
+    private final Context context;
     private final PeerConnectionFactory factory;
     private final SurfaceTextureHelper textureHelper;
     private final VideoSource videoSource;
@@ -38,11 +39,14 @@ final class WebRtcPublisher {
     private PeerConnection peerConnection;
 
     WebRtcPublisher(Context context) {
+        this.context = context.getApplicationContext();
+        AppLog.info(this.context, "PeerConnectionFactory.initialize");
         PeerConnectionFactory.initialize(
                 PeerConnectionFactory.InitializationOptions.builder(context.getApplicationContext())
                         .createInitializationOptions()
         );
         eglBase = EglBase.create();
+        AppLog.info(this.context, "EGL base created");
         factory = PeerConnectionFactory.builder()
                 .setVideoEncoderFactory(new DefaultVideoEncoderFactory(eglBase.getEglBaseContext(), true, true))
                 .setVideoDecoderFactory(new DefaultVideoDecoderFactory(eglBase.getEglBaseContext()))
@@ -62,6 +66,7 @@ final class WebRtcPublisher {
         videoTrack = factory.createVideoTrack("camexch-video", videoSource);
         videoTrack.setEnabled(true);
         videoSurface = new Surface(textureHelper.getSurfaceTexture());
+        AppLog.info(this.context, "WebRTC video surface ready");
     }
 
     Surface getVideoSurface() {
@@ -69,6 +74,7 @@ final class WebRtcPublisher {
     }
 
     synchronized String answerOffer(String offerSdp) throws Exception {
+        AppLog.info(context, "WebRTC offer received, length=" + offerSdp.length());
         closePeer();
         CountDownLatch iceComplete = new CountDownLatch(1);
         PeerConnection.RTCConfiguration configuration = new PeerConnection.RTCConfiguration(new ArrayList<>());
@@ -90,6 +96,7 @@ final class WebRtcPublisher {
         if (local == null) {
             throw new IllegalStateException("WebRTC answer was not created");
         }
+        AppLog.info(context, "WebRTC answer ready, length=" + local.description.length());
         return local.description;
     }
 
