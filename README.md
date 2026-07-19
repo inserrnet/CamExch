@@ -30,6 +30,8 @@ The project is designed to build on GitHub Actions, so no Android Studio, Gradle
 
 The `!` button near the address bar shows `virtual camera source active`.
 
+Source starts its native WebRTC pipeline only for RTSP and video after `Start` is tapped. Photo mode does not load WebRTC. Native initialization and playback failures are reported in the Source screen instead of closing the app.
+
 ## Architecture
 
 ```mermaid
