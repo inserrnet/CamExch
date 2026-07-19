@@ -13,6 +13,9 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.Player;
 import androidx.media3.exoplayer.ExoPlayer;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+
 public class SourceForegroundService extends Service {
     static final String ACTION_START_SOURCE = "com.camexch.source.START_SOURCE";
     static final String ACTION_STOP_SOURCE = "com.camexch.source.STOP_SOURCE";
@@ -39,6 +42,7 @@ public class SourceForegroundService extends Service {
             player = new ExoPlayer.Builder(this).build();
             player.setVideoSurface(publisher.getVideoSurface());
             player.setRepeatMode(Player.REPEAT_MODE_ONE);
+            restoreSource();
         } catch (Exception exception) {
             stopSelf();
         }
@@ -51,7 +55,7 @@ public class SourceForegroundService extends Service {
         } else if (intent != null && ACTION_STOP_SOURCE.equals(intent.getAction())) {
             stopSource();
         }
-        return START_STICKY;
+        return START_REDELIVER_INTENT;
     }
 
     @Override
@@ -81,10 +85,15 @@ public class SourceForegroundService extends Service {
             return;
         }
         mode = requestedMode;
+        getSharedPreferences("source", MODE_PRIVATE).edit()
+                .putString(EXTRA_MODE, mode)
+                .putString(EXTRA_URI, uriText)
+                .apply();
         if ("Photo".equals(mode)) {
             if (player != null) {
                 player.stop();
             }
+            loadPhoto(uriText);
         } else if (player != null && uriText != null && !uriText.trim().isEmpty()) {
             player.setMediaItem(MediaItem.fromUri(Uri.parse(uriText)));
             player.prepare();
@@ -95,10 +104,38 @@ public class SourceForegroundService extends Service {
 
     private void stopSource() {
         mode = "Idle";
+        getSharedPreferences("source", MODE_PRIVATE).edit().clear().apply();
         if (player != null) {
             player.stop();
         }
         updateNotification();
+    }
+
+    private void restoreSource() {
+        String savedMode = getSharedPreferences("source", MODE_PRIVATE).getString(EXTRA_MODE, null);
+        String savedUri = getSharedPreferences("source", MODE_PRIVATE).getString(EXTRA_URI, null);
+        if (savedMode != null) {
+            startSource(savedMode, savedUri);
+        }
+    }
+
+    private void loadPhoto(String uriText) {
+        if (uriText == null) {
+            return;
+        }
+        try (InputStream in = getContentResolver().openInputStream(Uri.parse(uriText));
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            if (in == null) {
+                return;
+            }
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+            FrameStore.setJpeg(out.toByteArray());
+        } catch (Exception ignored) {
+        }
     }
 
     private void createChannel() {
