@@ -23,7 +23,6 @@ import android.widget.TextView;
 
 import androidx.media3.common.MediaItem;
 import androidx.media3.exoplayer.ExoPlayer;
-
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 
@@ -128,7 +127,7 @@ public class SourceActivity extends Activity {
         root.addView(buttons);
 
         TextView endpoint = new TextView(this);
-        endpoint.setText("Browser source: http://127.0.0.1:8765/frame.jpg");
+        endpoint.setText("Browser source: http://127.0.0.1:8765/stream.mjpeg");
         endpoint.setTextColor(0xff263238);
         endpoint.setPadding(0, 8, 0, 8);
         root.addView(endpoint);
