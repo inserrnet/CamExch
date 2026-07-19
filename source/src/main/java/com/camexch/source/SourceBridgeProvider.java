@@ -4,6 +4,7 @@ import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Binder;
 import android.os.Bundle;
 
 public class SourceBridgeProvider extends ContentProvider {
@@ -17,6 +18,7 @@ public class SourceBridgeProvider extends ContentProvider {
 
     @Override
     public Bundle call(String method, String arg, Bundle extras) {
+        enforceBrowserCaller();
         Bundle result = new Bundle();
         AppLog.info(getContext(), "Bridge call method=" + method + " argLength=" + (arg == null ? 0 : arg.length()));
         SourceForegroundService service = SourceForegroundService.getInstance();
@@ -40,6 +42,16 @@ public class SourceBridgeProvider extends ContentProvider {
             result.putString("error", detail == null ? throwable.getClass().getSimpleName() : detail);
         }
         return result;
+    }
+
+    private void enforceBrowserCaller() {
+        int callingUid = Binder.getCallingUid();
+        String[] packages = getContext().getPackageManager().getPackagesForUid(callingUid);
+        if (BridgeCallerPolicy.isAllowed(packages)) {
+            return;
+        }
+        AppLog.info(getContext(), "Bridge rejected caller uid=" + callingUid);
+        throw new SecurityException("CamExch bridge is available only to CamExch Browser");
     }
 
     @Override public String getType(Uri uri) { return null; }
