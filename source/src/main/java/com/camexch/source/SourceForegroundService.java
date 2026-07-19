@@ -173,6 +173,10 @@ public class SourceForegroundService extends Service {
                 public void onVideoSizeChanged(VideoSize videoSize) {
                     AppLog.info(SourceForegroundService.this, "Player video size="
                             + videoSize.width + "x" + videoSize.height);
+                    WebRtcPublisher activePublisher = publisher;
+                    if (activePublisher != null) {
+                        activePublisher.setVideoSize(videoSize.width, videoSize.height);
+                    }
                 }
 
                 @Override

@@ -72,6 +72,14 @@ final class WebRtcPublisher {
         return videoSurface;
     }
 
+    void setVideoSize(int width, int height) {
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+        AppLog.info(context, "WebRTC texture size=" + width + "x" + height);
+        textureHelper.setTextureSize(width, height);
+    }
+
     synchronized String answerOffer(String offerSdp) throws Exception {
         if (offerSdp == null || offerSdp.trim().isEmpty()) {
             throw new IllegalArgumentException("WebRTC offer is empty");
