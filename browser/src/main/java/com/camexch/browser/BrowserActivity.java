@@ -21,7 +21,11 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 public class BrowserActivity extends Activity {
@@ -153,6 +157,13 @@ public class BrowserActivity extends Activity {
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
         settings.setUserAgentString(settings.getUserAgentString() + " CamExchBrowser/0.1");
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(
+                    webView,
+                    VirtualCameraScript.SCRIPT,
+                    Collections.singleton("*")
+            );
+        }
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onPermissionRequest(PermissionRequest request) {
@@ -273,7 +284,9 @@ public class BrowserActivity extends Activity {
     }
 
     private void injectVirtualCamera(WebView webView) {
-        webView.evaluateJavascript(VirtualCameraScript.SCRIPT, null);
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            webView.evaluateJavascript(VirtualCameraScript.SCRIPT, null);
+        }
     }
 
     private void requestCameraPermissions() {
