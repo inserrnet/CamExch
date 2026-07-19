@@ -26,11 +26,7 @@ The project is designed to build on GitHub Actions, so no Android Studio, Gradle
    https://webcamtests.com/
    ```
 
-8. Choose the virtual/front camera. The browser injects a `CamExch Virtual Front Camera` device and serves frames from:
-
-   ```text
-   http://127.0.0.1:8765/stream.mjpeg
-   ```
+8. Choose the virtual/front camera. The browser injects a `CamExch Virtual Front Camera` device and receives RTSP/video through a local WebRTC connection. Photos use the local MJPEG fallback.
 
 The `!` button near the address bar shows `virtual camera source active`.
 
@@ -38,16 +34,16 @@ The `!` button near the address bar shows `virtual camera source active`.
 
 ```mermaid
 flowchart LR
-    A["RTSP / video / photo"] --> B["CamExch Source"]
-    B --> C["TextureView preview"]
-    C --> D["JPEG frame store"]
-    D --> E["127.0.0.1:8765/stream.mjpeg"]
-    E --> F["CamExch Browser JS hook"]
-    F --> G["canvas.captureStream()"]
-    G --> H["Website getUserMedia()"]
+    A["RTSP / video"] --> B["Media3 in foreground service"]
+    B --> C["WebRTC SurfaceTexture"]
+    C --> D["Local WebRTC peer"]
+    E["Photo"] --> F["MJPEG fallback"]
+    D --> G["CamExch Browser getUserMedia hook"]
+    F --> G
+    G --> H["Website MediaStreamTrack"]
 ```
 
-The browser installs its camera hook at document start, before site scripts can capture the original `getUserMedia()` function. Frames use one persistent MJPEG connection instead of polling a JPEG URL for every frame. A later version can replace the JPEG bridge with WebRTC for substantially lower latency.
+The browser installs its camera hook at document start, before site scripts can capture the original `getUserMedia()` function. RTSP and video frames remain on the hardware-accelerated Surface/WebRTC path and are not converted to JPEG. Playback belongs to the foreground service, so switching from Source to Browser does not destroy the decoder surface. The selected source is restored if Android restarts the service.
 
 ## Browser Features
 
@@ -57,6 +53,7 @@ The browser installs its camera hook at document start, before site scripts can 
 - Multiple tabs.
 - Long-press a tab to close it.
 - Automatic front-camera override for `video: true`, `facingMode: "user"`, an unconstrained default camera request, or `deviceId: "camexch-virtual-front"`.
+- A physical camera selected by `deviceId` is inspected through `MediaStreamTrack.getSettings()` and replaced automatically when it reports `facingMode: "user"`.
 - Rear camera requests are passed through to the real Android camera.
 
 ## Build
