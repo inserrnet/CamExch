@@ -50,13 +50,31 @@ public class SourceForegroundService extends Service {
     private String currentUri = "";
     private boolean directH264;
     private boolean fallbackScheduled;
+    private boolean forceRtspTcp;
+    private int rtspReconnectAttempts;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
+    private Handler metricsHandler;
+    private final Runnable pipelineMetrics = new Runnable() {
+        @Override
+        public void run() {
+            ExoPlayer activePlayer = player;
+            if (activePlayer == null || !"RTSP".equals(mode)) {
+                return;
+            }
+            AppLog.info(SourceForegroundService.this, "Pipeline metrics playerBufferedMs="
+                    + activePlayer.getTotalBufferedDuration()
+                    + " positionMs=" + activePlayer.getCurrentPosition()
+                    + " state=" + activePlayer.getPlaybackState());
+            metricsHandler.postDelayed(this, 2_000);
+        }
+    };
 
     @Override
     public void onCreate() {
         super.onCreate();
         instance = this;
+        metricsHandler = new Handler(Looper.getMainLooper());
         AppLog.info(this, "SourceForegroundService.onCreate");
         createChannel();
         startForeground(NOTIFICATION_ID, buildNotification());
@@ -137,6 +155,8 @@ public class SourceForegroundService extends Service {
         mode = requestedMode;
         currentUri = uriText == null ? "" : uriText;
         fallbackScheduled = false;
+        forceRtspTcp = false;
+        rtspReconnectAttempts = 0;
         AppLog.info(this, "startSource mode=" + requestedMode + " uri=" + uriText);
         error = "";
         getSharedPreferences("source", MODE_PRIVATE).edit()
@@ -172,16 +192,20 @@ public class SourceForegroundService extends Service {
         try {
             MediaItem mediaItem = MediaItem.fromUri(Uri.parse(uriText));
             if ("RTSP".equals(mode)) {
-                AppLog.info(this, "RTSP transport=UDP preferred maxBufferMs="
-                        + VideoPipelinePolicy.MAX_BUFFER_MS + " hardwareTranscode=true");
+                AppLog.info(this, "RTSP transport=" + (forceRtspTcp ? "TCP forced" : "UDP preferred")
+                        + " maxBufferMs=" + VideoPipelinePolicy.MAX_BUFFER_MS
+                        + " hardwareTranscode=true");
                 player.setMediaSource(new RtspMediaSource.Factory()
                         .setTimeoutMs(VideoPipelinePolicy.RTSP_TIMEOUT_MS)
+                        .setForceUseRtpTcp(forceRtspTcp)
                         .createMediaSource(mediaItem));
             } else {
                 player.setMediaItem(mediaItem);
             }
             player.prepare();
             player.play();
+            metricsHandler.removeCallbacks(pipelineMetrics);
+            metricsHandler.postDelayed(pipelineMetrics, 2_000);
             reportStatus(mode + " starting");
         } catch (Throwable throwable) {
             reportError(mode, throwable);
@@ -282,6 +306,10 @@ public class SourceForegroundService extends Service {
                 public void onPlayerError(PlaybackException playbackError) {
                     if (directH264 && !fallbackScheduled) {
                         scheduleDecodedFallback("Direct H264 failed: " + playbackError.getMessage());
+                    } else if ("RTSP".equals(mode)
+                            && playbackError.errorCode != PlaybackException.ERROR_CODE_DECODING_FAILED
+                            && rtspReconnectAttempts < 2) {
+                        scheduleRtspReconnect(playbackError);
                     } else {
                         reportError(mode, playbackError);
                     }
@@ -296,6 +324,9 @@ public class SourceForegroundService extends Service {
     }
 
     private void releaseVideoPipeline() {
+        if (metricsHandler != null) {
+            metricsHandler.removeCallbacks(pipelineMetrics);
+        }
         if (player != null) {
             try {
                 player.release();
@@ -327,7 +358,7 @@ public class SourceForegroundService extends Service {
             wakeLock.setReferenceCounted(false);
         }
         if (!wakeLock.isHeld()) {
-            wakeLock.acquire();
+            wakeLock.acquire(10 * 60 * 1_000L);
         }
         if (wifiLock == null) {
             WifiManager wifiManager = getApplicationContext().getSystemService(WifiManager.class);
@@ -382,6 +413,25 @@ public class SourceForegroundService extends Service {
                 reportError("RTSP keyframe refresh", throwable);
             }
         }, 300);
+    }
+
+    private void scheduleRtspReconnect(PlaybackException playbackError) {
+        rtspReconnectAttempts++;
+        forceRtspTcp = true;
+        AppLog.info(this, "RTSP reconnect attempt=" + rtspReconnectAttempts
+                + " transport=TCP reason=" + playbackError.getMessage());
+        reportStatus("RTSP reconnecting over TCP");
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (player == null || currentUri.isEmpty() || !"RTSP".equals(mode)) {
+                return;
+            }
+            try {
+                player.stop();
+                prepareVideoSource(currentUri);
+            } catch (Throwable throwable) {
+                reportError("RTSP reconnect", throwable);
+            }
+        }, 200);
     }
 
     private void stopSource() {

@@ -31,6 +31,9 @@ jobs:
       - name: Validate browser camera hook
         run: node tools/check-virtual-camera-script.mjs
 
+      - name: Android static analysis
+        run: gradle lintDebug
+
       - name: Build debug APKs
         run: gradle assembleDebug
 

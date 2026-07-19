@@ -20,8 +20,6 @@ import androidx.media3.exoplayer.FormatHolder;
 import androidx.media3.exoplayer.RendererCapabilities;
 
 import java.nio.ByteBuffer;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 @UnstableApi
 final class LowLatencyH264DecoderRenderer extends BaseRenderer {
@@ -30,7 +28,6 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
     }
 
     private static final int MAX_WORK_PER_RENDER = 32;
-    private static final int MAX_TIMESTAMP_ENTRIES = 512;
     private static final long METRICS_INTERVAL_NS = 1_000_000_000L;
 
     private final Context context;
@@ -40,7 +37,7 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
             DecoderInputBuffer.BUFFER_REPLACEMENT_MODE_DIRECT
     );
     private final MediaCodec.BufferInfo outputInfo = new MediaCodec.BufferInfo();
-    private final Map<Long, Long> inputArrivalNs = new LinkedHashMap<>();
+    private final FrameTimestampTracker timestamps = new FrameTimestampTracker(512);
     private final LowLatencyFramePolicy framePolicy = new LowLatencyFramePolicy(
             VideoPipelinePolicy.MAX_DECODED_AGE_MS
     );
@@ -110,7 +107,7 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
         hasPendingInput = false;
         inputEnded = false;
         outputEnded = false;
-        inputArrivalNs.clear();
+        timestamps.clear();
         if (codec != null) {
             codec.flush();
         }
@@ -123,7 +120,7 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
         hasPendingInput = false;
         inputEnded = false;
         outputEnded = false;
-        inputArrivalNs.clear();
+        timestamps.clear();
     }
 
     private boolean feedInput() throws Exception {
@@ -174,8 +171,7 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
         long nowNs = System.nanoTime();
         long codecPtsUs = Math.max(nowNs / 1_000L, lastCodecPtsUs + 1);
         lastCodecPtsUs = codecPtsUs;
-        inputArrivalNs.put(codecPtsUs, nowNs);
-        trimTimestampMap();
+        timestamps.record(codecPtsUs, nowNs);
         codec.queueInputBuffer(inputIndex, 0, payloadSize, codecPtsUs, 0);
         inputCount++;
         hasPendingInput = false;
@@ -213,8 +209,7 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
             newestFlags = outputInfo.flags;
         }
         if (newestIndex >= 0) {
-            Long arrivalNs = inputArrivalNs.get(newestPtsUs);
-            long ageNs = arrivalNs == null ? -1 : System.nanoTime() - arrivalNs;
+            long ageNs = timestamps.removeAndGetAgeNs(newestPtsUs, System.nanoTime());
             boolean endOfStream = (newestFlags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
             boolean render = !endOfStream && framePolicy.shouldRender(true, ageNs);
             releaseDecodedOutput(newestIndex, newestPtsUs, newestFlags, render);
@@ -228,7 +223,7 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
 
     private void releaseDecodedOutput(int index, long ptsUs, int flags, boolean render) {
         codec.releaseOutputBuffer(index, render);
-        inputArrivalNs.remove(ptsUs);
+        timestamps.remove(ptsUs);
         if ((flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) == 0) {
             if (render) {
                 renderedCount++;
@@ -343,14 +338,7 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
                 + " rendered=" + renderedCount
                 + " skipped=" + skippedCount
                 + " decoderAgeMs=" + (newestAgeNs < 0 ? -1 : newestAgeNs / 1_000_000)
-                + " timestampQueue=" + inputArrivalNs.size());
-    }
-
-    private void trimTimestampMap() {
-        while (inputArrivalNs.size() > MAX_TIMESTAMP_ENTRIES) {
-            Long oldest = inputArrivalNs.keySet().iterator().next();
-            inputArrivalNs.remove(oldest);
-        }
+                + " timestampQueue=" + timestamps.size());
     }
 
     private void releaseCodec() {
@@ -366,6 +354,6 @@ final class LowLatencyH264DecoderRenderer extends BaseRenderer {
             } catch (Throwable ignored) {
             }
         }
-        inputArrivalNs.clear();
+        timestamps.clear();
     }
 }
