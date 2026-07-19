@@ -51,12 +51,12 @@ context.window = context;
 context.globalThis = context;
 const testScript = script.replace(
   /\}\)\(\);$/,
-  "globalThis.__camexchRouteForTest=isVirtualRequest;})();",
+  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative};})();",
 );
 vm.runInNewContext(testScript, context);
 await context.navigator.mediaDevices.enumerateDevices();
 
-const route = context.__camexchRouteForTest;
+const route = context.__camexchForTest.route;
 const cases = [
   [{ video: { facingMode: "user" } }, true, "explicit user"],
   [{ video: { facingMode: { exact: "environment" } } }, false, "explicit environment"],
@@ -71,6 +71,22 @@ for (const [constraints, expected, name] of cases) {
   if (actual !== expected) {
     throw new Error(`Camera route ${name}: expected ${expected}, got ${actual}`);
   }
+}
+
+const environmentWithVirtualId = context.__camexchForTest.native({
+  video: {
+    facingMode: "environment",
+    deviceId: { exact: "camexch-front-camera-4" },
+    width: { ideal: 1920 },
+  },
+  audio: false,
+});
+if (environmentWithVirtualId.video.deviceId !== undefined) {
+  throw new Error("Virtual deviceId was passed to the physical rear camera");
+}
+if (environmentWithVirtualId.video.facingMode !== "environment"
+    || environmentWithVirtualId.video.width.ideal !== 1920) {
+  throw new Error("Rear camera constraints were not preserved");
 }
 
 const mapped = await context.navigator.mediaDevices.enumerateDevices();
