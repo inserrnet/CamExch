@@ -34,11 +34,15 @@ const nativeDevices = [
   { kind: "videoinput", deviceId: "rear-id", label: "camera2 1", groupId: "rear" },
   { kind: "videoinput", deviceId: "front-id", label: "camera2 2, facing front", groupId: "front" },
 ];
+let nativeGetCount = 0;
 const context = {
   location: { href: "https://camera-routing.test/" },
   navigator: {
     mediaDevices: {
-      getUserMedia: async () => ({ getVideoTracks: () => [], getTracks: () => [] }),
+      getUserMedia: async () => {
+        nativeGetCount += 1;
+        return { getVideoTracks: () => [], getTracks: () => [] };
+      },
       enumerateDevices: async () => nativeDevices,
     },
   },
@@ -95,6 +99,20 @@ if (mapped.find((device) => device.deviceId === "rear-id")?.label !== "camera2 1
 }
 if (mapped.find((device) => device.deviceId === "front-id")?.label !== "Front Camera 4") {
   throw new Error("Front camera label was not replaced");
+}
+
+context.CamExchBridge = { getMode: () => "ERROR:source offline" };
+let virtualFailure;
+try {
+  await context.navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+} catch (error) {
+  virtualFailure = error;
+}
+if (!virtualFailure || virtualFailure.name !== "NotReadableError") {
+  throw new Error("Unavailable Front Camera 4 did not reject the camera request");
+}
+if (nativeGetCount !== 0) {
+  throw new Error("Unavailable Front Camera 4 fell back to the physical front camera");
 }
 
 console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);

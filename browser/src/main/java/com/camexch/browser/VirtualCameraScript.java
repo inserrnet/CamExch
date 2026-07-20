@@ -59,7 +59,7 @@ final class VirtualCameraScript {
                     + " await addAudio(stream,c);return stream;"
                     + "}"
                     + "async function virtualStream(c){"
-                    + " try{const mode=window.CamExchBridge&&window.CamExchBridge.getMode();if(!mode||mode.indexOf('ERROR:')===0)throw new Error(mode||'Source bridge unavailable');const activeMode=mode.trim();log('IPC bridge mode='+activeMode);if(activeMode==='Photo')return photoStream(c);if(activeMode==='RTSP'||activeMode==='Video')return await rtcStream(c);throw new Error('Source is not active: '+activeMode);}catch(e){log('Front Camera 4 unavailable, using phone camera: '+e);return originalGet(constraintsForNative(c));}"
+                    + " try{const mode=window.CamExchBridge&&window.CamExchBridge.getMode();if(!mode||mode.indexOf('ERROR:')===0)throw new Error(mode||'Source bridge unavailable');const activeMode=mode.trim();log('IPC bridge mode='+activeMode);if(activeMode==='Photo')return photoStream(c);if(activeMode==='RTSP'||activeMode==='Video')return await rtcStream(c);throw new Error('Source is not active: '+activeMode);}catch(e){const failure=new Error('Front Camera 4 source unavailable: '+e);failure.name='NotReadableError';log(failure.message);throw failure;}"
                     + "}"
                     + "async function routeGet(c){"
                     + " log('getUserMedia '+JSON.stringify(c));"

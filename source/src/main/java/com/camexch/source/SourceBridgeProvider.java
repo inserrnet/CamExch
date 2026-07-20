@@ -2,10 +2,12 @@ package com.camexch.source;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.Process;
 
 public class SourceBridgeProvider extends ContentProvider {
     static final String AUTHORITY = "com.camexch.source.bridge";
@@ -46,11 +48,15 @@ public class SourceBridgeProvider extends ContentProvider {
 
     private void enforceBrowserCaller() {
         int callingUid = Binder.getCallingUid();
-        String[] packages = getContext().getPackageManager().getPackagesForUid(callingUid);
-        if (BridgeCallerPolicy.isAllowed(packages)) {
+        PackageManager packageManager = getContext().getPackageManager();
+        String[] packages = packageManager.getPackagesForUid(callingUid);
+        boolean signaturesMatch = packageManager.checkSignatures(callingUid, Process.myUid())
+                == PackageManager.SIGNATURE_MATCH;
+        if (BridgeCallerPolicy.isAllowed(packages, signaturesMatch)) {
             return;
         }
-        AppLog.info(getContext(), "Bridge rejected caller uid=" + callingUid);
+        AppLog.info(getContext(), "Bridge rejected caller uid=" + callingUid
+                + " signaturesMatch=" + signaturesMatch);
         throw new SecurityException("CamExch bridge is available only to CamExch Browser");
     }
 

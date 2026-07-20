@@ -6,8 +6,8 @@ final class BridgeCallerPolicy {
     private BridgeCallerPolicy() {
     }
 
-    static boolean isAllowed(String[] packages) {
-        if (packages == null) {
+    static boolean isAllowed(String[] packages, boolean signaturesMatch) {
+        if (packages == null || !signaturesMatch) {
             return false;
         }
         for (String packageName : packages) {
