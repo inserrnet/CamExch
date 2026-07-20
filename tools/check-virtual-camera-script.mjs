@@ -31,7 +31,7 @@ for (const marker of [
 }
 
 const nativeDevices = [
-  { kind: "videoinput", deviceId: "rear-id", label: "camera2 1", groupId: "rear" },
+  { kind: "videoinput", deviceId: "rear-id", label: "camera 2, facing back", groupId: "rear" },
   { kind: "videoinput", deviceId: "front-id", label: "camera2 2, facing front", groupId: "front" },
 ];
 let nativeGetCount = 0;
@@ -65,6 +65,7 @@ const cases = [
   [{ video: { facingMode: "user" } }, true, "explicit user"],
   [{ video: { facingMode: { exact: "environment" } } }, false, "explicit environment"],
   [{ video: { deviceId: { exact: "camexch-front-camera-4" } } }, true, "virtual id"],
+  [{ video: { deviceId: { exact: "camexch-back-camera" } } }, false, "synthetic back id"],
   [{ video: { deviceId: { exact: "front-id" } } }, true, "enumerated front id"],
   [{ video: { deviceId: { exact: "rear-id" } } }, false, "enumerated rear id"],
   [{ video: true }, false, "browser default"],
@@ -94,11 +95,38 @@ if (environmentWithVirtualId.video.facingMode !== "environment"
 }
 
 const mapped = await context.navigator.mediaDevices.enumerateDevices();
-if (mapped.find((device) => device.deviceId === "rear-id")?.label !== "camera2 1") {
+if (mapped.find((device) => device.deviceId === "rear-id")?.label !== "camera 2, facing back") {
   throw new Error("Rear camera label was incorrectly replaced");
 }
 if (mapped.find((device) => device.deviceId === "front-id")?.label !== "Front Camera 4") {
   throw new Error("Front camera label was not replaced");
+}
+if (mapped.some((device) => device.deviceId === "camexch-back-camera")) {
+  throw new Error("Synthetic back camera duplicated a visible physical back camera");
+}
+
+const syntheticBack = context.__camexchForTest.native({
+  video: {
+    facingMode: "user",
+    deviceId: { exact: "camexch-back-camera" },
+    width: { ideal: 1920 },
+  },
+});
+if (syntheticBack.video.deviceId !== undefined
+    || syntheticBack.video.facingMode !== "environment"
+    || syntheticBack.video.width.ideal !== 1920) {
+  throw new Error("Synthetic back camera was not converted to a native environment request");
+}
+
+nativeDevices.splice(0, nativeDevices.length,
+  { kind: "videoinput", deviceId: "", label: "", groupId: "" },
+);
+const anonymousMapped = await context.navigator.mediaDevices.enumerateDevices();
+if (!anonymousMapped.some((device) => device.deviceId === "camexch-front-camera-4")) {
+  throw new Error("Front Camera 4 is missing while native devices are anonymous");
+}
+if (!anonymousMapped.some((device) => device.deviceId === "camexch-back-camera")) {
+  throw new Error("Back Camera is missing while native devices are anonymous");
 }
 
 context.CamExchBridge = { getMode: () => "ERROR:source offline" };

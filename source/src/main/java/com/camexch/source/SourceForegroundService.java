@@ -215,13 +215,18 @@ public class SourceForegroundService extends Service {
                 player.setMediaItem(mediaItem);
             }
             player.prepare();
-            player.play();
+            boolean autoPlay = SourcePlaybackPolicy.shouldAutoPlay(mode);
+            if (autoPlay) {
+                player.play();
+            } else {
+                player.pause();
+            }
             if ("Video".equals(mode)) {
-                showPlaybackControls();
+                showPlaybackControls(false);
             }
             metricsHandler.removeCallbacks(pipelineMetrics);
             metricsHandler.postDelayed(pipelineMetrics, 2_000);
-            reportStatus(mode + " starting");
+            reportStatus(autoPlay ? mode + " starting" : "Video ready (paused)");
         } catch (Throwable throwable) {
             reportError(mode, throwable);
         }
@@ -277,7 +282,13 @@ public class SourceForegroundService extends Service {
                 public void onPlaybackStateChanged(int state) {
                     if (state == Player.STATE_READY) {
                         AppLog.info(SourceForegroundService.this, "Player STATE_READY");
-                        reportStatus("RTSP".equals(mode) ? "RTSP hardware transcode active" : mode + " active");
+                        if ("Video".equals(mode) && !player.getPlayWhenReady()) {
+                            reportStatus("Video paused");
+                        } else {
+                            reportStatus("RTSP".equals(mode)
+                                    ? "RTSP hardware transcode active"
+                                    : mode + " active");
+                        }
                     }
                 }
 
@@ -502,7 +513,7 @@ public class SourceForegroundService extends Service {
         sendBroadcast(intent);
     }
 
-    private void showPlaybackControls() {
+    private void showPlaybackControls(boolean playing) {
         if (playbackControls == null) {
             playbackControls = new FloatingPlaybackControls(this, new FloatingPlaybackControls.Listener() {
                 @Override
@@ -517,7 +528,7 @@ public class SourceForegroundService extends Service {
             });
         }
         playbackControls.show();
-        playbackControls.setPlaying(true);
+        playbackControls.setPlaying(playing);
     }
 
     private void removePlaybackControls() {
