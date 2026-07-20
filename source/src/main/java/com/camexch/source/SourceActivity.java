@@ -14,6 +14,7 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.AdapterView;
@@ -28,6 +29,7 @@ import android.widget.Toast;
 
 public class SourceActivity extends Activity {
     private static final int PICK_FILE = 42;
+    private static final int REQUEST_OVERLAY = 43;
 
     private EditText rtspInput;
     private TextView selectedFileLabel;
@@ -36,6 +38,7 @@ public class SourceActivity extends Activity {
     private String mode = "RTSP";
     private boolean receiverRegistered;
     private boolean diagnosticsOnly;
+    private boolean startVideoAfterOverlayPermission;
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -87,6 +90,15 @@ public class SourceActivity extends Activity {
             receiverRegistered = false;
         }
         super.onStop();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (startVideoAfterOverlayPermission && Settings.canDrawOverlays(this)) {
+            startVideoAfterOverlayPermission = false;
+            startSelectedSource();
+        }
     }
 
     @Override
@@ -219,6 +231,18 @@ public class SourceActivity extends Activity {
                 return;
             }
             uriText = selectedUri.toString();
+        }
+
+        if ("Video".equals(mode) && !Settings.canDrawOverlays(this)) {
+            startVideoAfterOverlayPermission = true;
+            AppLog.info(this, "Requesting playback overlay permission");
+            Intent permissionIntent = new Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName())
+            );
+            startActivityForResult(permissionIntent, REQUEST_OVERLAY);
+            Toast.makeText(this, "Allow display over other apps, then return", Toast.LENGTH_LONG).show();
+            return;
         }
 
         Intent intent = new Intent(this, SourceForegroundService.class);

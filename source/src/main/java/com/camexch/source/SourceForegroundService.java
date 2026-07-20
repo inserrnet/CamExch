@@ -35,6 +35,8 @@ public class SourceForegroundService extends Service {
     private static volatile SourceForegroundService instance;
     static final String ACTION_START_SOURCE = "com.camexch.source.START_SOURCE";
     static final String ACTION_STOP_SOURCE = "com.camexch.source.STOP_SOURCE";
+    static final String ACTION_PLAY_VIDEO = "com.camexch.source.PLAY_VIDEO";
+    static final String ACTION_PAUSE_VIDEO = "com.camexch.source.PAUSE_VIDEO";
     static final String ACTION_STATUS = "com.camexch.source.STATUS";
     static final String EXTRA_MODE = "mode";
     static final String EXTRA_URI = "uri";
@@ -58,6 +60,7 @@ public class SourceForegroundService extends Service {
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
     private Handler metricsHandler;
+    private FloatingPlaybackControls playbackControls;
     private final Runnable pipelineMetrics = new Runnable() {
         @Override
         public void run() {
@@ -96,6 +99,10 @@ public class SourceForegroundService extends Service {
             startSource(intent.getStringExtra(EXTRA_MODE), intent.getStringExtra(EXTRA_URI));
         } else if (intent != null && ACTION_STOP_SOURCE.equals(intent.getAction())) {
             stopSource();
+        } else if (intent != null && ACTION_PLAY_VIDEO.equals(intent.getAction())) {
+            setVideoPlaying(true);
+        } else if (intent != null && ACTION_PAUSE_VIDEO.equals(intent.getAction())) {
+            setVideoPlaying(false);
         }
         return START_REDELIVER_INTENT;
     }
@@ -103,6 +110,7 @@ public class SourceForegroundService extends Service {
     @Override
     public void onDestroy() {
         instance = null;
+        removePlaybackControls();
         releaseVideoPipeline();
         if (server != null) {
             server.stop();
@@ -161,6 +169,7 @@ public class SourceForegroundService extends Service {
         forceRtspTcp = false;
         rtspReconnectAttempts = 0;
         AppLog.info(this, "startSource mode=" + requestedMode + " uri=" + uriText);
+        removePlaybackControls();
         error = "";
         getSharedPreferences("source", MODE_PRIVATE).edit()
                 .putString(EXTRA_MODE, mode)
@@ -207,6 +216,9 @@ public class SourceForegroundService extends Service {
             }
             player.prepare();
             player.play();
+            if ("Video".equals(mode)) {
+                showPlaybackControls();
+            }
             metricsHandler.removeCallbacks(pipelineMetrics);
             metricsHandler.postDelayed(pipelineMetrics, 2_000);
             reportStatus(mode + " starting");
@@ -441,6 +453,7 @@ public class SourceForegroundService extends Service {
         mode = "Idle";
         error = "";
         directH264 = false;
+        removePlaybackControls();
         getSharedPreferences("source", MODE_PRIVATE).edit().clear().apply();
         releaseVideoPipeline();
         reportStatus("Idle");
@@ -475,6 +488,7 @@ public class SourceForegroundService extends Service {
         error = component + ": " + detail;
         AppLog.error(this, error, throwable);
         mode = "Error";
+        removePlaybackControls();
         reportStatus(error);
         new Handler(Looper.getMainLooper()).post(this::releaseVideoPipeline);
     }
@@ -486,6 +500,49 @@ public class SourceForegroundService extends Service {
         intent.putExtra(EXTRA_STATUS, status);
         intent.putExtra(EXTRA_ERROR, error);
         sendBroadcast(intent);
+    }
+
+    private void showPlaybackControls() {
+        if (playbackControls == null) {
+            playbackControls = new FloatingPlaybackControls(this, new FloatingPlaybackControls.Listener() {
+                @Override
+                public void onPlay() {
+                    setVideoPlaying(true);
+                }
+
+                @Override
+                public void onPause() {
+                    setVideoPlaying(false);
+                }
+            });
+        }
+        playbackControls.show();
+        playbackControls.setPlaying(true);
+    }
+
+    private void removePlaybackControls() {
+        if (playbackControls != null) {
+            playbackControls.hide();
+            playbackControls = null;
+        }
+    }
+
+    private void setVideoPlaying(boolean playing) {
+        ExoPlayer activePlayer = player;
+        if (!"Video".equals(mode) || activePlayer == null) {
+            AppLog.info(this, "Ignoring playback control; mode=" + mode);
+            return;
+        }
+        if (playing) {
+            activePlayer.play();
+        } else {
+            activePlayer.pause();
+        }
+        if (playbackControls != null) {
+            playbackControls.setPlaying(playing);
+        }
+        AppLog.info(this, "Video playback " + (playing ? "resumed" : "paused"));
+        reportStatus(playing ? "Video active" : "Video paused");
     }
 
     private void createChannel() {
