@@ -35,27 +35,40 @@ const nativeDevices = [
   { kind: "videoinput", deviceId: "front-id", label: "camera2 2, facing front", groupId: "front" },
 ];
 let nativeGetCount = 0;
+class FakeMediaDevices {
+  async getUserMedia(constraints) {
+    nativeGetCount += 1;
+    return {
+      getVideoTracks: () => constraints?.video ? [{
+        getSettings: () => ({ facingMode: "environment", deviceId: "rear-id" }),
+      }] : [],
+      getTracks: () => [],
+    };
+  }
+
+  async enumerateDevices() {
+    return nativeDevices;
+  }
+}
 const context = {
   location: { href: "https://camera-routing.test/" },
-  navigator: {
-    mediaDevices: {
-      getUserMedia: async () => {
-        nativeGetCount += 1;
-        return { getVideoTracks: () => [], getTracks: () => [] };
-      },
-      enumerateDevices: async () => nativeDevices,
-    },
-  },
+  navigator: { mediaDevices: new FakeMediaDevices() },
+  MediaDevices: FakeMediaDevices,
+  document: { querySelectorAll: () => [], documentElement: null },
   addEventListener: () => {},
   setTimeout,
   clearInterval,
-  setInterval,
+  setInterval: () => 1,
 };
 context.window = context;
 context.globalThis = context;
+context.CamExchBridge = {
+  authorizeNativeCamera: () => "OK",
+  getMode: () => "ERROR:source offline",
+};
 const testScript = script.replace(
   /\}\)\(\);$/,
-  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative};})();",
+  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,install:installHooks};})();",
 );
 vm.runInNewContext(testScript, context);
 await context.navigator.mediaDevices.enumerateDevices();
@@ -68,8 +81,9 @@ const cases = [
   [{ video: { deviceId: { exact: "camexch-back-camera" } } }, false, "synthetic back id"],
   [{ video: { deviceId: { exact: "front-id" } } }, true, "enumerated front id"],
   [{ video: { deviceId: { exact: "rear-id" } } }, false, "enumerated rear id"],
-  [{ video: true }, false, "browser default"],
-  [{ video: {} }, false, "empty constraints"],
+  [{ video: { deviceId: { exact: "unknown-id" } } }, true, "unknown device id"],
+  [{ video: true }, true, "browser default"],
+  [{ video: {} }, true, "empty constraints"],
 ];
 for (const [constraints, expected, name] of cases) {
   const actual = route(constraints);
@@ -129,7 +143,6 @@ if (!anonymousMapped.some((device) => device.deviceId === "camexch-back-camera")
   throw new Error("Back Camera is missing while native devices are anonymous");
 }
 
-context.CamExchBridge = { getMode: () => "ERROR:source offline" };
 let virtualFailure;
 try {
   await context.navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
@@ -141,6 +154,33 @@ if (!virtualFailure || virtualFailure.name !== "NotReadableError") {
 }
 if (nativeGetCount !== 0) {
   throw new Error("Unavailable Front Camera 4 fell back to the physical front camera");
+}
+
+await FakeMediaDevices.prototype.getUserMedia.call(
+  context.navigator.mediaDevices,
+  { video: { facingMode: "environment" } },
+);
+if (nativeGetCount !== 1) {
+  throw new Error("MediaDevices.prototype.getUserMedia bypassed the camera router");
+}
+
+class ChildMediaDevices {
+  async getUserMedia() {
+    throw new Error("Unpatched iframe native camera method called");
+  }
+
+  async enumerateDevices() {
+    return nativeDevices;
+  }
+}
+const childWindow = {
+  navigator: { mediaDevices: new ChildMediaDevices() },
+  MediaDevices: ChildMediaDevices,
+};
+context.__camexchForTest.install(childWindow, "test iframe");
+if (childWindow.navigator.mediaDevices.getUserMedia
+    !== context.navigator.mediaDevices.getUserMedia) {
+  throw new Error("Dynamic same-origin iframe did not receive the camera router");
 }
 
 console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);

@@ -9,6 +9,7 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.util.Base64;
 import android.view.KeyEvent;
 import android.view.View;
@@ -32,6 +33,7 @@ import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -45,6 +47,7 @@ public class BrowserActivity extends Activity {
     private Button forwardButton;
     private int activeTab = -1;
     private boolean diagnosticsOnly;
+    private final NativeCameraAuthorizationStore nativeCameraAuthorizations = new NativeCameraAuthorizationStore();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -188,8 +191,8 @@ public class BrowserActivity extends Activity {
             @Override
             public void onPermissionRequest(PermissionRequest request) {
                 AppLog.info(BrowserActivity.this, "Permission request origin=" + request.getOrigin()
-                        + " resources=" + java.util.Arrays.toString(request.getResources()));
-                runOnUiThread(() -> request.grant(request.getResources()));
+                        + " resources=" + Arrays.toString(request.getResources()));
+                runOnUiThread(() -> handlePermissionRequest(request));
             }
 
             @Override
@@ -219,6 +222,36 @@ public class BrowserActivity extends Activity {
             }
         });
         return webView;
+    }
+
+    private void handlePermissionRequest(PermissionRequest request) {
+        String[] requested = request.getResources();
+        boolean requestsVideo = Arrays.asList(requested).contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE);
+        if (!requestsVideo) {
+            request.grant(requested);
+            return;
+        }
+
+        boolean rearAuthorized = nativeCameraAuthorizations.consume(
+                request.getOrigin().toString(), SystemClock.elapsedRealtime());
+        if (rearAuthorized) {
+            AppLog.info(this, "Granted one-shot native rear camera request origin=" + request.getOrigin());
+            request.grant(requested);
+            return;
+        }
+
+        List<String> nonVideo = new ArrayList<>();
+        for (String resource : requested) {
+            if (!PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
+                nonVideo.add(resource);
+            }
+        }
+        AppLog.info(this, "Denied unclassified native video request origin=" + request.getOrigin());
+        if (nonVideo.isEmpty()) {
+            request.deny();
+        } else {
+            request.grant(nonVideo.toArray(new String[0]));
+        }
     }
 
     private void rebuildTabs() {
@@ -382,6 +415,18 @@ public class BrowserActivity extends Activity {
 
     private final class SourceBridge {
         private static final String BRIDGE_URI = "content://com.camexch.source.bridge";
+
+        @JavascriptInterface
+        public String authorizeNativeCamera(String origin, String route) {
+            if (!"environment".equals(route)) {
+                AppLog.info(BrowserActivity.this, "Rejected native camera authorization route=" + route);
+                return "ERROR:Only the rear camera can be authorized";
+            }
+            boolean authorized = nativeCameraAuthorizations.authorize(origin, SystemClock.elapsedRealtime());
+            AppLog.info(BrowserActivity.this, "Native rear camera authorization origin=" + origin
+                    + " accepted=" + authorized);
+            return authorized ? "OK" : "ERROR:Invalid origin";
+        }
 
         @JavascriptInterface
         public String getMode() {
