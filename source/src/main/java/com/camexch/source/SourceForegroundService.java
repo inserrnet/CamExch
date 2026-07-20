@@ -61,6 +61,7 @@ public class SourceForegroundService extends Service {
     private WifiManager.WifiLock wifiLock;
     private Handler metricsHandler;
     private FloatingPlaybackControls playbackControls;
+    private boolean videoPausePending;
     private final Runnable pipelineMetrics = new Runnable() {
         @Override
         public void run() {
@@ -168,6 +169,7 @@ public class SourceForegroundService extends Service {
         fallbackScheduled = false;
         forceRtspTcp = false;
         rtspReconnectAttempts = 0;
+        videoPausePending = false;
         AppLog.info(this, "startSource mode=" + requestedMode + " uri=" + uriText);
         removePlaybackControls();
         error = "";
@@ -214,19 +216,22 @@ public class SourceForegroundService extends Service {
             } else {
                 player.setMediaItem(mediaItem);
             }
-            player.prepare();
             boolean autoPlay = SourcePlaybackPolicy.shouldAutoPlay(mode);
-            if (autoPlay) {
-                player.play();
-            } else {
-                player.pause();
-            }
             if ("Video".equals(mode)) {
+                videoPausePending = true;
                 showPlaybackControls(false);
+                if (publisher instanceof WebRtcPublisher) {
+                    ExoPlayer activePlayer = player;
+                    ((WebRtcPublisher) publisher).freezeOnNextFrame(
+                            () -> completeVideoPause(activePlayer, "initial frame")
+                    );
+                }
             }
+            player.prepare();
+            player.play();
             metricsHandler.removeCallbacks(pipelineMetrics);
             metricsHandler.postDelayed(pipelineMetrics, 2_000);
-            reportStatus(autoPlay ? mode + " starting" : "Video ready (paused)");
+            reportStatus(autoPlay ? mode + " starting" : "Video preparing first frame");
         } catch (Throwable throwable) {
             reportError(mode, throwable);
         }
@@ -282,7 +287,9 @@ public class SourceForegroundService extends Service {
                 public void onPlaybackStateChanged(int state) {
                     if (state == Player.STATE_READY) {
                         AppLog.info(SourceForegroundService.this, "Player STATE_READY");
-                        if ("Video".equals(mode) && !player.getPlayWhenReady()) {
+                        if ("Video".equals(mode) && videoPausePending) {
+                            reportStatus("Video preparing pause frame");
+                        } else if ("Video".equals(mode) && !player.getPlayWhenReady()) {
                             reportStatus("Video paused");
                         } else {
                             reportStatus("RTSP".equals(mode)
@@ -545,15 +552,49 @@ public class SourceForegroundService extends Service {
             return;
         }
         if (playing) {
+            videoPausePending = false;
+            if (publisher instanceof WebRtcPublisher) {
+                WebRtcPublisher activePublisher = (WebRtcPublisher) publisher;
+                activePublisher.cancelPendingFreeze();
+                activePublisher.setFrozenFrameRepeating(false);
+            }
             activePlayer.play();
         } else {
+            if (activePlayer.getPlayWhenReady() && publisher instanceof WebRtcPublisher) {
+                videoPausePending = true;
+                if (playbackControls != null) {
+                    playbackControls.setPlaying(false);
+                }
+                reportStatus("Video capturing pause frame");
+                ((WebRtcPublisher) publisher).freezeOnNextFrame(
+                        () -> completeVideoPause(activePlayer, "current frame")
+                );
+                return;
+            }
             activePlayer.pause();
+            if (publisher instanceof WebRtcPublisher) {
+                ((WebRtcPublisher) publisher).setFrozenFrameRepeating(true);
+            }
         }
         if (playbackControls != null) {
             playbackControls.setPlaying(playing);
         }
         AppLog.info(this, "Video playback " + (playing ? "resumed" : "paused"));
         reportStatus(playing ? "Video active" : "Video paused");
+    }
+
+    private void completeVideoPause(ExoPlayer expectedPlayer, String reason) {
+        if (player != expectedPlayer || !"Video".equals(mode) || !videoPausePending) {
+            return;
+        }
+        expectedPlayer.pause();
+        videoPausePending = false;
+        if (playbackControls != null) {
+            playbackControls.setPlaying(false);
+        }
+        AppLog.info(this, "Video paused on " + reason
+                + " positionMs=" + expectedPlayer.getCurrentPosition());
+        reportStatus("Video paused");
     }
 
     private void createChannel() {

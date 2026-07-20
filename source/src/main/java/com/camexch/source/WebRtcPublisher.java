@@ -1,6 +1,8 @@
 package com.camexch.source;
 
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Surface;
 
 import org.webrtc.CapturerObserver;
@@ -20,6 +22,7 @@ import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
 import org.webrtc.SurfaceTextureHelper;
 import org.webrtc.VideoSource;
+import org.webrtc.VideoFrame;
 import org.webrtc.VideoTrack;
 
 import java.util.ArrayList;
@@ -34,6 +37,7 @@ import java.util.concurrent.atomic.AtomicReference;
 final class WebRtcPublisher implements WebRtcSessionPublisher {
     private static final long SIGNAL_TIMEOUT_SECONDS = 10;
     private static final int MAX_PEERS = 4;
+    private static final long FROZEN_FRAME_INTERVAL_MS = 200;
 
     private final EglBase eglBase;
     private final Context context;
@@ -42,10 +46,36 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
     private final VideoSource videoSource;
     private final VideoTrack videoTrack;
     private final Surface videoSurface;
+    private final CapturerObserver capturerObserver;
+    private final Handler repeatHandler = new Handler(Looper.getMainLooper());
+    private final Object frozenFrameLock = new Object();
     private final List<PeerConnection> peerConnections = new ArrayList<>();
     private final Map<PeerConnection, RtpSender> peerSenders = new HashMap<>();
     private int videoWidth = 640;
     private int videoHeight = 480;
+    private VideoFrame frozenFrame;
+    private Runnable freezeCallback;
+    private boolean freezeCapturePending;
+    private boolean repeatFrozenFrame;
+    private boolean released;
+    private final Runnable frozenFrameRepeater = new Runnable() {
+        @Override
+        public void run() {
+            VideoFrame repeatedFrame = createRepeatedFrozenFrame();
+            if (repeatedFrame != null) {
+                try {
+                    capturerObserver.onFrameCaptured(repeatedFrame);
+                } finally {
+                    repeatedFrame.release();
+                }
+            }
+            synchronized (frozenFrameLock) {
+                if (repeatFrozenFrame && !released) {
+                    repeatHandler.postDelayed(this, FROZEN_FRAME_INTERVAL_MS);
+                }
+            }
+        }
+    };
 
     WebRtcPublisher(Context context) {
         this.context = context.getApplicationContext();
@@ -62,9 +92,9 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
         }
         textureHelper.setTextureSize(640, 480);
         videoSource = factory.createVideoSource(false);
-        CapturerObserver observer = videoSource.getCapturerObserver();
-        observer.onCapturerStarted(true);
-        textureHelper.startListening(observer::onFrameCaptured);
+        capturerObserver = videoSource.getCapturerObserver();
+        capturerObserver.onCapturerStarted(true);
+        textureHelper.startListening(this::onTextureFrame);
         videoTrack = factory.createVideoTrack("camexch-video", videoSource);
         videoTrack.setEnabled(true);
         videoSurface = new Surface(textureHelper.getSurfaceTexture());
@@ -73,6 +103,35 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
 
     Surface getVideoSurface() {
         return videoSurface;
+    }
+
+    void freezeOnNextFrame(Runnable callback) {
+        synchronized (frozenFrameLock) {
+            if (released) {
+                return;
+            }
+            freezeCapturePending = true;
+            freezeCallback = callback;
+        }
+        AppLog.info(context, "Waiting to capture video pause frame");
+    }
+
+    void cancelPendingFreeze() {
+        synchronized (frozenFrameLock) {
+            freezeCapturePending = false;
+            freezeCallback = null;
+        }
+    }
+
+    void setFrozenFrameRepeating(boolean repeating) {
+        synchronized (frozenFrameLock) {
+            repeatFrozenFrame = repeating && frozenFrame != null && !released;
+        }
+        repeatHandler.removeCallbacks(frozenFrameRepeater);
+        if (repeating) {
+            repeatHandler.post(frozenFrameRepeater);
+        }
+        AppLog.info(context, "Frozen video frame repeating=" + repeating);
     }
 
     synchronized void setVideoSize(int width, int height) {
@@ -151,6 +210,21 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
 
     @Override
     public synchronized void release() {
+        synchronized (frozenFrameLock) {
+            released = true;
+            repeatFrozenFrame = false;
+            freezeCapturePending = false;
+            freezeCallback = null;
+        }
+        repeatHandler.removeCallbacks(frozenFrameRepeater);
+        VideoFrame frameToRelease;
+        synchronized (frozenFrameLock) {
+            frameToRelease = frozenFrame;
+            frozenFrame = null;
+        }
+        if (frameToRelease != null) {
+            frameToRelease.release();
+        }
         for (PeerConnection peerConnection : peerConnections) {
             closePeer(peerConnection);
         }
@@ -158,12 +232,68 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
         peerSenders.clear();
         videoSurface.release();
         textureHelper.stopListening();
-        videoSource.getCapturerObserver().onCapturerStopped();
+        capturerObserver.onCapturerStopped();
         textureHelper.dispose();
         videoTrack.dispose();
         videoSource.dispose();
         factory.dispose();
         eglBase.release();
+    }
+
+    private void onTextureFrame(VideoFrame frame) {
+        boolean capture;
+        Runnable callback;
+        synchronized (frozenFrameLock) {
+            capture = freezeCapturePending && !released;
+            callback = capture ? freezeCallback : null;
+            if (capture) {
+                freezeCapturePending = false;
+                freezeCallback = null;
+            }
+        }
+
+        capturerObserver.onFrameCaptured(frame);
+        if (!capture) {
+            return;
+        }
+
+        VideoFrame.I420Buffer i420Buffer = frame.getBuffer().toI420();
+        VideoFrame snapshot = new VideoFrame(i420Buffer, frame.getRotation(), frame.getTimestampNs());
+        VideoFrame previous;
+        boolean accepted;
+        synchronized (frozenFrameLock) {
+            previous = frozenFrame;
+            accepted = !released;
+            if (accepted) {
+                frozenFrame = snapshot;
+                repeatFrozenFrame = true;
+            }
+        }
+        if (!accepted) {
+            snapshot.release();
+            return;
+        }
+        if (previous != null) {
+            previous.release();
+        }
+        repeatHandler.removeCallbacks(frozenFrameRepeater);
+        repeatHandler.post(frozenFrameRepeater);
+        AppLog.info(context, "Captured frozen video frame size="
+                + snapshot.getBuffer().getWidth() + "x" + snapshot.getBuffer().getHeight());
+        if (callback != null) {
+            repeatHandler.post(callback);
+        }
+    }
+
+    private VideoFrame createRepeatedFrozenFrame() {
+        synchronized (frozenFrameLock) {
+            if (!repeatFrozenFrame || frozenFrame == null || released) {
+                return null;
+            }
+            VideoFrame.Buffer buffer = frozenFrame.getBuffer();
+            buffer.retain();
+            return new VideoFrame(buffer, frozenFrame.getRotation(), System.nanoTime());
+        }
     }
 
     private void closePeer(PeerConnection peerConnection) {
