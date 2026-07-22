@@ -19,6 +19,7 @@ import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.PermissionRequest;
 import android.webkit.JavascriptInterface;
+import android.webkit.ConsoleMessage;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -257,6 +258,19 @@ public class BrowserActivity extends Activity {
             );
         }
         webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+                if (consoleMessage.messageLevel() == ConsoleMessage.MessageLevel.ERROR
+                        || consoleMessage.messageLevel() == ConsoleMessage.MessageLevel.WARNING) {
+                    AppLog.info(BrowserActivity.this, "Page console "
+                            + consoleMessage.messageLevel()
+                            + " line=" + consoleMessage.lineNumber()
+                            + " source=" + consoleMessage.sourceId()
+                            + " message=" + consoleMessage.message());
+                }
+                return super.onConsoleMessage(consoleMessage);
+            }
+
             @Override
             public void onPermissionRequest(PermissionRequest request) {
                 AppLog.info(BrowserActivity.this, "Permission request origin=" + request.getOrigin()

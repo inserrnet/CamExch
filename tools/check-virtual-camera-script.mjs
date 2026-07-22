@@ -24,6 +24,11 @@ for (const marker of [
   "WebRTC inbound size=",
   "WebRTC receiver low-latency hints",
   "WebRTC frame latencyMs=",
+  "getUserMedia resolved elapsedMs=",
+  "track applyConstraints requestedRoute=",
+  "RTCRtpSender.replaceTrack",
+  "page unhandledrejection",
+  "source standby first track ready",
 ]) {
   if (!script.includes(marker)) {
     throw new Error(`Missing browser telemetry marker: ${marker}`);
@@ -39,9 +44,15 @@ let nativeGetCount = 0;
 let continuousFocusCount = 0;
 let canvasDrawCount = 0;
 let canvasRequestFrameCount = 0;
+let sourceOnline = false;
 class FakeTrack {
   constructor(deviceId = "rear-id") {
+    this.kind = "video";
+    this.id = `track-${deviceId}`;
+    this.label = deviceId === "front-id" ? "Front camera" : "Back camera";
     this.readyState = "live";
+    this.muted = false;
+    this.enabled = true;
     this.deviceId = deviceId;
   }
 
@@ -60,9 +71,14 @@ class FakeTrack {
   }
 
   async applyConstraints(constraints) {
+    this.lastConstraints = constraints;
     if (constraints?.advanced?.[0]?.focusMode === "continuous") {
       continuousFocusCount += 1;
     }
+  }
+
+  clone() {
+    return new FakeTrack(this.deviceId);
   }
 
   stop() {
@@ -103,6 +119,64 @@ class FakeMediaStreamTrackProcessor {
         releaseLock: () => {},
       }),
     };
+  }
+}
+
+class FakeSourceTrack extends FakeTrack {
+  constructor() {
+    super("source-id");
+    this.label = "RTSP source";
+    this.muted = true;
+  }
+
+  getSettings() {
+    return {
+      facingMode: "user",
+      deviceId: "source-id",
+      width: 944,
+      height: 960,
+      frameRate: 30,
+    };
+  }
+
+  clone() {
+    const clone = new FakeSourceTrack();
+    clone.muted = false;
+    return clone;
+  }
+}
+
+class FakeRTCPeerConnection {
+  constructor() {
+    this.iceGatheringState = "complete";
+    this.connectionState = "connected";
+  }
+
+  addTransceiver() {
+    return { setCodecPreferences: () => {} };
+  }
+
+  async createOffer() {
+    return { type: "offer", sdp: "fake-offer" };
+  }
+
+  async setLocalDescription(description) {
+    this.localDescription = description;
+  }
+
+  async setRemoteDescription() {
+    queueMicrotask(() => this.ontrack?.({
+      track: new FakeSourceTrack(),
+      receiver: { playoutDelayHint: null, jitterBufferTarget: null },
+    }));
+  }
+
+  addEventListener() {}
+
+  removeEventListener() {}
+
+  close() {
+    this.connectionState = "closed";
   }
 }
 
@@ -230,8 +304,15 @@ const context = {
   navigator: { mediaDevices: new FakeMediaDevices() },
   MediaDevices: FakeMediaDevices,
   MediaStream: FakeStream,
+  MediaStreamTrack: FakeTrack,
   MediaStreamTrackGenerator: FakeMediaStreamTrackGenerator,
   MediaStreamTrackProcessor: FakeMediaStreamTrackProcessor,
+  RTCPeerConnection: FakeRTCPeerConnection,
+  RTCRtpReceiver: {
+    getCapabilities: () => ({
+      codecs: [{ mimeType: "video/H264" }],
+    }),
+  },
   HTMLMediaElement: FakeVideo,
   document: {
     querySelectorAll: () => [],
@@ -250,7 +331,8 @@ context.globalThis = context;
 context.CamExchBridge = {
   authorizeNativeCamera: () => "OK",
   getCameraRouteMode: () => "AUTO",
-  getMode: () => "ERROR:source offline",
+  getMode: () => sourceOnline ? "RTSP" : "ERROR:source offline",
+  answerOffer: () => sourceOnline ? "fake-answer" : "ERROR:source offline",
 };
 const testScript = script.replace(
   /\}\)\(\);$/,
@@ -318,6 +400,29 @@ if (nativeGetCount !== 1) {
 const initialManagedEntry = Array.from(context.__camexchForTest.managed)[0];
 if (initialManagedEntry.controller.sourceTrack.getSettings().deviceId !== "main-rear-id") {
   throw new Error("Environment request did not select the primary camera 0 deviceId");
+}
+if (stableRearTrack.getSettings().facingMode !== "environment"
+    || stableRearTrack.label !== "Back camera") {
+  throw new Error("Managed rear track did not expose physical rear identity");
+}
+await stableRearTrack.applyConstraints({ width: { ideal: 640 } });
+if (nativeGetCount !== 1
+    || initialManagedEntry.controller.sourceTrack.lastConstraints?.width?.ideal !== 640) {
+  throw new Error("Same-route applyConstraints did not stay on the active rear camera");
+}
+const sourceBeforeConstraintSwitch = initialManagedEntry.controller.sourceTrack;
+let constraintSourceFailure;
+try {
+  await stableRearTrack.applyConstraints({ facingMode: { exact: "user" } });
+} catch (error) {
+  constraintSourceFailure = error;
+}
+if (!constraintSourceFailure || constraintSourceFailure.name !== "NotReadableError"
+    || initialManagedEntry.controller.route !== "REAR"
+    || initialManagedEntry.controller.sourceTrack !== sourceBeforeConstraintSwitch
+    || sourceBeforeConstraintSwitch.readyState !== "live"
+    || nativeGetCount !== 1) {
+  throw new Error("Failed applyConstraints route switch did not preserve the active rear camera");
 }
 await new Promise((resolve) => setTimeout(resolve, 0));
 if (initialManagedEntry.controller.kind !== "canvas-direct"
@@ -507,6 +612,34 @@ const childHook = childWindow.navigator.mediaDevices.getUserMedia;
 context.__camexchForTest.installFrame({ contentWindow: childWindow });
 if (childWindow.navigator.mediaDevices.getUserMedia !== childHook) {
   throw new Error("An owned iframe camera hook was replaced by another context");
+}
+
+const activeEntry = Array.from(context.__camexchForTest.managed)[0];
+const stableTrackBeforeOnlineSwitch = activeEntry.controller.track;
+const nativeCountBeforeOnlineSwitch = nativeGetCount;
+sourceOnline = true;
+const onlineSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
+if (onlineSourceSwitch.switched !== 1 || onlineSourceSwitch.failed !== 0
+    || activeEntry.controller.track !== stableTrackBeforeOnlineSwitch
+    || activeEntry.controller.route !== "SOURCE"
+    || stableTrackBeforeOnlineSwitch.label !== "Front Camera 4") {
+  throw new Error("Online Source switch did not preserve and relabel the page track");
+}
+const sourceSettings = stableTrackBeforeOnlineSwitch.getSettings();
+if (sourceSettings.facingMode !== "user"
+    || sourceSettings.deviceId !== "camexch-front-camera-4"
+    || sourceSettings.width !== 944 || sourceSettings.height !== 960
+    || nativeGetCount !== nativeCountBeforeOnlineSwitch) {
+  throw new Error("Managed Source track did not expose the real Source identity and resolution");
+}
+const onlineRearSwitch = await context.__camexchSwitchCamera("REAR");
+if (onlineRearSwitch.switched !== 1 || onlineRearSwitch.failed !== 0
+    || activeEntry.controller.track !== stableTrackBeforeOnlineSwitch
+    || activeEntry.controller.route !== "REAR"
+    || stableTrackBeforeOnlineSwitch.getSettings().facingMode !== "environment"
+    || nativeGetCount !== nativeCountBeforeOnlineSwitch + 1
+    || continuousFocusCount !== nativeGetCount) {
+  throw new Error("Source-to-rear switch did not restore the physical camera on the stable track");
 }
 
 console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);

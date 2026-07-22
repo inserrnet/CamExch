@@ -15,7 +15,7 @@ final class AppLog {
     private static final Object LOCK = new Object();
     private static final String LOG_FILE = "camexch-browser.log";
     private static final String CRASH_FILE = "camexch-browser-crash.log";
-    private static final int MAX_BYTES = 256 * 1024;
+    private static final int MAX_BYTES = 2 * 1024 * 1024;
 
     private AppLog() {
     }
