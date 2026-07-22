@@ -108,7 +108,7 @@ context.CamExchBridge = {
 };
 const testScript = script.replace(
   /\}\)\(\);$/,
-  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,install:installHooks,installFrame:installFrame};})();",
+  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,managed:managedStreams,install:installHooks,installFrame:installFrame};})();",
 );
 vm.runInNewContext(testScript, context);
 await context.navigator.mediaDevices.enumerateDevices();
@@ -198,6 +198,13 @@ const rearSwitch = await context.__camexchSwitchCamera("REAR");
 if (rearSwitch.switched !== 1 || rearSwitch.failed !== 0 || nativeGetCount !== 2) {
   throw new Error("Active rear-camera switch did not replace the managed video track");
 }
+const managedEntry = Array.from(context.__camexchForTest.managed)[0];
+managedEntry.stream.getVideoTracks().forEach((track) => track.stop());
+const revivedRearSwitch = await context.__camexchSwitchCamera("REAR");
+if (revivedRearSwitch.switched !== 1 || revivedRearSwitch.failed !== 0
+    || !managedEntry.stream.active || nativeGetCount !== 3) {
+  throw new Error("Camera overlay did not reactivate the latest stopped MediaStream");
+}
 
 const syntheticBack = context.__camexchForTest.native({
   video: {
@@ -227,12 +234,12 @@ await FakeMediaDevices.prototype.getUserMedia.call(
   context.navigator.mediaDevices,
   { video: { facingMode: "environment" } },
 );
-if (nativeGetCount !== 3) {
+if (nativeGetCount !== 4) {
   throw new Error("MediaDevices.prototype.getUserMedia bypassed the camera router");
 }
 
 const autoSwitch = await context.__camexchSwitchCamera("AUTO");
-if (autoSwitch.switched !== 2 || autoSwitch.failed !== 0 || nativeGetCount !== 5) {
+if (autoSwitch.switched !== 2 || autoSwitch.failed !== 0 || nativeGetCount !== 6) {
   throw new Error("Active automatic-camera switch did not restore constraint routing");
 }
 
@@ -266,7 +273,7 @@ try {
 } catch (_) {
   // The callback is asserted below.
 }
-if (!legacyFailure || legacyFailure.name !== "NotReadableError" || nativeGetCount !== 5) {
+if (!legacyFailure || legacyFailure.name !== "NotReadableError" || nativeGetCount !== 6) {
   throw new Error("Legacy getUserMedia did not route the front camera to Front Camera 4");
 }
 
