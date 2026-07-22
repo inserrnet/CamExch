@@ -33,6 +33,7 @@ for (const marker of [
   "managed WebRTC senders replaced=",
   "managed MediaStream clone registered",
   "live camera track reattached to existing MediaStream",
+  "detachedRetained=",
   "RTCPeerConnection.removeTrack",
   "managed camera session discarded reason=",
   "page unhandledrejection",
@@ -729,6 +730,9 @@ const clonedStreamTrackBeforeRevival = clonedManagedStream.getVideoTracks()[0];
 const clonedConsumer = new FakeVideo();
 clonedConsumer.isConnected = true;
 clonedConsumer.srcObject = clonedManagedStream;
+const detachedConsumer = new FakeVideo();
+detachedConsumer.isConnected = false;
+detachedConsumer.srcObject = activeEntry.stream;
 activeEntry.stream.removeTrack(endedSessionTrack);
 const detachedLiveSwitch = await context.__camexchSwitchCamera("SOURCE");
 if (detachedLiveSwitch.switched !== 1 || detachedLiveSwitch.revived !== 0
@@ -737,11 +741,14 @@ if (detachedLiveSwitch.switched !== 1 || detachedLiveSwitch.revived !== 0
     || endedSessionTrack.readyState !== "live"
     || endedSessionTrack.getSettings().facingMode !== "user"
     || clonedManagedStream.getVideoTracks().length !== 1
-    || connectedConsumer.playCount < 1 || clonedConsumer.playCount < 1) {
+    || connectedConsumer.playCount < 1 || clonedConsumer.playCount < 1
+    || detachedConsumer.playCount < 1
+    || detachedConsumer.srcObject !== activeEntry.stream) {
   throw new Error("Live track removed from MediaStream was not reattached and switched");
 }
 const consumerPlayCountBeforeRevival = connectedConsumer.playCount;
 const clonedConsumerPlayCountBeforeRevival = clonedConsumer.playCount;
+const detachedConsumerPlayCountBeforeRevival = detachedConsumer.playCount;
 activeEntry.stream.removeTrack(endedSessionTrack);
 endedSessionTrack.stop();
 if (activeEntry.stream.getVideoTracks().length !== 0
@@ -771,8 +778,10 @@ if (directSender.track !== revivedTrack || cloneSender.track !== revivedTrack
 }
 if (connectedConsumer.srcObject !== activeEntry.stream
     || clonedConsumer.srcObject !== clonedManagedStream
+    || detachedConsumer.srcObject !== activeEntry.stream
     || connectedConsumer.playCount <= consumerPlayCountBeforeRevival
-    || clonedConsumer.playCount <= clonedConsumerPlayCountBeforeRevival) {
+    || clonedConsumer.playCount <= clonedConsumerPlayCountBeforeRevival
+    || detachedConsumer.playCount <= detachedConsumerPlayCountBeforeRevival) {
   throw new Error("Connected media consumer was not rebound to the revived stream");
 }
 
