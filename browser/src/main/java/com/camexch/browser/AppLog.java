@@ -15,7 +15,10 @@ final class AppLog {
     private static final Object LOCK = new Object();
     private static final String LOG_FILE = "camexch-browser.log";
     private static final String CRASH_FILE = "camexch-browser-crash.log";
-    private static final int MAX_BYTES = 2 * 1024 * 1024;
+    // Clipboard data crosses Android's Binder boundary. Keep the complete retained log
+    // comfortably below the transaction limit so Samsung devices do not truncate it.
+    private static final int MAX_BYTES = 320 * 1024;
+    private static final String TRIM_NOTICE = "[Older browser log entries removed]\n";
 
     private AppLog() {
     }
@@ -71,11 +74,15 @@ final class AppLog {
         synchronized (LOCK) {
             try {
                 File target = file(context, name);
-                if (target.length() > MAX_BYTES) {
-                    writeFile(context, name, "");
+                byte[] encoded = text.getBytes(StandardCharsets.UTF_8);
+                if (target.length() + encoded.length > MAX_BYTES) {
+                    String combined = readFile(target) + text;
+                    int contentLimit = MAX_BYTES - TRIM_NOTICE.getBytes(StandardCharsets.UTF_8).length;
+                    writeFile(context, name, TRIM_NOTICE + tailWithinUtf8Bytes(combined, contentLimit));
+                    return;
                 }
                 try (FileOutputStream out = new FileOutputStream(target, true)) {
-                    out.write(text.getBytes(StandardCharsets.UTF_8));
+                    out.write(encoded);
                     if (force) {
                         out.getFD().sync();
                     }
@@ -83,6 +90,33 @@ final class AppLog {
             } catch (Throwable ignored) {
             }
         }
+    }
+
+    static String tailWithinUtf8Bytes(String text, int maxBytes) {
+        if (maxBytes <= 0) {
+            return "";
+        }
+        if (text.getBytes(StandardCharsets.UTF_8).length <= maxBytes) {
+            return text;
+        }
+
+        int low = 0;
+        int high = text.length();
+        while (low < high) {
+            int middle = (low + high) >>> 1;
+            String suffix = text.substring(middle);
+            if (suffix.getBytes(StandardCharsets.UTF_8).length <= maxBytes) {
+                high = middle;
+            } else {
+                low = middle + 1;
+            }
+        }
+
+        int start = low;
+        if (start < text.length() && Character.isLowSurrogate(text.charAt(start))) {
+            start++;
+        }
+        return text.substring(start);
     }
 
     private static void writeFile(Context context, String name, String text) {
