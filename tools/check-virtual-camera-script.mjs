@@ -26,8 +26,15 @@ for (const marker of [
   "WebRTC frame latencyMs=",
   "getUserMedia resolved elapsedMs=",
   "getUserMedia wrapper installed target=",
+  "getUserMedia wrapper called target=",
   "track applyConstraints requestedRoute=",
   "RTCRtpSender.replaceTrack",
+  "stopped camera stream revived route=",
+  "managed WebRTC senders replaced=",
+  "managed MediaStream clone registered",
+  "live camera track reattached to existing MediaStream",
+  "RTCPeerConnection.removeTrack",
+  "managed camera session discarded reason=",
   "page unhandledrejection",
   "source standby first track ready",
 ]) {
@@ -147,14 +154,43 @@ class FakeSourceTrack extends FakeTrack {
   }
 }
 
+class FakeRTCRtpSender {
+  constructor(track) {
+    this.track = track;
+    this.replaceCount = 0;
+  }
+
+  async replaceTrack(track) {
+    this.track = track;
+    this.replaceCount += 1;
+  }
+}
+
 class FakeRTCPeerConnection {
   constructor() {
     this.iceGatheringState = "complete";
     this.connectionState = "connected";
+    this.senders = [];
   }
 
-  addTransceiver() {
-    return { setCodecPreferences: () => {} };
+  addTrack(track) {
+    const sender = new FakeRTCRtpSender(track);
+    this.senders.push(sender);
+    return sender;
+  }
+
+  addTransceiver(trackOrKind) {
+    const sender = new FakeRTCRtpSender(typeof trackOrKind === "string" ? null : trackOrKind);
+    this.senders.push(sender);
+    return { sender, setCodecPreferences: () => {} };
+  }
+
+  getSenders() {
+    return this.senders;
+  }
+
+  removeTrack(sender) {
+    sender.track = null;
   }
 
   async createOffer() {
@@ -287,6 +323,10 @@ class FakeStream {
   removeTrack(track) {
     this.videoTracks = this.videoTracks.filter((candidate) => candidate !== track);
   }
+
+  clone() {
+    return new FakeStream(this.videoTracks.map((track) => track.clone()));
+  }
 }
 
 class FakeMediaDevices {
@@ -309,6 +349,7 @@ const context = {
   MediaStreamTrackGenerator: FakeMediaStreamTrackGenerator,
   MediaStreamTrackProcessor: FakeMediaStreamTrackProcessor,
   RTCPeerConnection: FakeRTCPeerConnection,
+  RTCRtpSender: FakeRTCRtpSender,
   RTCRtpReceiver: {
     getCapabilities: () => ({
       codecs: [{ mimeType: "video/H264" }],
@@ -494,9 +535,10 @@ if (stableRearTrack.readyState !== "ended"
   throw new Error("Page stop did not end the proxy and physical source tracks");
 }
 const stoppedSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
-if (stoppedSourceSwitch.switched !== 0 || stoppedSourceSwitch.failed !== 0
+if (stoppedSourceSwitch.switched !== 0 || stoppedSourceSwitch.revived !== 0
+    || stoppedSourceSwitch.failed !== 1
     || pageVideo.srcObject !== null || nativeGetCount !== 1) {
-  throw new Error("Overlay tried to revive a page-stopped camera consumer");
+  throw new Error("Unavailable Source did not leave the stopped camera session intact");
 }
 let nextFrontFailure;
 try {
@@ -671,6 +713,75 @@ if (onlineRearSwitch.switched !== 1 || onlineRearSwitch.failed !== 0
     || nativeGetCount !== nativeCountBeforeOnlineSwitch + 1
     || continuousFocusCount !== nativeGetCount) {
   throw new Error("Source-to-rear switch did not restore the physical camera on the stable track");
+}
+
+const endedSessionTrack = activeEntry.controller.track;
+const clonedSessionTrack = endedSessionTrack.clone();
+const outboundPeer = new context.RTCPeerConnection();
+const directSender = outboundPeer.addTrack(endedSessionTrack, activeEntry.stream);
+const cloneSender = outboundPeer.addTrack(clonedSessionTrack, activeEntry.stream);
+outboundPeer.removeTrack(cloneSender);
+const connectedConsumer = new FakeVideo();
+connectedConsumer.isConnected = true;
+connectedConsumer.srcObject = activeEntry.stream;
+const clonedManagedStream = activeEntry.stream.clone();
+const clonedStreamTrackBeforeRevival = clonedManagedStream.getVideoTracks()[0];
+const clonedConsumer = new FakeVideo();
+clonedConsumer.isConnected = true;
+clonedConsumer.srcObject = clonedManagedStream;
+activeEntry.stream.removeTrack(endedSessionTrack);
+const detachedLiveSwitch = await context.__camexchSwitchCamera("SOURCE");
+if (detachedLiveSwitch.switched !== 1 || detachedLiveSwitch.revived !== 0
+    || detachedLiveSwitch.reattached !== 1 || detachedLiveSwitch.failed !== 0
+    || activeEntry.stream.getVideoTracks()[0] !== endedSessionTrack
+    || endedSessionTrack.readyState !== "live"
+    || endedSessionTrack.getSettings().facingMode !== "user"
+    || clonedManagedStream.getVideoTracks().length !== 1
+    || connectedConsumer.playCount < 1 || clonedConsumer.playCount < 1) {
+  throw new Error("Live track removed from MediaStream was not reattached and switched");
+}
+const consumerPlayCountBeforeRevival = connectedConsumer.playCount;
+const clonedConsumerPlayCountBeforeRevival = clonedConsumer.playCount;
+activeEntry.stream.removeTrack(endedSessionTrack);
+endedSessionTrack.stop();
+if (activeEntry.stream.getVideoTracks().length !== 0
+    || endedSessionTrack.readyState !== "ended") {
+  throw new Error("Stopped-session fixture did not match removeTrack then stop lifecycle");
+}
+const revivedSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
+const revivedTrack = activeEntry.stream.getVideoTracks()[0];
+const revivedClonedTrack = clonedManagedStream.getVideoTracks()[0];
+if (revivedSourceSwitch.switched !== 1 || revivedSourceSwitch.revived !== 1
+    || revivedSourceSwitch.reattached !== 2
+    || revivedSourceSwitch.senders !== 2 || revivedSourceSwitch.failed !== 0
+    || !revivedTrack || revivedTrack === endedSessionTrack
+    || revivedTrack.readyState !== "live"
+    || !revivedClonedTrack || revivedClonedTrack === clonedStreamTrackBeforeRevival
+    || revivedClonedTrack.readyState !== "live"
+    || clonedStreamTrackBeforeRevival.readyState !== "ended"
+    || revivedTrack.label !== "Front Camera 4"
+    || revivedTrack.getSettings().width !== 944
+    || revivedTrack.getSettings().height !== 960) {
+  throw new Error("Stopped camera session was not rebuilt with a new Source track");
+}
+if (directSender.track !== revivedTrack || cloneSender.track !== revivedTrack
+    || directSender.replaceCount !== 1 || cloneSender.replaceCount !== 1
+    || clonedSessionTrack.readyState !== "ended") {
+  throw new Error("Managed WebRTC senders were not moved to the revived Source track");
+}
+if (connectedConsumer.srcObject !== activeEntry.stream
+    || clonedConsumer.srcObject !== clonedManagedStream
+    || connectedConsumer.playCount <= consumerPlayCountBeforeRevival
+    || clonedConsumer.playCount <= clonedConsumerPlayCountBeforeRevival) {
+  throw new Error("Connected media consumer was not rebound to the revived stream");
+}
+
+revivedTrack.stop();
+activeEntry.controller.endedAt = Date.now() - 300001;
+const expiredSwitch = await context.__camexchSwitchCamera("REAR");
+if (expiredSwitch.switched !== 0 || expiredSwitch.revived !== 0
+    || context.__camexchForTest.managed.size !== 0) {
+  throw new Error("Expired stopped camera session was retained or revived");
 }
 
 console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);
