@@ -37,6 +37,8 @@ const nativeDevices = [
 ];
 let nativeGetCount = 0;
 let continuousFocusCount = 0;
+let canvasDrawCount = 0;
+let canvasRequestFrameCount = 0;
 class FakeTrack {
   constructor(deviceId = "rear-id") {
     this.readyState = "live";
@@ -44,7 +46,13 @@ class FakeTrack {
   }
 
   getSettings() {
-    return { facingMode: "environment", deviceId: this.deviceId };
+    return {
+      facingMode: "environment",
+      deviceId: this.deviceId,
+      width: 1280,
+      height: 720,
+      frameRate: 30,
+    };
   }
 
   getCapabilities() {
@@ -98,6 +106,74 @@ class FakeMediaStreamTrackProcessor {
   }
 }
 
+class FakeCanvasTrack extends FakeTrack {
+  requestFrame() {
+    canvasRequestFrameCount += 1;
+  }
+}
+
+class FakeCanvas {
+  constructor() {
+    this.width = 300;
+    this.height = 150;
+  }
+
+  getContext() {
+    return { drawImage: () => { canvasDrawCount += 1; } };
+  }
+
+  captureStream() {
+    return new FakeStream([new FakeCanvasTrack("canvas")]);
+  }
+}
+
+class FakeVideo {
+  constructor() {
+    this.listeners = new Map();
+    this.readyState = 0;
+    this.videoWidth = 0;
+    this.videoHeight = 0;
+    this.callbackDelivered = false;
+  }
+
+  set srcObject(stream) {
+    this.stream = stream;
+    if (!stream) {
+      this.readyState = 0;
+      return;
+    }
+    const settings = stream.getVideoTracks()[0]?.getSettings?.() || {};
+    this.videoWidth = settings.width || 640;
+    this.videoHeight = settings.height || 480;
+    this.readyState = 2;
+    queueMicrotask(() => {
+      for (const name of ["loadedmetadata", "loadeddata"]) {
+        const callback = this.listeners.get(name);
+        if (callback) callback();
+      }
+    });
+  }
+
+  get srcObject() {
+    return this.stream;
+  }
+
+  addEventListener(name, callback) {
+    this.listeners.set(name, callback);
+  }
+
+  async play() {}
+
+  pause() {}
+
+  requestVideoFrameCallback(callback) {
+    if (!this.callbackDelivered) {
+      this.callbackDelivered = true;
+      queueMicrotask(() => callback(10));
+    }
+  }
+}
+
 class FakeStream {
   constructor(videoTracks = []) {
     this.videoTracks = videoTracks;
@@ -146,8 +222,13 @@ const context = {
   MediaStream: FakeStream,
   MediaStreamTrackGenerator: FakeMediaStreamTrackGenerator,
   MediaStreamTrackProcessor: FakeMediaStreamTrackProcessor,
-  document: { querySelectorAll: () => [], documentElement: null },
+  document: {
+    querySelectorAll: () => [],
+    documentElement: null,
+    createElement: (name) => name === "canvas" ? new FakeCanvas() : new FakeVideo(),
+  },
   addEventListener: () => {},
+  requestAnimationFrame: () => 1,
   setTimeout,
   clearInterval,
   setInterval: () => 1,
@@ -225,6 +306,11 @@ if (nativeGetCount !== 1) {
 const initialManagedEntry = Array.from(context.__camexchForTest.managed)[0];
 if (initialManagedEntry.controller.sourceTrack.getSettings().deviceId !== "main-rear-id") {
   throw new Error("Environment request did not select the primary camera 0 deviceId");
+}
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (initialManagedEntry.controller.kind !== "canvas-direct"
+    || canvasDrawCount < 1 || canvasRequestFrameCount < 1) {
+  throw new Error("Production canvas proxy did not publish an output frame");
 }
 
 let switchedFrontFailure;
