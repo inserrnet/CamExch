@@ -359,6 +359,7 @@ if (managedEntry.stream !== originalRearStream
 }
 const pageVideo = new FakeVideo();
 pageVideo.srcObject = originalRearStream;
+pageVideo.isConnected = false;
 pageVideo.srcObject = null;
 stableRearTrack.stop();
 if (!managedEntry.controller.softStopped || stableRearTrack.readyState !== "live"
