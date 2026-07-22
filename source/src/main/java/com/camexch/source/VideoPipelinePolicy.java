@@ -10,6 +10,10 @@ final class VideoPipelinePolicy {
     static final int REBUFFER_MS = 0;
     static final int MAX_BITRATE_BPS = 20_000_000;
     static final double RESOLUTION_SCALE = 1.0;
+    static final long RTSP_STARTUP_GRACE_MS = 12_000;
+    static final long RTSP_FRAME_STALL_MS = 4_000;
+    static final long RTSP_RECOVERY_COOLDOWN_MS = 15_000;
+    static final long PIPELINE_LOCK_TIMEOUT_MS = 10 * 60 * 1_000L;
 
     private VideoPipelinePolicy() {
     }
@@ -20,5 +24,19 @@ final class VideoPipelinePolicy {
         }
         long calculated = (long) width * height * TARGET_FPS / 4;
         return (int) Math.max(4_000_000L, Math.min(MAX_BITRATE_BPS, calculated));
+    }
+
+    static boolean shouldRecoverRtsp(long nowMs, long pipelineStartedMs,
+                                     long lastFrameMs, long recoveryNotBeforeMs) {
+        if (nowMs < recoveryNotBeforeMs
+                || nowMs - pipelineStartedMs < RTSP_STARTUP_GRACE_MS) {
+            return false;
+        }
+        long frameReferenceMs = Math.max(pipelineStartedMs, lastFrameMs);
+        return nowMs - frameReferenceMs >= RTSP_FRAME_STALL_MS;
+    }
+
+    static long normalizedBufferedDurationMs(long rawBufferedMs) {
+        return rawBufferedMs < 0 || rawBufferedMs > 60_000 ? -1 : rawBufferedMs;
     }
 }

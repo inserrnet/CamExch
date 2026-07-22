@@ -12,6 +12,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 
 import androidx.annotation.OptIn;
 import androidx.media3.common.Format;
@@ -62,6 +63,9 @@ public class SourceForegroundService extends Service {
     private Handler metricsHandler;
     private FloatingPlaybackControls playbackControls;
     private boolean videoPausePending;
+    private long rtspPipelineStartedRealtimeMs;
+    private long rtspRecoveryNotBeforeRealtimeMs;
+    private int rtspWatchdogRecoveries;
     private final Runnable pipelineMetrics = new Runnable() {
         @Override
         public void run() {
@@ -69,10 +73,35 @@ public class SourceForegroundService extends Service {
             if (activePlayer == null || !"RTSP".equals(mode)) {
                 return;
             }
+            renewPipelineLocksIfNeeded();
+            long rawBufferedMs = activePlayer.getTotalBufferedDuration();
+            long bufferedMs = VideoPipelinePolicy.normalizedBufferedDurationMs(rawBufferedMs);
+            long frameCount = -1;
+            long frameAgeMs = -1;
+            long lastFrameRealtimeMs = 0;
+            if (publisher instanceof WebRtcPublisher) {
+                WebRtcPublisher decodedPublisher = (WebRtcPublisher) publisher;
+                frameCount = decodedPublisher.getCapturedFrameCount();
+                frameAgeMs = decodedPublisher.getCapturedFrameAgeMs();
+                lastFrameRealtimeMs = decodedPublisher.getLastCapturedFrameRealtimeMs();
+            }
             AppLog.info(SourceForegroundService.this, "Pipeline metrics playerBufferedMs="
-                    + activePlayer.getTotalBufferedDuration()
+                    + bufferedMs
                     + " positionMs=" + activePlayer.getCurrentPosition()
-                    + " state=" + activePlayer.getPlaybackState());
+                    + " state=" + activePlayer.getPlaybackState()
+                    + " webRtcFrames=" + frameCount
+                    + " webRtcFrameAgeMs=" + frameAgeMs);
+            long nowMs = SystemClock.elapsedRealtime();
+            if (!directH264
+                    && publisher instanceof WebRtcPublisher
+                    && VideoPipelinePolicy.shouldRecoverRtsp(
+                    nowMs,
+                    rtspPipelineStartedRealtimeMs,
+                    lastFrameRealtimeMs,
+                    rtspRecoveryNotBeforeRealtimeMs)) {
+                restartStalledRtsp(frameAgeMs);
+                return;
+            }
             metricsHandler.postDelayed(this, 2_000);
         }
     };
@@ -169,6 +198,8 @@ public class SourceForegroundService extends Service {
         fallbackScheduled = false;
         forceRtspTcp = false;
         rtspReconnectAttempts = 0;
+        rtspWatchdogRecoveries = 0;
+        rtspRecoveryNotBeforeRealtimeMs = 0;
         videoPausePending = false;
         AppLog.info(this, "startSource mode=" + requestedMode + " uri=" + uriText);
         removePlaybackControls();
@@ -204,6 +235,9 @@ public class SourceForegroundService extends Service {
 
     private void prepareVideoSource(String uriText) {
         try {
+            if ("RTSP".equals(mode)) {
+                rtspPipelineStartedRealtimeMs = SystemClock.elapsedRealtime();
+            }
             MediaItem mediaItem = MediaItem.fromUri(Uri.parse(uriText));
             if ("RTSP".equals(mode)) {
                 AppLog.info(this, "RTSP transport=" + (forceRtspTcp ? "TCP forced" : "UDP preferred")
@@ -391,7 +425,7 @@ public class SourceForegroundService extends Service {
             wakeLock.setReferenceCounted(false);
         }
         if (!wakeLock.isHeld()) {
-            wakeLock.acquire(10 * 60 * 1_000L);
+            wakeLock.acquire(VideoPipelinePolicy.PIPELINE_LOCK_TIMEOUT_MS);
         }
         if (wifiLock == null) {
             WifiManager wifiManager = getApplicationContext().getSystemService(WifiManager.class);
@@ -405,6 +439,43 @@ public class SourceForegroundService extends Service {
             wifiLock.acquire();
         }
         AppLog.info(this, "Pipeline WakeLock and WifiLock acquired");
+    }
+
+    private void renewPipelineLocksIfNeeded() {
+        boolean renewed = false;
+        if (wakeLock != null && !wakeLock.isHeld()) {
+            wakeLock.acquire(VideoPipelinePolicy.PIPELINE_LOCK_TIMEOUT_MS);
+            renewed = true;
+        }
+        if (wifiLock != null && !wifiLock.isHeld()) {
+            wifiLock.acquire();
+            renewed = true;
+        }
+        if (renewed) {
+            AppLog.info(this, "Pipeline WakeLock/WifiLock renewed");
+        }
+    }
+
+    private void restartStalledRtsp(long frameAgeMs) {
+        ExoPlayer activePlayer = player;
+        if (activePlayer == null || currentUri.isEmpty() || !"RTSP".equals(mode)) {
+            return;
+        }
+        long nowMs = SystemClock.elapsedRealtime();
+        rtspWatchdogRecoveries++;
+        forceRtspTcp = true;
+        rtspRecoveryNotBeforeRealtimeMs = nowMs
+                + VideoPipelinePolicy.RTSP_RECOVERY_COOLDOWN_MS;
+        AppLog.info(this, "RTSP frame watchdog recovery=" + rtspWatchdogRecoveries
+                + " webRtcFrameAgeMs=" + frameAgeMs
+                + " transport=TCP restarting stale pipeline");
+        reportStatus("RTSP recovering stalled video");
+        try {
+            activePlayer.stop();
+            prepareVideoSource(currentUri);
+        } catch (Throwable throwable) {
+            reportError("RTSP frame watchdog", throwable);
+        }
     }
 
     private void releasePipelineLocks() {

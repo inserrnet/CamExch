@@ -3,6 +3,7 @@ package com.camexch.source;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.Surface;
 
 import org.webrtc.CapturerObserver;
@@ -58,6 +59,9 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
     private boolean freezeCapturePending;
     private boolean repeatFrozenFrame;
     private boolean released;
+    private final long createdRealtimeMs = SystemClock.elapsedRealtime();
+    private volatile long lastCapturedFrameRealtimeMs;
+    private volatile long capturedFrameCount;
     private final Runnable frozenFrameRepeater = new Runnable() {
         @Override
         public void run() {
@@ -103,6 +107,21 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
 
     Surface getVideoSurface() {
         return videoSurface;
+    }
+
+    long getCapturedFrameCount() {
+        return capturedFrameCount;
+    }
+
+    long getLastCapturedFrameRealtimeMs() {
+        return lastCapturedFrameRealtimeMs;
+    }
+
+    long getCapturedFrameAgeMs() {
+        long referenceMs = lastCapturedFrameRealtimeMs > 0
+                ? lastCapturedFrameRealtimeMs
+                : createdRealtimeMs;
+        return Math.max(0, SystemClock.elapsedRealtime() - referenceMs);
     }
 
     void freezeOnNextFrame(Runnable callback) {
@@ -241,6 +260,8 @@ final class WebRtcPublisher implements WebRtcSessionPublisher {
     }
 
     private void onTextureFrame(VideoFrame frame) {
+        lastCapturedFrameRealtimeMs = SystemClock.elapsedRealtime();
+        capturedFrameCount++;
         boolean capture;
         Runnable callback;
         synchronized (frozenFrameLock) {
