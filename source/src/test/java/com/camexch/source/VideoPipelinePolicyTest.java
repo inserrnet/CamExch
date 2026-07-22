@@ -25,6 +25,14 @@ public class VideoPipelinePolicyTest {
     }
 
     @Test
+    public void forcesReliableTransportOnlyForRtsp() {
+        assertTrue(VideoPipelinePolicy.shouldForceRtspTcp("RTSP"));
+        assertFalse(VideoPipelinePolicy.shouldForceRtspTcp("Video"));
+        assertFalse(VideoPipelinePolicy.shouldForceRtspTcp("Photo"));
+        assertFalse(VideoPipelinePolicy.shouldForceRtspTcp(null));
+    }
+
+    @Test
     public void rtspWatchdogWaitsForStartupThenRecoversMissingFrames() {
         long started = 1_000;
         assertFalse(VideoPipelinePolicy.shouldRecoverRtsp(

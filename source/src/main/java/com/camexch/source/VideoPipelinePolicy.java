@@ -26,6 +26,10 @@ final class VideoPipelinePolicy {
         return (int) Math.max(4_000_000L, Math.min(MAX_BITRATE_BPS, calculated));
     }
 
+    static boolean shouldForceRtspTcp(String mode) {
+        return "RTSP".equals(mode);
+    }
+
     static boolean shouldRecoverRtsp(long nowMs, long pipelineStartedMs,
                                      long lastFrameMs, long recoveryNotBeforeMs) {
         if (nowMs < recoveryNotBeforeMs

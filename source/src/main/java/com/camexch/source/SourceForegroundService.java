@@ -196,7 +196,9 @@ public class SourceForegroundService extends Service {
         mode = requestedMode;
         currentUri = uriText == null ? "" : uriText;
         fallbackScheduled = false;
-        forceRtspTcp = false;
+        // TCP preserves complete H.264 access units. A single lost UDP fragment can corrupt
+        // every dependent frame until the next IDR, which appears as persistent artifacts.
+        forceRtspTcp = VideoPipelinePolicy.shouldForceRtspTcp(requestedMode);
         rtspReconnectAttempts = 0;
         rtspWatchdogRecoveries = 0;
         rtspRecoveryNotBeforeRealtimeMs = 0;
@@ -225,6 +227,8 @@ public class SourceForegroundService extends Service {
             return;
         }
         releaseVideoPipeline();
+        // Decode before publishing so WebRTC can drop or request frames without breaking
+        // dependencies in the RTSP encoder's original H.264 GOP.
         directH264 = false;
         if (!ensureVideoPipeline(false)) {
             return;
@@ -242,7 +246,7 @@ public class SourceForegroundService extends Service {
             if ("RTSP".equals(mode)) {
                 AppLog.info(this, "RTSP transport=" + (forceRtspTcp ? "TCP forced" : "UDP preferred")
                         + " maxBufferMs=" + VideoPipelinePolicy.MAX_BUFFER_MS
-                        + " hardwareTranscode=true");
+                        + " hardwareTranscode=true dependencySafe=true");
                 player.setMediaSource(new RtspMediaSource.Factory()
                         .setTimeoutMs(VideoPipelinePolicy.RTSP_TIMEOUT_MS)
                         .setForceUseRtpTcp(forceRtspTcp)

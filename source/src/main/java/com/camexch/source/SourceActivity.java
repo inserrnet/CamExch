@@ -30,6 +30,9 @@ import android.widget.Toast;
 public class SourceActivity extends Activity {
     private static final int PICK_FILE = 42;
     private static final int REQUEST_OVERLAY = 43;
+    private static final String UI_PREFERENCES = "source_ui";
+    private static final String PREF_RTSP_URI = "rtsp_uri";
+    private static final String DEFAULT_RTSP_URI = "rtsp://192.168.4.132:554/live";
 
     private EditText rtspInput;
     private TextView selectedFileLabel;
@@ -146,8 +149,9 @@ public class SourceActivity extends Activity {
 
         rtspInput = new EditText(this);
         rtspInput.setSingleLine(true);
-        rtspInput.setHint("rtsp://192.168.4.132/live");
-        rtspInput.setText("rtsp://192.168.4.132/live");
+        rtspInput.setHint(DEFAULT_RTSP_URI);
+        rtspInput.setText(getSharedPreferences(UI_PREFERENCES, MODE_PRIVATE)
+                .getString(PREF_RTSP_URI, DEFAULT_RTSP_URI));
         root.addView(rtspInput, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -225,6 +229,9 @@ public class SourceActivity extends Activity {
                 showError("Enter an RTSP address");
                 return;
             }
+            getSharedPreferences(UI_PREFERENCES, MODE_PRIVATE).edit()
+                    .putString(PREF_RTSP_URI, uriText)
+                    .apply();
         } else {
             if (selectedUri == null) {
                 showError("Choose a file first");
