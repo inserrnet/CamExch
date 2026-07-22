@@ -49,6 +49,42 @@ class FakeTrack {
   }
 }
 
+class FakeMediaStreamTrackGenerator extends FakeTrack {
+  constructor() {
+    super();
+    this.kind = "video";
+    this.writable = {
+      getWriter: () => ({
+        write: async () => {},
+        close: async () => {},
+      }),
+    };
+  }
+}
+
+class FakeMediaStreamTrackProcessor {
+  constructor() {
+    let delivered = false;
+    let finish;
+    this.readable = {
+      getReader: () => ({
+        read: () => {
+          if (!delivered) {
+            delivered = true;
+            return Promise.resolve({ done: false, value: { close: () => {} } });
+          }
+          return new Promise((resolve) => { finish = resolve; });
+        },
+        cancel: () => {
+          if (finish) finish({ done: true });
+          return Promise.resolve();
+        },
+        releaseLock: () => {},
+      }),
+    };
+  }
+}
+
 class FakeStream {
   constructor(videoTracks = []) {
     this.videoTracks = videoTracks;
@@ -93,6 +129,9 @@ const context = {
   location: { href: "https://camera-routing.test/", origin: "https://camera-routing.test" },
   navigator: { mediaDevices: new FakeMediaDevices() },
   MediaDevices: FakeMediaDevices,
+  MediaStream: FakeStream,
+  MediaStreamTrackGenerator: FakeMediaStreamTrackGenerator,
+  MediaStreamTrackProcessor: FakeMediaStreamTrackProcessor,
   document: { querySelectorAll: () => [], documentElement: null },
   addEventListener: () => {},
   setTimeout,
@@ -159,7 +198,10 @@ if (mapped.some((device) => device.deviceId === "camexch-back-camera")) {
   throw new Error("Synthetic back camera duplicated a visible physical back camera");
 }
 
-await context.navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+const originalRearStream = await context.navigator.mediaDevices.getUserMedia(
+  { video: { facingMode: "environment" } },
+);
+const stableRearTrack = originalRearStream.getVideoTracks()[0];
 if (nativeGetCount !== 1) {
   throw new Error("Rear camera request did not reach the native camera exactly once");
 }
@@ -196,14 +238,13 @@ if (failedSourceSwitch.switched !== 0 || failedSourceSwitch.failed !== 1
 }
 const rearSwitch = await context.__camexchSwitchCamera("REAR");
 if (rearSwitch.switched !== 1 || rearSwitch.failed !== 0 || nativeGetCount !== 2) {
-  throw new Error("Active rear-camera switch did not replace the managed video track");
+  throw new Error("Active rear-camera switch did not replace the proxy source");
 }
 const managedEntry = Array.from(context.__camexchForTest.managed)[0];
-managedEntry.stream.getVideoTracks().forEach((track) => track.stop());
-const revivedRearSwitch = await context.__camexchSwitchCamera("REAR");
-if (revivedRearSwitch.switched !== 1 || revivedRearSwitch.failed !== 0
-    || !managedEntry.stream.active || nativeGetCount !== 3) {
-  throw new Error("Camera overlay did not reactivate the latest stopped MediaStream");
+if (managedEntry.stream !== originalRearStream
+    || managedEntry.stream.getVideoTracks()[0] !== stableRearTrack
+    || stableRearTrack.readyState !== "live") {
+  throw new Error("Camera switch changed or stopped the page's stable video track");
 }
 
 const syntheticBack = context.__camexchForTest.native({
@@ -234,12 +275,12 @@ await FakeMediaDevices.prototype.getUserMedia.call(
   context.navigator.mediaDevices,
   { video: { facingMode: "environment" } },
 );
-if (nativeGetCount !== 4) {
+if (nativeGetCount !== 3) {
   throw new Error("MediaDevices.prototype.getUserMedia bypassed the camera router");
 }
 
 const autoSwitch = await context.__camexchSwitchCamera("AUTO");
-if (autoSwitch.switched !== 2 || autoSwitch.failed !== 0 || nativeGetCount !== 6) {
+if (autoSwitch.switched !== 2 || autoSwitch.failed !== 0 || nativeGetCount !== 5) {
   throw new Error("Active automatic-camera switch did not restore constraint routing");
 }
 
@@ -273,7 +314,7 @@ try {
 } catch (_) {
   // The callback is asserted below.
 }
-if (!legacyFailure || legacyFailure.name !== "NotReadableError" || nativeGetCount !== 6) {
+if (!legacyFailure || legacyFailure.name !== "NotReadableError" || nativeGetCount !== 5) {
   throw new Error("Legacy getUserMedia did not route the front camera to Front Camera 4");
 }
 
