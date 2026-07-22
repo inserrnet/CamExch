@@ -28,6 +28,8 @@ for (const marker of [
   "getUserMedia route gateway target=",
   "getUserMedia wrapper observed target=",
   "camera route devicechange mode=",
+  "synchronous iframe interception ready",
+  "synchronous iframe hook source=",
   "track applyConstraints requestedRoute=",
   "RTCRtpSender.replaceTrack",
   "stopped camera stream revived route=",
@@ -359,6 +361,88 @@ class FakeMediaDevices {
   }
 }
 const nativeBypassGetUserMedia = FakeMediaDevices.prototype.getUserMedia;
+
+class FakeNode {
+  constructor() {
+    this.children = [];
+  }
+
+  appendChild(node) {
+    this.children.push(node);
+    return node;
+  }
+
+  insertBefore(node) {
+    this.children.unshift(node);
+    return node;
+  }
+
+  replaceChild(node, previous) {
+    const index = this.children.indexOf(previous);
+    if (index >= 0) this.children[index] = node;
+    return previous;
+  }
+
+  querySelectorAll(selector) {
+    const result = [];
+    const visit = (node) => {
+      if (selector === "iframe" && node?.tagName === "IFRAME") result.push(node);
+      for (const child of node?.children || []) visit(child);
+    };
+    for (const child of this.children) visit(child);
+    return result;
+  }
+}
+
+class FakeElement extends FakeNode {
+  constructor(tagName = "DIV") {
+    super();
+    this.tagName = tagName;
+    this.html = "";
+  }
+
+  append(...nodes) {
+    this.children.push(...nodes);
+  }
+
+  prepend(...nodes) {
+    this.children.unshift(...nodes);
+  }
+
+  replaceChildren(...nodes) {
+    this.children = [...nodes];
+  }
+
+  get innerHTML() {
+    return this.html;
+  }
+
+  set innerHTML(value) {
+    this.html = String(value);
+  }
+
+  insertAdjacentHTML(_position, value) {
+    this.html += String(value);
+  }
+}
+
+class FakeIFrameElement extends FakeElement {
+  constructor(childWindow) {
+    super("IFRAME");
+    this.childWindow = childWindow;
+  }
+
+  get contentWindow() {
+    return this.childWindow;
+  }
+
+  get contentDocument() {
+    return { defaultView: this.childWindow };
+  }
+
+  addEventListener() {}
+}
+
 const context = {
   location: { href: "https://camera-routing.test/", origin: "https://camera-routing.test" },
   navigator: { mediaDevices: new FakeMediaDevices() },
@@ -375,6 +459,9 @@ const context = {
     }),
   },
   HTMLMediaElement: FakeVideo,
+  Node: FakeNode,
+  Element: FakeElement,
+  HTMLIFrameElement: FakeIFrameElement,
   Event: class FakeEvent {
     constructor(type) {
       this.type = type;
@@ -405,6 +492,68 @@ const testScript = script.replace(
   "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,managed:managedStreams,install:installHooks,installFrame:installFrame};})();",
 );
 vm.runInNewContext(testScript, context);
+
+let earlyIframeNativeCalls = 0;
+class EarlyIframeMediaDevices {
+  async getUserMedia() {
+    earlyIframeNativeCalls += 1;
+    return new FakeStream([new FakeTrack("front-id")]);
+  }
+
+  async enumerateDevices() {
+    return nativeDevices;
+  }
+}
+const makeEarlyIframeWindow = () => ({
+  navigator: { mediaDevices: new EarlyIframeMediaDevices() },
+  MediaDevices: EarlyIframeMediaDevices,
+  location: { origin: "https://camera-routing.test" },
+  document: {},
+});
+const earlyAccessWindow = makeEarlyIframeWindow();
+const earlyAccessFrame = new FakeIFrameElement(earlyAccessWindow);
+const capturedEarlyGetUserMedia = earlyAccessFrame.contentWindow.navigator.mediaDevices.getUserMedia;
+let earlyAccessFailure;
+try {
+  await capturedEarlyGetUserMedia.call(
+    earlyAccessWindow.navigator.mediaDevices,
+    { video: { facingMode: "user" } },
+  );
+} catch (error) {
+  earlyAccessFailure = error;
+}
+if (!earlyAccessWindow.__camexchInstalled
+    || earlyAccessFailure?.name !== "NotReadableError"
+    || earlyIframeNativeCalls !== 0) {
+  throw new Error("Immediate iframe contentWindow capture bypassed camera routing");
+}
+
+const earlyDocumentWindow = makeEarlyIframeWindow();
+const earlyDocumentFrame = new FakeIFrameElement(earlyDocumentWindow);
+const capturedDocumentGetUserMedia = earlyDocumentFrame.contentDocument.defaultView
+  .navigator.mediaDevices.getUserMedia;
+let earlyDocumentFailure;
+try {
+  await capturedDocumentGetUserMedia.call(
+    earlyDocumentWindow.navigator.mediaDevices,
+    { video: { facingMode: "user" } },
+  );
+} catch (error) {
+  earlyDocumentFailure = error;
+}
+if (!earlyDocumentWindow.__camexchInstalled
+    || earlyDocumentFailure?.name !== "NotReadableError"
+    || earlyIframeNativeCalls !== 0) {
+  throw new Error("Immediate iframe contentDocument capture bypassed camera routing");
+}
+
+const insertedWindow = makeEarlyIframeWindow();
+const insertedFrame = new FakeIFrameElement(insertedWindow);
+new FakeElement().appendChild(insertedFrame);
+if (!insertedWindow.__camexchInstalled) {
+  throw new Error("Synchronous iframe insertion did not install camera routing");
+}
+
 await context.navigator.mediaDevices.enumerateDevices();
 
 const route = context.__camexchForTest.route;
@@ -842,6 +991,28 @@ if (sourceDeviceChangeSwitch.devicechange !== 1
     || deviceChangeTrack.getSettings().facingMode !== "user"
     || nativeGetCount !== nativeCountBeforeDeviceChangeRequest) {
   throw new Error("Devicechange camera retry bypassed Source routing");
+}
+
+const sourceIframeWindow = makeEarlyIframeWindow();
+const sourceIframeFrame = new FakeIFrameElement(sourceIframeWindow);
+const sourceIframeGetUserMedia = sourceIframeFrame.contentWindow
+  .navigator.mediaDevices.getUserMedia;
+const earlyIframeCallsBeforeSourceRetry = earlyIframeNativeCalls;
+const sourceIframeStream = await sourceIframeGetUserMedia.call(
+  sourceIframeWindow.navigator.mediaDevices,
+  {
+    video: {
+      facingMode: "environment",
+      deviceId: { exact: "main-rear-id" },
+    },
+  },
+);
+const sourceIframeTrack = sourceIframeStream?.getVideoTracks?.()[0];
+if (!sourceIframeTrack
+    || sourceIframeTrack.label !== "Front Camera 4"
+    || sourceIframeTrack.getSettings().facingMode !== "user"
+    || earlyIframeNativeCalls !== earlyIframeCallsBeforeSourceRetry) {
+  throw new Error("Early iframe retry ignored the selected Source route");
 }
 
 let cooperativeWrapperCalls = 0;
