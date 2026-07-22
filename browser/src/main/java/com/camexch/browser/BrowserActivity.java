@@ -5,11 +5,14 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.util.Base64;
 import android.view.KeyEvent;
 import android.view.View;
@@ -48,6 +51,8 @@ public class BrowserActivity extends Activity {
     private int activeTab = -1;
     private boolean diagnosticsOnly;
     private final NativeCameraAuthorizationStore nativeCameraAuthorizations = new NativeCameraAuthorizationStore();
+    private CameraRoutePreferences cameraRoutePreferences;
+    private FloatingCameraControls floatingCameraControls;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -62,6 +67,39 @@ public class BrowserActivity extends Activity {
         WebView.setWebContentsDebuggingEnabled(true);
         buildUi();
         addTab(HOME_URL);
+        cameraRoutePreferences = new CameraRoutePreferences(this);
+        floatingCameraControls = new FloatingCameraControls(this, this::selectCameraRouteMode);
+        floatingCameraControls.setMode(cameraRoutePreferences.getMode());
+        if (Settings.canDrawOverlays(this)) {
+            floatingCameraControls.show();
+        } else {
+            requestCameraOverlayPermission();
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (!diagnosticsOnly && floatingCameraControls != null && Settings.canDrawOverlays(this)) {
+            floatingCameraControls.show();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (floatingCameraControls != null) {
+            floatingCameraControls.hide();
+        }
+        super.onDestroy();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        AppLog.info(this, "Browser configuration changed orientation=" + newConfig.orientation);
+        if (floatingCameraControls != null) {
+            floatingCameraControls.onConfigurationChanged();
+        }
     }
 
     @Override
@@ -156,6 +194,37 @@ public class BrowserActivity extends Activity {
         button.setMinimumWidth(0);
         button.setPadding(12, 0, 12, 0);
         return button;
+    }
+
+    private void requestCameraOverlayPermission() {
+        AppLog.info(this, "Requesting camera routing overlay permission");
+        Intent intent = new Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:" + getPackageName())
+        );
+        startActivity(intent);
+    }
+
+    private void selectCameraRouteMode(CameraRouteMode mode) {
+        cameraRoutePreferences.setMode(mode);
+        floatingCameraControls.setMode(mode);
+        AppLog.info(this, "Camera route overlay selected mode=" + mode);
+        WebView webView = currentWebView();
+        if (webView != null) {
+            String script = "window.__camexchSwitchCamera&&window.__camexchSwitchCamera('"
+                    + mode.name() + "')";
+            webView.evaluateJavascript(script, result -> AppLog.info(
+                    this, "Camera route switch result=" + result));
+        }
+        String message;
+        if (mode == CameraRouteMode.SOURCE) {
+            message = "Front Camera 4";
+        } else if (mode == CameraRouteMode.REAR) {
+            message = "Phone rear camera";
+        } else {
+            message = "Automatic camera routing";
+        }
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
     }
 
     private void addTab(String url) {
@@ -415,6 +484,14 @@ public class BrowserActivity extends Activity {
 
     private final class SourceBridge {
         private static final String BRIDGE_URI = "content://com.camexch.source.bridge";
+
+        @JavascriptInterface
+        public String getCameraRouteMode() {
+            if (cameraRoutePreferences == null) {
+                return CameraRouteMode.AUTO.name();
+            }
+            return cameraRoutePreferences.getMode().name();
+        }
 
         @JavascriptInterface
         public String authorizeNativeCamera(String origin, String route) {

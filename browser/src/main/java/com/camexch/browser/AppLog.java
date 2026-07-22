@@ -24,6 +24,12 @@ final class AppLog {
         append(context, "INFO", message, false);
     }
 
+    static void error(Context context, String message, Throwable throwable) {
+        StringWriter writer = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(writer));
+        append(context, "ERROR", message + "\n" + writer, true);
+    }
+
     static void crash(Context context, Thread thread, Throwable throwable) {
         StringWriter writer = new StringWriter();
         throwable.printStackTrace(new PrintWriter(writer));
