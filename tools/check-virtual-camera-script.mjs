@@ -383,18 +383,27 @@ pageVideo.srcObject = originalRearStream;
 pageVideo.isConnected = false;
 pageVideo.srcObject = null;
 stableRearTrack.stop();
-if (!managedEntry.controller.softStopped || stableRearTrack.readyState !== "live"
-    || managedEntry.controller.sourceTrack.readyState !== "live") {
-  throw new Error("Page stop permanently ended the overlay-controlled proxy track");
+if (stableRearTrack.readyState !== "ended"
+    || managedEntry.controller.sourceTrack.readyState !== "ended") {
+  throw new Error("Page stop did not end the proxy and physical source tracks");
 }
-const revivedRearSwitch = await context.__camexchSwitchCamera("REAR");
-if (revivedRearSwitch.switched !== 1 || revivedRearSwitch.failed !== 0
-    || revivedRearSwitch.restored !== 1
-    || managedEntry.controller.softStopped || stableRearTrack.readyState !== "live"
-    || pageVideo.srcObject !== originalRearStream || pageVideo.playCount < 1
-    || nativeGetCount !== 1) {
-  throw new Error("Overlay did not reactivate the soft-stopped camera track");
+const stoppedSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
+if (stoppedSourceSwitch.switched !== 0 || stoppedSourceSwitch.failed !== 0
+    || pageVideo.srcObject !== null || nativeGetCount !== 1) {
+  throw new Error("Overlay tried to revive a page-stopped camera consumer");
 }
+let nextFrontFailure;
+try {
+  await context.navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "environment" },
+  });
+} catch (error) {
+  nextFrontFailure = error;
+}
+if (!nextFrontFailure || nativeGetCount !== 1) {
+  throw new Error("F mode did not route the site's next camera request to Source");
+}
+await context.__camexchSwitchCamera("AUTO");
 
 const syntheticBack = context.__camexchForTest.native({
   video: {
