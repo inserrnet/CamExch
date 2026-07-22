@@ -133,7 +133,7 @@ class FakeVideo {
     this.readyState = 0;
     this.videoWidth = 0;
     this.videoHeight = 0;
-    this.callbackDelivered = false;
+    this.callbackCount = 0;
     this.playCount = 0;
   }
 
@@ -144,9 +144,16 @@ class FakeVideo {
       return;
     }
     const settings = stream.getVideoTracks()[0]?.getSettings?.() || {};
+    if (settings.deviceId === "no-frame") {
+      this.videoWidth = 0;
+      this.videoHeight = 0;
+      this.readyState = 0;
+      return;
+    }
     this.videoWidth = settings.width || 640;
     this.videoHeight = settings.height || 480;
     this.readyState = 2;
+    this.callbackCount = 0;
     queueMicrotask(() => {
       for (const name of ["loadedmetadata", "loadeddata"]) {
         const callback = this.listeners.get(name);
@@ -170,8 +177,8 @@ class FakeVideo {
   pause() {}
 
   requestVideoFrameCallback(callback) {
-    if (!this.callbackDelivered) {
-      this.callbackDelivered = true;
+    if (this.callbackCount < 2 && this.readyState >= 2) {
+      this.callbackCount += 1;
       queueMicrotask(() => callback(10));
     }
   }
@@ -233,7 +240,8 @@ const context = {
   },
   addEventListener: () => {},
   requestAnimationFrame: () => 1,
-  setTimeout,
+  setTimeout: (callback, delay) => setTimeout(callback, Math.min(delay, 5)),
+  clearTimeout,
   clearInterval,
   setInterval: () => 1,
 };
@@ -315,6 +323,19 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 if (initialManagedEntry.controller.kind !== "canvas-direct"
     || canvasDrawCount < 1 || canvasRequestFrameCount < 1) {
   throw new Error("Production canvas proxy did not publish an output frame");
+}
+const sourceBeforeTimeout = initialManagedEntry.controller.sourceTrack;
+const noFrameTrack = new FakeTrack("no-frame");
+let noFrameFailure;
+try {
+  await initialManagedEntry.controller.switchTo(new FakeStream([noFrameTrack]));
+} catch (error) {
+  noFrameFailure = error;
+}
+if (!noFrameFailure || noFrameTrack.readyState !== "ended"
+    || initialManagedEntry.controller.sourceTrack !== sourceBeforeTimeout
+    || stableRearTrack.readyState !== "live") {
+  throw new Error("No-frame camera switch did not time out and roll back safely");
 }
 
 let switchedFrontFailure;
