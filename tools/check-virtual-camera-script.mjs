@@ -134,6 +134,7 @@ class FakeVideo {
     this.videoWidth = 0;
     this.videoHeight = 0;
     this.callbackDelivered = false;
+    this.playCount = 0;
   }
 
   set srcObject(stream) {
@@ -162,7 +163,9 @@ class FakeVideo {
     this.listeners.set(name, callback);
   }
 
-  async play() {}
+  async play() {
+    this.playCount += 1;
+  }
 
   pause() {}
 
@@ -222,6 +225,7 @@ const context = {
   MediaStream: FakeStream,
   MediaStreamTrackGenerator: FakeMediaStreamTrackGenerator,
   MediaStreamTrackProcessor: FakeMediaStreamTrackProcessor,
+  HTMLMediaElement: FakeVideo,
   document: {
     querySelectorAll: () => [],
     documentElement: null,
@@ -353,6 +357,9 @@ if (managedEntry.stream !== originalRearStream
     || stableRearTrack.readyState !== "live") {
   throw new Error("Camera switch changed or stopped the page's stable video track");
 }
+const pageVideo = new FakeVideo();
+pageVideo.srcObject = originalRearStream;
+pageVideo.srcObject = null;
 stableRearTrack.stop();
 if (!managedEntry.controller.softStopped || stableRearTrack.readyState !== "live"
     || managedEntry.controller.sourceTrack.readyState !== "live") {
@@ -360,7 +367,9 @@ if (!managedEntry.controller.softStopped || stableRearTrack.readyState !== "live
 }
 const revivedRearSwitch = await context.__camexchSwitchCamera("REAR");
 if (revivedRearSwitch.switched !== 1 || revivedRearSwitch.failed !== 0
+    || revivedRearSwitch.restored !== 1
     || managedEntry.controller.softStopped || stableRearTrack.readyState !== "live"
+    || pageVideo.srcObject !== originalRearStream || pageVideo.playCount < 1
     || nativeGetCount !== 1) {
   throw new Error("Overlay did not reactivate the soft-stopped camera track");
 }
