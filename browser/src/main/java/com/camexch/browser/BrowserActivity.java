@@ -91,6 +91,9 @@ public class BrowserActivity extends Activity {
         if (floatingCameraControls != null) {
             floatingCameraControls.hide();
         }
+        if (isFinishing() && !isChangingConfigurations()) {
+            AppLog.clear(this);
+        }
         super.onDestroy();
     }
 
@@ -484,6 +487,10 @@ public class BrowserActivity extends Activity {
                 .setTitle("CamExch Browser log")
                 .setMessage(AppLog.read(this))
                 .setPositiveButton("Copy log", (dialog, which) -> copyLog())
+                .setNeutralButton("Clear log", (dialog, which) -> {
+                    AppLog.clear(this);
+                    Toast.makeText(this, "Log cleared", Toast.LENGTH_SHORT).show();
+                })
                 .setNegativeButton("Close", null)
                 .show();
     }

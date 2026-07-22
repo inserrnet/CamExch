@@ -61,6 +61,11 @@ final class AppLog {
         writeFile(context, CRASH_FILE, "");
     }
 
+    static void clear(Context context) {
+        writeFile(context, LOG_FILE, "");
+        writeFile(context, CRASH_FILE, "");
+    }
+
     private static void append(Context context, String level, String message, boolean force) {
         appendRaw(context, LOG_FILE, line(level, message), force);
     }
