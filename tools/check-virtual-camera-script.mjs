@@ -35,6 +35,7 @@ const nativeDevices = [
   { kind: "videoinput", deviceId: "front-id", label: "camera2 2, facing front", groupId: "front" },
 ];
 let nativeGetCount = 0;
+let continuousFocusCount = 0;
 class FakeTrack {
   constructor() {
     this.readyState = "live";
@@ -42,6 +43,16 @@ class FakeTrack {
 
   getSettings() {
     return { facingMode: "environment", deviceId: "rear-id" };
+  }
+
+  getCapabilities() {
+    return { focusMode: ["manual", "continuous"] };
+  }
+
+  async applyConstraints(constraints) {
+    if (constraints?.advanced?.[0]?.focusMode === "continuous") {
+      continuousFocusCount += 1;
+    }
   }
 
   stop() {
@@ -237,14 +248,24 @@ if (failedSourceSwitch.switched !== 0 || failedSourceSwitch.failed !== 1
   throw new Error("Failed active source switch did not preserve the physical camera");
 }
 const rearSwitch = await context.__camexchSwitchCamera("REAR");
-if (rearSwitch.switched !== 1 || rearSwitch.failed !== 0 || nativeGetCount !== 2) {
-  throw new Error("Active rear-camera switch did not replace the proxy source");
+if (rearSwitch.switched !== 1 || rearSwitch.failed !== 0 || nativeGetCount !== 1) {
+  throw new Error("Selecting the active rear camera reopened Camera2");
 }
 const managedEntry = Array.from(context.__camexchForTest.managed)[0];
 if (managedEntry.stream !== originalRearStream
     || managedEntry.stream.getVideoTracks()[0] !== stableRearTrack
     || stableRearTrack.readyState !== "live") {
   throw new Error("Camera switch changed or stopped the page's stable video track");
+}
+stableRearTrack.stop();
+if (!managedEntry.controller.softStopped || stableRearTrack.readyState !== "live") {
+  throw new Error("Page stop permanently ended the overlay-controlled proxy track");
+}
+const revivedRearSwitch = await context.__camexchSwitchCamera("REAR");
+if (revivedRearSwitch.switched !== 1 || revivedRearSwitch.failed !== 0
+    || managedEntry.controller.softStopped || stableRearTrack.readyState !== "live"
+    || nativeGetCount !== 2) {
+  throw new Error("Overlay did not reactivate the soft-stopped camera track");
 }
 
 const syntheticBack = context.__camexchForTest.native({
@@ -280,8 +301,11 @@ if (nativeGetCount !== 3) {
 }
 
 const autoSwitch = await context.__camexchSwitchCamera("AUTO");
-if (autoSwitch.switched !== 2 || autoSwitch.failed !== 0 || nativeGetCount !== 5) {
+if (autoSwitch.switched !== 2 || autoSwitch.failed !== 0 || nativeGetCount !== 3) {
   throw new Error("Active automatic-camera switch did not restore constraint routing");
+}
+if (continuousFocusCount !== nativeGetCount) {
+  throw new Error("Continuous autofocus was not applied to every physical rear track");
 }
 
 const lockedGet = context.navigator.mediaDevices.getUserMedia;
@@ -314,7 +338,7 @@ try {
 } catch (_) {
   // The callback is asserted below.
 }
-if (!legacyFailure || legacyFailure.name !== "NotReadableError" || nativeGetCount !== 5) {
+if (!legacyFailure || legacyFailure.name !== "NotReadableError" || nativeGetCount !== 3) {
   throw new Error("Legacy getUserMedia did not route the front camera to Front Camera 4");
 }
 
