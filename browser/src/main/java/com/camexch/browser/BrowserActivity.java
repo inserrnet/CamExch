@@ -329,7 +329,12 @@ public class BrowserActivity extends Activity {
                 nonVideo.add(resource);
             }
         }
-        AppLog.info(this, "Denied unclassified native video request origin=" + request.getOrigin());
+        CameraRouteMode routeMode = cameraRoutePreferences == null
+                ? CameraRouteMode.AUTO : cameraRoutePreferences.getMode();
+        WebView webView = currentWebView();
+        AppLog.info(this, "Denied unclassified native video request origin=" + request.getOrigin()
+                + " routeMode=" + routeMode
+                + " page=" + (webView == null ? "none" : webView.getUrl()));
         if (nonVideo.isEmpty()) {
             request.deny();
         } else {

@@ -25,8 +25,9 @@ for (const marker of [
   "WebRTC receiver low-latency hints",
   "WebRTC frame latencyMs=",
   "getUserMedia resolved elapsedMs=",
-  "getUserMedia wrapper installed target=",
-  "getUserMedia wrapper called target=",
+  "getUserMedia route gateway target=",
+  "getUserMedia wrapper observed target=",
+  "camera route devicechange mode=",
   "track applyConstraints requestedRoute=",
   "RTCRtpSender.replaceTrack",
   "stopped camera stream revived route=",
@@ -54,6 +55,7 @@ let continuousFocusCount = 0;
 let canvasDrawCount = 0;
 let canvasRequestFrameCount = 0;
 let sourceOnline = false;
+let deviceChangeCount = 0;
 class FakeTrack {
   constructor(deviceId = "rear-id") {
     this.kind = "video";
@@ -331,6 +333,10 @@ class FakeStream {
 }
 
 class FakeMediaDevices {
+  constructor() {
+    this.listeners = new Map();
+  }
+
   async getUserMedia(constraints) {
     nativeGetCount += 1;
     const requestedId = constraints?.video?.deviceId?.exact;
@@ -340,7 +346,19 @@ class FakeMediaDevices {
   async enumerateDevices() {
     return nativeDevices;
   }
+
+  addEventListener(name, callback) {
+    if (!this.listeners.has(name)) this.listeners.set(name, new Set());
+    this.listeners.get(name).add(callback);
+  }
+
+  dispatchEvent(event) {
+    if (event?.type === "devicechange") deviceChangeCount += 1;
+    for (const callback of this.listeners.get(event?.type) || []) callback.call(this, event);
+    return true;
+  }
 }
+const nativeBypassGetUserMedia = FakeMediaDevices.prototype.getUserMedia;
 const context = {
   location: { href: "https://camera-routing.test/", origin: "https://camera-routing.test" },
   navigator: { mediaDevices: new FakeMediaDevices() },
@@ -357,6 +375,11 @@ const context = {
     }),
   },
   HTMLMediaElement: FakeVideo,
+  Event: class FakeEvent {
+    constructor(type) {
+      this.type = type;
+    }
+  },
   document: {
     querySelectorAll: () => [],
     documentElement: null,
@@ -602,11 +625,11 @@ let instanceWrapperCalls = 0;
 let prototypeWrapperCalls = 0;
 context.navigator.mediaDevices.getUserMedia = function (...args) {
   instanceWrapperCalls += 1;
-  return lockedGet.apply(this, args);
+  return nativeBypassGetUserMedia.apply(this, args);
 };
 FakeMediaDevices.prototype.getUserMedia = function (...args) {
   prototypeWrapperCalls += 1;
-  return lockedPrototypeGet.apply(this, args);
+  return nativeBypassGetUserMedia.apply(this, args);
 };
 let wrappedInstanceFailure;
 try {
@@ -623,11 +646,15 @@ try {
 } catch (error) {
   wrappedPrototypeFailure = error;
 }
-if (instanceWrapperCalls !== 1 || prototypeWrapperCalls !== 1
+if (instanceWrapperCalls !== 0 || prototypeWrapperCalls !== 0
     || wrappedInstanceFailure?.name !== "NotReadableError"
     || wrappedPrototypeFailure?.name !== "NotReadableError"
     || nativeGetCount !== 2) {
-  throw new Error("Site getUserMedia wrappers did not preserve routed camera calls");
+  throw new Error("Site getUserMedia wrappers bypassed the permanent video router");
+}
+if (context.navigator.mediaDevices.getUserMedia !== lockedGet
+    || FakeMediaDevices.prototype.getUserMedia !== lockedPrototypeGet) {
+  throw new Error("Site assignment replaced a permanent camera route gateway");
 }
 const getDescriptor = Object.getOwnPropertyDescriptor(
   context.navigator.mediaDevices,
@@ -691,11 +718,14 @@ if (childWindow.navigator.mediaDevices.getUserMedia !== childHook) {
 const activeEntry = Array.from(context.__camexchForTest.managed)[0];
 const stableTrackBeforeOnlineSwitch = activeEntry.controller.track;
 const nativeCountBeforeOnlineSwitch = nativeGetCount;
+const deviceChangesBeforeOnlineSwitch = deviceChangeCount;
 sourceOnline = true;
 const onlineSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
 if (onlineSourceSwitch.switched !== 1 || onlineSourceSwitch.failed !== 0
     || activeEntry.controller.track !== stableTrackBeforeOnlineSwitch
     || activeEntry.controller.route !== "SOURCE"
+    || onlineSourceSwitch.devicechange !== 1
+    || deviceChangeCount !== deviceChangesBeforeOnlineSwitch + 1
     || stableTrackBeforeOnlineSwitch.label !== "Front Camera 4") {
   throw new Error("Online Source switch did not preserve and relabel the page track");
 }
@@ -791,6 +821,39 @@ const expiredSwitch = await context.__camexchSwitchCamera("REAR");
 if (expiredSwitch.switched !== 0 || expiredSwitch.revived !== 0
     || context.__camexchForTest.managed.size !== 0) {
   throw new Error("Expired stopped camera session was retained or revived");
+}
+
+let deviceChangeStreamPromise;
+context.navigator.mediaDevices.addEventListener("devicechange", () => {
+  deviceChangeStreamPromise = context.navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: "environment",
+      deviceId: { exact: "main-rear-id" },
+    },
+  });
+});
+const nativeCountBeforeDeviceChangeRequest = nativeGetCount;
+const sourceDeviceChangeSwitch = await context.__camexchSwitchCamera("SOURCE");
+const deviceChangeStream = await deviceChangeStreamPromise;
+const deviceChangeTrack = deviceChangeStream?.getVideoTracks?.()[0];
+if (sourceDeviceChangeSwitch.devicechange !== 1
+    || !deviceChangeTrack
+    || deviceChangeTrack.label !== "Front Camera 4"
+    || deviceChangeTrack.getSettings().facingMode !== "user"
+    || nativeGetCount !== nativeCountBeforeDeviceChangeRequest) {
+  throw new Error("Devicechange camera retry bypassed Source routing");
+}
+
+let cooperativeWrapperCalls = 0;
+context.navigator.mediaDevices.getUserMedia = function (...args) {
+  cooperativeWrapperCalls += 1;
+  return lockedGet.apply(this, args);
+};
+const nativeCountBeforeAudioWrapper = nativeGetCount;
+await context.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+if (cooperativeWrapperCalls !== 1
+    || nativeGetCount !== nativeCountBeforeAudioWrapper + 1) {
+  throw new Error("Non-video site wrapper did not delegate without recursion");
 }
 
 console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);
