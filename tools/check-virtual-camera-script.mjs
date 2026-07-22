@@ -32,17 +32,19 @@ for (const marker of [
 
 const nativeDevices = [
   { kind: "videoinput", deviceId: "rear-id", label: "camera 2, facing back", groupId: "rear" },
+  { kind: "videoinput", deviceId: "main-rear-id", label: "camera 0, facing back", groupId: "main-rear" },
   { kind: "videoinput", deviceId: "front-id", label: "camera2 2, facing front", groupId: "front" },
 ];
 let nativeGetCount = 0;
 let continuousFocusCount = 0;
 class FakeTrack {
-  constructor() {
+  constructor(deviceId = "rear-id") {
     this.readyState = "live";
+    this.deviceId = deviceId;
   }
 
   getSettings() {
-    return { facingMode: "environment", deviceId: "rear-id" };
+    return { facingMode: "environment", deviceId: this.deviceId };
   }
 
   getCapabilities() {
@@ -129,7 +131,8 @@ class FakeStream {
 class FakeMediaDevices {
   async getUserMedia(constraints) {
     nativeGetCount += 1;
-    return new FakeStream(constraints?.video ? [new FakeTrack()] : []);
+    const requestedId = constraints?.video?.deviceId?.exact;
+    return new FakeStream(constraints?.video ? [new FakeTrack(requestedId || "rear-id")] : []);
   }
 
   async enumerateDevices() {
@@ -202,6 +205,9 @@ const mapped = await context.navigator.mediaDevices.enumerateDevices();
 if (mapped.find((device) => device.deviceId === "rear-id")?.label !== "camera 2, facing back") {
   throw new Error("Rear camera label was incorrectly replaced");
 }
+if (mapped.find((device) => device.kind === "videoinput")?.deviceId !== "main-rear-id") {
+  throw new Error("The primary camera 0 was not preferred over secondary rear modules");
+}
 if (mapped.find((device) => device.deviceId === "front-id")?.label !== "Front Camera 4") {
   throw new Error("Front camera label was not replaced");
 }
@@ -215,6 +221,10 @@ const originalRearStream = await context.navigator.mediaDevices.getUserMedia(
 const stableRearTrack = originalRearStream.getVideoTracks()[0];
 if (nativeGetCount !== 1) {
   throw new Error("Rear camera request did not reach the native camera exactly once");
+}
+const initialManagedEntry = Array.from(context.__camexchForTest.managed)[0];
+if (initialManagedEntry.controller.sourceTrack.getSettings().deviceId !== "main-rear-id") {
+  throw new Error("Environment request did not select the primary camera 0 deviceId");
 }
 
 let switchedFrontFailure;
