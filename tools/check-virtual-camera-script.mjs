@@ -25,6 +25,7 @@ for (const marker of [
   "WebRTC receiver low-latency hints",
   "WebRTC frame latencyMs=",
   "getUserMedia resolved elapsedMs=",
+  "getUserMedia wrapper installed target=",
   "track applyConstraints requestedRoute=",
   "RTCRtpSender.replaceTrack",
   "page unhandledrejection",
@@ -554,22 +555,45 @@ if (continuousFocusCount !== nativeGetCount) {
 
 const lockedGet = context.navigator.mediaDevices.getUserMedia;
 const lockedPrototypeGet = FakeMediaDevices.prototype.getUserMedia;
+let instanceWrapperCalls = 0;
+let prototypeWrapperCalls = 0;
+context.navigator.mediaDevices.getUserMedia = function (...args) {
+  instanceWrapperCalls += 1;
+  return lockedGet.apply(this, args);
+};
+FakeMediaDevices.prototype.getUserMedia = function (...args) {
+  prototypeWrapperCalls += 1;
+  return lockedPrototypeGet.apply(this, args);
+};
+let wrappedInstanceFailure;
 try {
-  context.navigator.mediaDevices.getUserMedia = async () => "bypass";
-  FakeMediaDevices.prototype.getUserMedia = async () => "prototype bypass";
-} catch (_) {
-  // Non-writable hooks throw in strict mode, which is expected.
+  await context.navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+} catch (error) {
+  wrappedInstanceFailure = error;
 }
-if (context.navigator.mediaDevices.getUserMedia !== lockedGet
-    || FakeMediaDevices.prototype.getUserMedia !== lockedPrototypeGet) {
-  throw new Error("Page code was able to overwrite a locked camera hook");
+let wrappedPrototypeFailure;
+try {
+  await FakeMediaDevices.prototype.getUserMedia.call(
+    context.navigator.mediaDevices,
+    { video: { facingMode: "user" } },
+  );
+} catch (error) {
+  wrappedPrototypeFailure = error;
+}
+if (instanceWrapperCalls !== 1 || prototypeWrapperCalls !== 1
+    || wrappedInstanceFailure?.name !== "NotReadableError"
+    || wrappedPrototypeFailure?.name !== "NotReadableError"
+    || nativeGetCount !== 2) {
+  throw new Error("Site getUserMedia wrappers did not preserve routed camera calls");
 }
 const getDescriptor = Object.getOwnPropertyDescriptor(
   context.navigator.mediaDevices,
   "getUserMedia",
 );
-if (!getDescriptor || getDescriptor.configurable || getDescriptor.writable) {
-  throw new Error("Camera hook is not immutable");
+if (!getDescriptor || getDescriptor.configurable
+    || typeof getDescriptor.get !== "function"
+    || typeof getDescriptor.set !== "function") {
+  throw new Error("Compatible camera hook accessor was not retained");
 }
 
 let legacyFailure;
@@ -601,12 +625,19 @@ const childWindow = {
   location: { origin: "https://camera-routing.test" },
 };
 context.__camexchForTest.installFrame({ contentWindow: childWindow });
-if (childWindow.navigator.mediaDevices.getUserMedia
-    !== context.navigator.mediaDevices.getUserMedia) {
-  throw new Error("Dynamic same-origin iframe did not receive the camera router");
-}
 if (!childWindow.__camexchInstalled) {
   throw new Error("Dynamic iframe did not acquire a single camera-hook owner");
+}
+let childRouteFailure;
+try {
+  await childWindow.navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "user" },
+  });
+} catch (error) {
+  childRouteFailure = error;
+}
+if (childRouteFailure?.name !== "NotReadableError" || nativeGetCount !== 2) {
+  throw new Error("Dynamic same-origin iframe did not receive routed camera behavior");
 }
 const childHook = childWindow.navigator.mediaDevices.getUserMedia;
 context.__camexchForTest.installFrame({ contentWindow: childWindow });
