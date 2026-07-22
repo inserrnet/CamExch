@@ -51,7 +51,7 @@ class FakeMediaDevices {
   }
 }
 const context = {
-  location: { href: "https://camera-routing.test/" },
+  location: { href: "https://camera-routing.test/", origin: "https://camera-routing.test" },
   navigator: { mediaDevices: new FakeMediaDevices() },
   MediaDevices: FakeMediaDevices,
   document: { querySelectorAll: () => [], documentElement: null },
@@ -68,7 +68,7 @@ context.CamExchBridge = {
 };
 const testScript = script.replace(
   /\}\)\(\);$/,
-  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,install:installHooks};})();",
+  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,install:installHooks,installFrame:installFrame};})();",
 );
 vm.runInNewContext(testScript, context);
 await context.navigator.mediaDevices.enumerateDevices();
@@ -119,6 +119,36 @@ if (mapped.some((device) => device.deviceId === "camexch-back-camera")) {
   throw new Error("Synthetic back camera duplicated a visible physical back camera");
 }
 
+await context.navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+if (nativeGetCount !== 1) {
+  throw new Error("Rear camera request did not reach the native camera exactly once");
+}
+
+let switchedFrontFailure;
+try {
+  await context.navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+} catch (error) {
+  switchedFrontFailure = error;
+}
+if (!switchedFrontFailure || switchedFrontFailure.name !== "NotReadableError") {
+  throw new Error("Rear-to-front switch did not route to Front Camera 4");
+}
+if (nativeGetCount !== 1) {
+  throw new Error("Rear-to-front switch opened a physical front camera");
+}
+
+let frontDeviceFailure;
+try {
+  await context.navigator.mediaDevices.getUserMedia({
+    video: { deviceId: { exact: "front-id" } },
+  });
+} catch (error) {
+  frontDeviceFailure = error;
+}
+if (!frontDeviceFailure || nativeGetCount !== 1) {
+  throw new Error("Enumerated front deviceId bypassed Front Camera 4");
+}
+
 const syntheticBack = context.__camexchForTest.native({
   video: {
     facingMode: "user",
@@ -143,25 +173,46 @@ if (!anonymousMapped.some((device) => device.deviceId === "camexch-back-camera")
   throw new Error("Back Camera is missing while native devices are anonymous");
 }
 
-let virtualFailure;
-try {
-  await context.navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-} catch (error) {
-  virtualFailure = error;
-}
-if (!virtualFailure || virtualFailure.name !== "NotReadableError") {
-  throw new Error("Unavailable Front Camera 4 did not reject the camera request");
-}
-if (nativeGetCount !== 0) {
-  throw new Error("Unavailable Front Camera 4 fell back to the physical front camera");
-}
-
 await FakeMediaDevices.prototype.getUserMedia.call(
   context.navigator.mediaDevices,
   { video: { facingMode: "environment" } },
 );
-if (nativeGetCount !== 1) {
+if (nativeGetCount !== 2) {
   throw new Error("MediaDevices.prototype.getUserMedia bypassed the camera router");
+}
+
+const lockedGet = context.navigator.mediaDevices.getUserMedia;
+const lockedPrototypeGet = FakeMediaDevices.prototype.getUserMedia;
+try {
+  context.navigator.mediaDevices.getUserMedia = async () => "bypass";
+  FakeMediaDevices.prototype.getUserMedia = async () => "prototype bypass";
+} catch (_) {
+  // Non-writable hooks throw in strict mode, which is expected.
+}
+if (context.navigator.mediaDevices.getUserMedia !== lockedGet
+    || FakeMediaDevices.prototype.getUserMedia !== lockedPrototypeGet) {
+  throw new Error("Page code was able to overwrite a locked camera hook");
+}
+const getDescriptor = Object.getOwnPropertyDescriptor(
+  context.navigator.mediaDevices,
+  "getUserMedia",
+);
+if (!getDescriptor || getDescriptor.configurable || getDescriptor.writable) {
+  throw new Error("Camera hook is not immutable");
+}
+
+let legacyFailure;
+try {
+  await context.navigator.webkitGetUserMedia(
+    { video: { facingMode: "user" } },
+    () => {},
+    (error) => { legacyFailure = error; },
+  );
+} catch (_) {
+  // The callback is asserted below.
+}
+if (!legacyFailure || legacyFailure.name !== "NotReadableError" || nativeGetCount !== 2) {
+  throw new Error("Legacy getUserMedia did not route the front camera to Front Camera 4");
 }
 
 class ChildMediaDevices {
@@ -176,11 +227,20 @@ class ChildMediaDevices {
 const childWindow = {
   navigator: { mediaDevices: new ChildMediaDevices() },
   MediaDevices: ChildMediaDevices,
+  location: { origin: "https://camera-routing.test" },
 };
-context.__camexchForTest.install(childWindow, "test iframe");
+context.__camexchForTest.installFrame({ contentWindow: childWindow });
 if (childWindow.navigator.mediaDevices.getUserMedia
     !== context.navigator.mediaDevices.getUserMedia) {
   throw new Error("Dynamic same-origin iframe did not receive the camera router");
+}
+if (!childWindow.__camexchInstalled) {
+  throw new Error("Dynamic iframe did not acquire a single camera-hook owner");
+}
+const childHook = childWindow.navigator.mediaDevices.getUserMedia;
+context.__camexchForTest.installFrame({ contentWindow: childWindow });
+if (childWindow.navigator.mediaDevices.getUserMedia !== childHook) {
+  throw new Error("An owned iframe camera hook was replaced by another context");
 }
 
 console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);
