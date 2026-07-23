@@ -1067,8 +1067,11 @@ if (cooperativeWrapperCalls !== 1
 context.navigator.mediaDevices.listeners.delete("devicechange");
 const nativeSwitch = await context.__camexchSwitchCamera("NATIVE");
 if (nativeSwitch.mode !== "NATIVE" || nativeSwitch.failed !== 0
-    || context.__camexchForTest.managed.size !== 0) {
-  throw new Error("Native mode retained a managed camera session");
+    || !Array.from(context.__camexchForTest.managed).every(
+      (entry) => entry.controller.route === "NATIVE"
+        && entry.controller.kind === "native-passthrough",
+    )) {
+  throw new Error("Existing camera sessions did not switch to native passthrough");
 }
 const nativeEnumerated = await context.navigator.mediaDevices.enumerateDevices();
 if (nativeEnumerated.length !== nativeDevices.length
@@ -1086,11 +1089,51 @@ const nativeConstraints = {
 };
 const nativeStream = await context.navigator.mediaDevices.getUserMedia(nativeConstraints);
 const nativeTrack = nativeStream.getVideoTracks()[0];
+const nativeEntry = Array.from(context.__camexchForTest.managed)
+  .find((entry) => entry.stream === nativeStream);
 if (lastNativeConstraints !== nativeConstraints
     || nativeTrack.label !== "Front camera"
     || nativeTrack.deviceId !== "front-id"
-    || context.__camexchForTest.managed.size !== 0) {
+    || !nativeEntry
+    || nativeEntry.controller.kind !== "native-passthrough"
+    || nativeEntry.controller.track !== nativeTrack) {
   throw new Error("Native mode did not return the untouched native stream");
+}
+const rearAfterNative = await context.__camexchSwitchCamera("REAR");
+const rearTrackAfterNative = nativeStream.getVideoTracks()[0];
+if (rearAfterNative.failed !== 0
+    || rearAfterNative.switched < 1
+    || nativeEntry.stream !== nativeStream
+    || rearTrackAfterNative === nativeTrack
+    || nativeTrack.readyState !== "ended"
+    || rearTrackAfterNative.getSettings().facingMode !== "environment"
+    || nativeEntry.controller.route !== "REAR") {
+  throw new Error("N to R did not replace the track inside the existing MediaStream");
+}
+const nativeAfterRear = await context.__camexchSwitchCamera("NATIVE");
+const nativeTrackAfterRear = nativeStream.getVideoTracks()[0];
+if (nativeAfterRear.failed !== 0
+    || nativeAfterRear.switched < 1
+    || nativeEntry.stream !== nativeStream
+    || nativeTrackAfterRear === rearTrackAfterNative
+    || rearTrackAfterNative.readyState !== "ended"
+    || nativeEntry.controller.kind !== "native-passthrough"
+    || nativeEntry.controller.route !== "NATIVE") {
+  throw new Error(`R to N did not restore native passthrough in the existing MediaStream: ${JSON.stringify({
+    result: nativeAfterRear,
+    sameStream: nativeEntry.stream === nativeStream,
+    sameTrack: nativeTrackAfterRear === rearTrackAfterNative,
+    rearState: rearTrackAfterNative.readyState,
+    kind: nativeEntry.controller.kind,
+    route: nativeEntry.controller.route,
+    entries: Array.from(context.__camexchForTest.managed).map((entry) => ({
+      sameEntry: entry === nativeEntry,
+      sameStream: entry.stream === nativeStream,
+      kind: entry.controller.kind,
+      route: entry.controller.route,
+      state: entry.controller.track.readyState,
+    })),
+  })}`);
 }
 
 console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);
