@@ -18,6 +18,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.PermissionRequest;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.JavascriptInterface;
 import android.webkit.ConsoleMessage;
 import android.webkit.WebChromeClient;
@@ -306,8 +307,44 @@ public class BrowserActivity extends Activity {
                 updateNavButtons();
                 injectVirtualCamera(view);
             }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                return recoverFromRendererExit(view, detail);
+            }
         });
         return webView;
+    }
+
+    private boolean recoverFromRendererExit(WebView failed, RenderProcessGoneDetail detail) {
+        Tab tab = findTab(failed);
+        AppLog.info(this, "WebView renderer exited crashed=" + detail.didCrash()
+                + " priority=" + detail.rendererPriorityAtExit()
+                + " page=" + failed.getUrl());
+        if (tab == null) {
+            failed.destroy();
+            return true;
+        }
+
+        int index = tabs.indexOf(tab);
+        String url = failed.getUrl();
+        webContainer.removeView(failed);
+        failed.destroy();
+
+        WebView replacement = createWebView();
+        tab.webView = replacement;
+        webContainer.addView(replacement, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        replacement.setVisibility(index == activeTab ? View.VISIBLE : View.GONE);
+        replacement.loadUrl(url == null || url.trim().isEmpty() ? HOME_URL : url);
+        if (index == activeTab) {
+            addressBar.setText(url);
+            updateNavButtons();
+            Toast.makeText(this, "Web page recovered", Toast.LENGTH_SHORT).show();
+        }
+        rebuildTabs();
+        return true;
     }
 
     private void handlePermissionRequest(PermissionRequest request) {
@@ -581,7 +618,7 @@ public class BrowserActivity extends Activity {
     }
 
     private static final class Tab {
-        final WebView webView;
+        WebView webView;
         String title;
 
         Tab(WebView webView, String title) {

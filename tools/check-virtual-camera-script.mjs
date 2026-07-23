@@ -159,6 +159,22 @@ class FakeSourceTrack extends FakeTrack {
   }
 }
 
+class FakeHighResolutionRearTrack extends FakeTrack {
+  constructor() {
+    super("main-rear-id");
+  }
+
+  getSettings() {
+    return {
+      facingMode: "environment",
+      deviceId: this.deviceId,
+      width: 3000,
+      height: 4000,
+      frameRate: 30,
+    };
+  }
+}
+
 class FakeRTCRtpSender {
   constructor(track) {
     this.track = track;
@@ -489,9 +505,38 @@ context.CamExchBridge = {
 };
 const testScript = script.replace(
   /\}\)\(\);$/,
-  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,managed:managedStreams,install:installHooks,installFrame:installFrame};})();",
+  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,managed:managedStreams,proxy:createRouteProxy,configure:configureManagedController,install:installHooks,installFrame:installFrame};})();",
 );
 vm.runInNewContext(testScript, context);
+
+const canvasBeforeHighResolutionProxy = canvasDrawCount;
+const highResolutionGenerator = context.__camexchForTest.proxy(
+  new FakeStream([new FakeHighResolutionRearTrack()]),
+  "REAR",
+);
+if (highResolutionGenerator.kind !== "generator"
+    || canvasDrawCount !== canvasBeforeHighResolutionProxy) {
+  throw new Error("High-resolution rear camera was copied through a canvas");
+}
+highResolutionGenerator.hardStop();
+
+const savedProcessor = context.MediaStreamTrackProcessor;
+const savedGenerator = context.MediaStreamTrackGenerator;
+context.MediaStreamTrackProcessor = undefined;
+context.MediaStreamTrackGenerator = undefined;
+const highResolutionDirect = context.__camexchForTest.proxy(
+  new FakeStream([new FakeHighResolutionRearTrack()]),
+  "REAR",
+);
+context.__camexchForTest.configure(highResolutionDirect, { video: true });
+if (highResolutionDirect.kind !== "native-direct"
+    || highResolutionDirect.track.getSettings().width !== 3000
+    || canvasDrawCount !== canvasBeforeHighResolutionProxy) {
+  throw new Error("High-resolution rear fallback was copied through a canvas");
+}
+highResolutionDirect.hardStop();
+context.MediaStreamTrackProcessor = savedProcessor;
+context.MediaStreamTrackGenerator = savedGenerator;
 
 let earlyIframeNativeCalls = 0;
 class EarlyIframeMediaDevices {
