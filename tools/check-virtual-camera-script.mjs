@@ -60,6 +60,7 @@ const nativeDevices = [
 ];
 let nativeGetCount = 0;
 let lastNativeConstraints = null;
+let nativeGetDelayGate = null;
 let continuousFocusCount = 0;
 let canvasDrawCount = 0;
 let canvasRequestFrameCount = 0;
@@ -365,6 +366,9 @@ class FakeMediaDevices {
   async getUserMedia(constraints) {
     nativeGetCount += 1;
     lastNativeConstraints = constraints;
+    const delayGate = nativeGetDelayGate;
+    nativeGetDelayGate = null;
+    if (delayGate) await delayGate;
     const requestedId = constraints?.video?.deviceId?.exact;
     return new FakeStream(constraints?.video ? [new FakeTrack(requestedId || "rear-id")] : []);
   }
@@ -1133,6 +1137,30 @@ if (nativeAfterRear.failed !== 0
       route: entry.controller.route,
       state: entry.controller.track.readyState,
     })),
+  })}`);
+}
+
+let releaseDelayedRear;
+nativeGetDelayGate = new Promise((resolve) => {
+  releaseDelayedRear = resolve;
+});
+const delayedRearSwitch = context.__camexchSwitchCamera("REAR");
+const winningNativeSwitch = await context.__camexchSwitchCamera("NATIVE");
+releaseDelayedRear();
+const staleRearSwitch = await delayedRearSwitch;
+if (winningNativeSwitch.failed !== 0
+    || staleRearSwitch.stale !== 1
+    || nativeEntry.controller.route !== "NATIVE"
+    || nativeEntry.controller.kind !== "native-passthrough"
+    || nativeStream.getVideoTracks()[0] !== nativeTrackAfterRear
+    || nativeTrackAfterRear.readyState !== "live") {
+  throw new Error(`Late R result replaced newer N selection: ${JSON.stringify({
+    winningNativeSwitch,
+    staleRearSwitch,
+    route: nativeEntry.controller.route,
+    kind: nativeEntry.controller.kind,
+    sameTrack: nativeStream.getVideoTracks()[0] === nativeTrackAfterRear,
+    trackState: nativeTrackAfterRear.readyState,
   })}`);
 }
 
