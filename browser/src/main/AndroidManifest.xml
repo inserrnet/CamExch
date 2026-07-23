@@ -13,6 +13,7 @@
     <application
         android:name=".CamExchApplication"
         android:allowBackup="true"
+        android:hardwareAccelerated="true"
         android:theme="@style/AppTheme"
         android:label="CamExch Browser"
         android:usesCleartextTraffic="true">

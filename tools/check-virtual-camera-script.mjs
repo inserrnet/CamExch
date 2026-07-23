@@ -61,6 +61,8 @@ const nativeDevices = [
 let nativeGetCount = 0;
 let lastNativeConstraints = null;
 let nativeGetDelayGate = null;
+const TEST_SOURCE_WIDTH = 944;
+const TEST_SOURCE_HEIGHT = 960;
 let continuousFocusCount = 0;
 let canvasDrawCount = 0;
 let canvasRequestFrameCount = 0;
@@ -154,8 +156,8 @@ class FakeSourceTrack extends FakeTrack {
     return {
       facingMode: "user",
       deviceId: "source-id",
-      width: 944,
-      height: 960,
+      width: TEST_SOURCE_WIDTH,
+      height: TEST_SOURCE_HEIGHT,
       frameRate: 30,
     };
   }
@@ -231,10 +233,17 @@ class FakeRTCPeerConnection {
   }
 
   async setRemoteDescription() {
-    queueMicrotask(() => this.ontrack?.({
-      track: new FakeSourceTrack(),
-      receiver: { playoutDelayHint: null, jitterBufferTarget: null },
-    }));
+    const track = new FakeSourceTrack();
+    queueMicrotask(() => {
+      this.ontrack?.({
+        track,
+        receiver: { playoutDelayHint: null, jitterBufferTarget: null },
+      });
+      setTimeout(() => {
+        track.muted = false;
+        track.onunmute?.();
+      }, 0);
+    });
   }
 
   addEventListener() {}
@@ -532,6 +541,26 @@ if (highResolutionDirect.kind !== "native-direct"
     || canvasDrawCount !== canvasBeforeHighResolutionProxy) {
   throw new Error("High-resolution rear camera was not exposed as a native track");
 }
+const canvasBeforeDirectSource = canvasDrawCount;
+const directSourceInputTrack = new FakeSourceTrack();
+directSourceInputTrack.muted = false;
+const directSourceController = context.__camexchForTest.proxy(
+  new FakeStream([directSourceInputTrack]),
+  "SOURCE",
+);
+directSourceController.route = "SOURCE";
+context.__camexchForTest.configure(directSourceController, { video: true, audio: false });
+const directSourceSettings = directSourceController.track.getSettings();
+if (directSourceController.kind !== "source-direct"
+    || directSourceController.track !== directSourceInputTrack
+    || canvasDrawCount !== canvasBeforeDirectSource
+    || directSourceSettings.width !== TEST_SOURCE_WIDTH
+    || directSourceSettings.height !== TEST_SOURCE_HEIGHT
+    || directSourceSettings.deviceId !== "camexch-front-camera-4"
+    || directSourceSettings.facingMode !== "user") {
+  throw new Error("Initial Source route was not exposed directly at its original resolution");
+}
+directSourceController.hardStop();
 highResolutionDirect.hardStop();
 
 let earlyIframeNativeCalls = 0;
@@ -741,6 +770,10 @@ if (managedEntry.stream !== originalRearStream
 }
 const pageVideo = new FakeVideo();
 pageVideo.srcObject = originalRearStream;
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (pageVideo.callbackCount !== 0) {
+  throw new Error("Passive video diagnostics installed a per-frame callback");
+}
 pageVideo.isConnected = false;
 pageVideo.srcObject = null;
 stableRearTrack.stop();
@@ -922,7 +955,8 @@ if (onlineSourceSwitch.switched !== 1 || onlineSourceSwitch.failed !== 0
 const sourceSettings = stableTrackBeforeOnlineSwitch.getSettings();
 if (sourceSettings.facingMode !== "user"
     || sourceSettings.deviceId !== "camexch-front-camera-4"
-    || sourceSettings.width !== 944 || sourceSettings.height !== 960
+    || sourceSettings.width !== TEST_SOURCE_WIDTH
+    || sourceSettings.height !== TEST_SOURCE_HEIGHT
     || nativeGetCount !== nativeCountBeforeOnlineSwitch) {
   throw new Error("Managed Source track did not expose the real Source identity and resolution");
 }
@@ -987,8 +1021,8 @@ if (revivedSourceSwitch.switched !== 1 || revivedSourceSwitch.revived !== 1
     || revivedClonedTrack.readyState !== "live"
     || clonedStreamTrackBeforeRevival.readyState !== "ended"
     || revivedTrack.label !== "Front Camera 4"
-    || revivedTrack.getSettings().width !== 944
-    || revivedTrack.getSettings().height !== 960) {
+    || revivedTrack.getSettings().width !== TEST_SOURCE_WIDTH
+    || revivedTrack.getSettings().height !== TEST_SOURCE_HEIGHT) {
   throw new Error("Stopped camera session was not rebuilt with a new Source track");
 }
 if (directSender.track !== revivedTrack || cloneSender.track !== revivedTrack
@@ -1162,6 +1196,51 @@ if (winningNativeSwitch.failed !== 0
     sameTrack: nativeStream.getVideoTracks()[0] === nativeTrackAfterRear,
     trackState: nativeTrackAfterRear.readyState,
   })}`);
+}
+
+for (let cycle = 0; cycle < 8; cycle += 1) {
+  const beforeRear = nativeStream.getVideoTracks()[0];
+  const repeatedRear = await context.__camexchSwitchCamera("REAR");
+  const afterRear = nativeStream.getVideoTracks()[0];
+  if (repeatedRear.failed !== 0 || repeatedRear.switched < 1
+      || nativeEntry.stream !== nativeStream
+      || afterRear === beforeRear || beforeRear.readyState !== "ended"
+      || afterRear.readyState !== "live"
+      || afterRear.getSettings().facingMode !== "environment") {
+    throw new Error(`Repeated N to R switch failed at cycle ${cycle}`);
+  }
+  const repeatedNative = await context.__camexchSwitchCamera("NATIVE");
+  const afterNative = nativeStream.getVideoTracks()[0];
+  if (repeatedNative.failed !== 0 || repeatedNative.switched < 1
+      || nativeEntry.stream !== nativeStream
+      || afterNative === afterRear || afterRear.readyState !== "ended"
+      || afterNative.readyState !== "live"
+      || nativeEntry.controller.route !== "NATIVE") {
+    throw new Error(`Repeated R to N switch failed at cycle ${cycle}`);
+  }
+}
+
+for (let cycle = 0; cycle < 4; cycle += 1) {
+  const sourceSwitch = await context.__camexchSwitchCamera("SOURCE");
+  const sourceTrack = nativeStream.getVideoTracks()[0];
+  const sourceCycleSettings = sourceTrack?.getSettings?.() || {};
+  if (sourceSwitch.failed !== 0 || sourceSwitch.switched < 1
+      || nativeEntry.stream !== nativeStream
+      || nativeEntry.controller.kind !== (cycle === 0 ? "source-direct" : "canvas-direct")
+      || nativeEntry.controller.route !== "SOURCE"
+      || sourceCycleSettings.width !== TEST_SOURCE_WIDTH
+      || sourceCycleSettings.height !== TEST_SOURCE_HEIGHT) {
+    throw new Error(`Repeated R/N to F switch failed at cycle ${cycle}`);
+  }
+  const rearSwitch = await context.__camexchSwitchCamera("REAR");
+  const rearTrack = nativeStream.getVideoTracks()[0];
+  if (rearSwitch.failed !== 0 || rearSwitch.switched < 1
+      || !rearTrack
+      || (cycle === 0 && (sourceTrack.readyState !== "ended" || rearTrack === sourceTrack))
+      || (cycle > 0 && (sourceTrack.readyState !== "live" || rearTrack !== sourceTrack))
+      || rearTrack.getSettings().facingMode !== "environment") {
+    throw new Error(`Repeated F to R switch failed at cycle ${cycle}`);
+  }
 }
 
 console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);

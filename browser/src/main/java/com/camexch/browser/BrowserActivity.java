@@ -246,6 +246,8 @@ public class BrowserActivity extends Activity {
 
     private WebView createWebView() {
         WebView webView = new WebView(this);
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
