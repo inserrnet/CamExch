@@ -43,6 +43,10 @@ for (const marker of [
   "source standby first track ready",
   "high resolution rear native direct size=",
   "shared source WebRTC released idle=true",
+  "getUserMedia native passthrough elapsedMs=",
+  "native passthrough enumerateDevices count=",
+  "video diagnostics route=",
+  "canvas diagnostics target=",
 ]) {
   if (!script.includes(marker)) {
     throw new Error(`Missing browser telemetry marker: ${marker}`);
@@ -55,6 +59,7 @@ const nativeDevices = [
   { kind: "videoinput", deviceId: "front-id", label: "camera2 2, facing front", groupId: "front" },
 ];
 let nativeGetCount = 0;
+let lastNativeConstraints = null;
 let continuousFocusCount = 0;
 let canvasDrawCount = 0;
 let canvasRequestFrameCount = 0;
@@ -359,6 +364,7 @@ class FakeMediaDevices {
 
   async getUserMedia(constraints) {
     nativeGetCount += 1;
+    lastNativeConstraints = constraints;
     const requestedId = constraints?.video?.deviceId?.exact;
     return new FakeStream(constraints?.video ? [new FakeTrack(requestedId || "rear-id")] : []);
   }
@@ -1056,6 +1062,35 @@ await context.navigator.mediaDevices.getUserMedia({ audio: true, video: false })
 if (cooperativeWrapperCalls !== 1
     || nativeGetCount !== nativeCountBeforeAudioWrapper + 1) {
   throw new Error("Non-video site wrapper did not delegate without recursion");
+}
+
+context.navigator.mediaDevices.listeners.delete("devicechange");
+const nativeSwitch = await context.__camexchSwitchCamera("NATIVE");
+if (nativeSwitch.mode !== "NATIVE" || nativeSwitch.failed !== 0
+    || context.__camexchForTest.managed.size !== 0) {
+  throw new Error("Native mode retained a managed camera session");
+}
+const nativeEnumerated = await context.navigator.mediaDevices.enumerateDevices();
+if (nativeEnumerated.length !== nativeDevices.length
+    || nativeEnumerated.some((device) => device.deviceId === "camexch-front-camera-4"
+      || device.deviceId === "camexch-back-camera")) {
+  throw new Error("Native mode changed enumerateDevices output");
+}
+const nativeConstraints = {
+  video: {
+    facingMode: { ideal: "user" },
+    deviceId: { exact: "front-id" },
+    width: { ideal: 1234 },
+  },
+  audio: false,
+};
+const nativeStream = await context.navigator.mediaDevices.getUserMedia(nativeConstraints);
+const nativeTrack = nativeStream.getVideoTracks()[0];
+if (lastNativeConstraints !== nativeConstraints
+    || nativeTrack.label !== "Front camera"
+    || nativeTrack.deviceId !== "front-id"
+    || context.__camexchForTest.managed.size !== 0) {
+  throw new Error("Native mode did not return the untouched native stream");
 }
 
 console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);

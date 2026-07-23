@@ -32,6 +32,7 @@ final class FloatingCameraControls {
     private Button autoButton;
     private Button sourceButton;
     private Button rearButton;
+    private Button nativeButton;
     private CameraRouteMode selectedMode = CameraRouteMode.AUTO;
 
     FloatingCameraControls(Context context, Listener listener) {
@@ -68,10 +69,12 @@ final class FloatingCameraControls {
         autoButton = createModeButton("A", "Automatic camera routing", CameraRouteMode.AUTO);
         sourceButton = createModeButton("F", "Front Camera 4", CameraRouteMode.SOURCE);
         rearButton = createModeButton("R", "Phone rear camera", CameraRouteMode.REAR);
+        nativeButton = createModeButton("N", "Native WebView camera", CameraRouteMode.NATIVE);
         root.addView(moveButton);
         root.addView(autoButton);
         root.addView(sourceButton);
         root.addView(rearButton);
+        root.addView(nativeButton);
 
         layoutParams = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -137,6 +140,7 @@ final class FloatingCameraControls {
         updateButton(autoButton, selectedMode == CameraRouteMode.AUTO);
         updateButton(sourceButton, selectedMode == CameraRouteMode.SOURCE);
         updateButton(rearButton, selectedMode == CameraRouteMode.REAR);
+        updateButton(nativeButton, selectedMode == CameraRouteMode.NATIVE);
     }
 
     private void updateButton(Button button, boolean selected) {
@@ -177,6 +181,7 @@ final class FloatingCameraControls {
         autoButton = null;
         sourceButton = null;
         rearButton = null;
+        nativeButton = null;
     }
 
     private final class DragTouchListener implements View.OnTouchListener {

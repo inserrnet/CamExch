@@ -90,7 +90,8 @@ public class SourceForegroundService extends Service {
                     + " positionMs=" + activePlayer.getCurrentPosition()
                     + " state=" + activePlayer.getPlaybackState()
                     + " webRtcFrames=" + frameCount
-                    + " webRtcFrameAgeMs=" + frameAgeMs);
+                    + " webRtcFrameAgeMs=" + frameAgeMs
+                    + (directBridge == null ? "" : " directH264={" + directBridge.getMetricsSummary() + "}"));
             long nowMs = SystemClock.elapsedRealtime();
             if (!directH264
                     && publisher instanceof WebRtcPublisher

@@ -47,6 +47,14 @@ final class H264FrameBridge {
     private String codecs = "";
     private volatile boolean firstSampleLogged;
     private long lastKeyFrameAtNs;
+    private long inputFrames;
+    private long inputKeyFrames;
+    private long inputBytes;
+    private long lastInputAtNs;
+    private long encodedFrames;
+    private long missingSampleDrops;
+    private long duplicateDrops;
+    private long waitingKeyDrops;
 
     H264FrameBridge(Context context) {
         this.context = context.getApplicationContext();
@@ -66,6 +74,14 @@ final class H264FrameBridge {
             codecs = format.codecs == null ? "" : format.codecs;
             codecConfig = nextConfig;
             samples.clear();
+            inputFrames = 0;
+            inputKeyFrames = 0;
+            inputBytes = 0;
+            lastInputAtNs = 0;
+            encodedFrames = 0;
+            missingSampleDrops = 0;
+            duplicateDrops = 0;
+            waitingKeyDrops = 0;
             if (frameBuffer != null) {
                 frameBuffer.release();
             }
@@ -109,6 +125,12 @@ final class H264FrameBridge {
         Sample sample = new Sample(encoded.asReadOnlyBuffer(), keyFrame, sampleWidth, sampleHeight, timestampNs);
         synchronized (lock) {
             samples.add(timestampNs, sample, keyFrame);
+            inputFrames++;
+            inputBytes += payload.length;
+            lastInputAtNs = timestampNs;
+            if (keyFrame) {
+                inputKeyFrames++;
+            }
         }
 
         if (!firstSampleLogged) {
@@ -174,6 +196,46 @@ final class H264FrameBridge {
     int getHeight() {
         synchronized (lock) {
             return height;
+        }
+    }
+
+    void recordEncodedFrame() {
+        synchronized (lock) {
+            encodedFrames++;
+        }
+    }
+
+    void recordMissingSampleDrop() {
+        synchronized (lock) {
+            missingSampleDrops++;
+        }
+    }
+
+    void recordDuplicateDrop() {
+        synchronized (lock) {
+            duplicateDrops++;
+        }
+    }
+
+    void recordWaitingKeyDrop() {
+        synchronized (lock) {
+            waitingKeyDrops++;
+        }
+    }
+
+    String getMetricsSummary() {
+        synchronized (lock) {
+            long ageMs = lastInputAtNs == 0
+                    ? -1 : Math.max(0, (System.nanoTime() - lastInputAtNs) / 1_000_000);
+            return "size=" + width + "x" + height
+                    + " inputFrames=" + inputFrames
+                    + " keyFrames=" + inputKeyFrames
+                    + " inputBytes=" + inputBytes
+                    + " inputAgeMs=" + ageMs
+                    + " encodedFrames=" + encodedFrames
+                    + " missingDrops=" + missingSampleDrops
+                    + " duplicateDrops=" + duplicateDrops
+                    + " waitingKeyDrops=" + waitingKeyDrops;
         }
     }
 

@@ -226,6 +226,8 @@ public class BrowserActivity extends Activity {
             message = "Front Camera 4";
         } else if (mode == CameraRouteMode.REAR) {
             message = "Phone rear camera";
+        } else if (mode == CameraRouteMode.NATIVE) {
+            message = "Native WebView camera";
         } else {
             message = "Automatic camera routing";
         }
@@ -558,12 +560,13 @@ public class BrowserActivity extends Activity {
 
         @JavascriptInterface
         public String authorizeNativeCamera(String origin, String route) {
-            if (!"environment".equals(route)) {
+            if (!"environment".equals(route) && !"native".equals(route)) {
                 AppLog.info(BrowserActivity.this, "Rejected native camera authorization route=" + route);
-                return "ERROR:Only the rear camera can be authorized";
+                return "ERROR:Unsupported native camera route";
             }
             boolean authorized = nativeCameraAuthorizations.authorize(origin, SystemClock.elapsedRealtime());
-            AppLog.info(BrowserActivity.this, "Native rear camera authorization origin=" + origin
+            AppLog.info(BrowserActivity.this, "Native camera authorization origin=" + origin
+                    + " route=" + route
                     + " accepted=" + authorized);
             return authorized ? "OK" : "ERROR:Invalid origin";
         }

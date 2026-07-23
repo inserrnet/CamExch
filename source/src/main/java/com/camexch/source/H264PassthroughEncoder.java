@@ -55,6 +55,7 @@ final class H264PassthroughEncoder implements VideoEncoder {
         long timestampNs = frame.getTimestampNs();
         H264FrameBridge.Sample sample = bridge.findSample(timestampNs);
         if (sample == null) {
+            bridge.recordMissingSampleDrop();
             if (!missingSampleLogged) {
                 missingSampleLogged = true;
                 bridge.log("Direct encoder is waiting for a matching H264 access unit");
@@ -62,6 +63,7 @@ final class H264PassthroughEncoder implements VideoEncoder {
             return VideoCodecStatus.NO_OUTPUT;
         }
         if (sample.sourceTimestampNs == lastSourceTimestampNs) {
+            bridge.recordDuplicateDrop();
             return VideoCodecStatus.NO_OUTPUT;
         }
         if (!keyFrameSeen && !sample.keyFrame) {
@@ -72,6 +74,7 @@ final class H264PassthroughEncoder implements VideoEncoder {
             }
         }
         if (!keyFrameSeen && !sample.keyFrame) {
+            bridge.recordWaitingKeyDrop();
             if (!waitingForKeyLogged) {
                 waitingForKeyLogged = true;
                 bridge.log("Direct encoder is waiting for the next H264 key frame");
@@ -93,6 +96,7 @@ final class H264PassthroughEncoder implements VideoEncoder {
                 .createEncodedImage();
         try {
             activeCallback.onEncodedFrame(image, new CodecSpecificInfo());
+            bridge.recordEncodedFrame();
             if (!firstOutputLogged) {
                 firstOutputLogged = true;
                 bridge.log("Direct encoder sent first H264 frame bytes=" + sample.data.remaining()

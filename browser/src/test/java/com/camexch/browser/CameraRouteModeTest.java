@@ -11,5 +11,6 @@ public class CameraRouteModeTest {
         assertEquals(CameraRouteMode.AUTO, CameraRouteMode.fromString("invalid"));
         assertEquals(CameraRouteMode.SOURCE, CameraRouteMode.fromString("source"));
         assertEquals(CameraRouteMode.REAR, CameraRouteMode.fromString("REAR"));
+        assertEquals(CameraRouteMode.NATIVE, CameraRouteMode.fromString("native"));
     }
 }

@@ -3,7 +3,8 @@ package com.camexch.browser;
 enum CameraRouteMode {
     AUTO,
     SOURCE,
-    REAR;
+    REAR,
+    NATIVE;
 
     static CameraRouteMode fromString(String value) {
         if (value != null) {

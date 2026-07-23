@@ -30,6 +30,13 @@ The project is designed to build on GitHub Actions, so no Android Studio, Gradle
 
 The `!` button near the address bar shows `Front Camera 4 source active`. Long-press it to open the Browser log and copy it to the clipboard. Source has a `Logs` button with the same copy action. After a crash, either app opens its saved crash log before retrying normal startup.
 
+The floating camera controls provide four routes: `A` automatically maps rear requests to
+the phone camera and front requests to Source, `F` forces Source, `R` forces the managed
+rear-camera route, and `N` passes the site's constraints and native `MediaStream` through
+Android WebView without a CamExch frame proxy. Browser diagnostics aggregate rendered-frame,
+WebRTC, and Canvas readback metrics every five seconds. Source logs direct H.264 input,
+output, and drop counters every two seconds while RTSP is active.
+
 Source starts its native WebRTC pipeline only for RTSP and video after `Start` is tapped. Photo mode does not load WebRTC. Native initialization and playback failures are reported in the Source screen instead of closing the app.
 
 WebRTC frame ownership remains with `SurfaceTextureHelper`; the capture listener forwards frames without releasing them a second time. Source and Browser exchange mode, SDP, and photo data through a signature-protected Android `ContentProvider`, avoiding WebView mixed-content and Private Network Access restrictions. If Source is unavailable, Browser falls back to the phone camera.
