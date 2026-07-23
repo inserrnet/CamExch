@@ -41,6 +41,8 @@ for (const marker of [
   "managed camera session discarded reason=",
   "page unhandledrejection",
   "source standby first track ready",
+  "high resolution rear native direct size=",
+  "shared source WebRTC released idle=true",
 ]) {
   if (!script.includes(marker)) {
     throw new Error(`Missing browser telemetry marker: ${marker}`);
@@ -510,20 +512,6 @@ const testScript = script.replace(
 vm.runInNewContext(testScript, context);
 
 const canvasBeforeHighResolutionProxy = canvasDrawCount;
-const highResolutionGenerator = context.__camexchForTest.proxy(
-  new FakeStream([new FakeHighResolutionRearTrack()]),
-  "REAR",
-);
-if (highResolutionGenerator.kind !== "generator"
-    || canvasDrawCount !== canvasBeforeHighResolutionProxy) {
-  throw new Error("High-resolution rear camera was copied through a canvas");
-}
-highResolutionGenerator.hardStop();
-
-const savedProcessor = context.MediaStreamTrackProcessor;
-const savedGenerator = context.MediaStreamTrackGenerator;
-context.MediaStreamTrackProcessor = undefined;
-context.MediaStreamTrackGenerator = undefined;
 const highResolutionDirect = context.__camexchForTest.proxy(
   new FakeStream([new FakeHighResolutionRearTrack()]),
   "REAR",
@@ -532,11 +520,9 @@ context.__camexchForTest.configure(highResolutionDirect, { video: true });
 if (highResolutionDirect.kind !== "native-direct"
     || highResolutionDirect.track.getSettings().width !== 3000
     || canvasDrawCount !== canvasBeforeHighResolutionProxy) {
-  throw new Error("High-resolution rear fallback was copied through a canvas");
+  throw new Error("High-resolution rear camera was not exposed as a native track");
 }
 highResolutionDirect.hardStop();
-context.MediaStreamTrackProcessor = savedProcessor;
-context.MediaStreamTrackGenerator = savedGenerator;
 
 let earlyIframeNativeCalls = 0;
 class EarlyIframeMediaDevices {
