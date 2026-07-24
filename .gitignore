@@ -4,6 +4,7 @@ build/
 local.properties
 *.apk
 *.aab
+*.exe
 .idea/
 *.iml
 node_modules/
