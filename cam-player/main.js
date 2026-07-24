@@ -8,14 +8,14 @@ const os = require("os");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const { Bonjour } = require("bonjour-service");
-const { spawn } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const ffmpegStaticPath = require("ffmpeg-static");
 
 app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
 const PORT = 8791;
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 let mainWindow;
 let server;
@@ -31,6 +31,7 @@ let state = {
   peerCount: 0,
 };
 const pendingOffers = new Map();
+const interfaceDescriptions = new Map();
 
 function userFile(name) {
   return path.join(app.getPath("userData"), name);
@@ -60,16 +61,67 @@ function log(message) {
   }
 }
 
-function localAddresses() {
-  const addresses = [];
-  for (const entries of Object.values(os.networkInterfaces())) {
+function routeType(name, description = "") {
+  const identity = `${name} ${description}`;
+  if (/(rndis|usb|mobile|tether)/i.test(identity)) return "USB";
+  if (/(wi-?fi|wireless|wlan)/i.test(identity)) return "Wi-Fi";
+  return "Ethernet";
+}
+
+function localInterfaces() {
+  const interfaces = [];
+  for (const [name, entries] of Object.entries(os.networkInterfaces())) {
     for (const entry of entries || []) {
       if (entry.family === "IPv4" && !entry.internal) {
-        addresses.push(entry.address);
+        const description = interfaceDescriptions.get(name) || "";
+        interfaces.push({
+          name,
+          description,
+          address: entry.address,
+          route: routeType(name, description),
+        });
       }
     }
   }
-  return addresses;
+  return interfaces;
+}
+
+function localAddresses() {
+  return localInterfaces().map((entry) => entry.address);
+}
+
+function refreshNetworkInterfaceDescriptions() {
+  if (process.platform !== "win32") return;
+  execFile(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Get-NetAdapter | Select-Object Name,InterfaceDescription | ConvertTo-Json -Compress",
+    ],
+    { windowsHide: true, timeout: 5000 },
+    (error, stdout) => {
+      if (error) {
+        log(`Network adapter descriptions unavailable ${error.message}`);
+        return;
+      }
+      try {
+        const parsed = JSON.parse(stdout);
+        for (const adapter of Array.isArray(parsed) ? parsed : [parsed]) {
+          interfaceDescriptions.set(adapter.Name, adapter.InterfaceDescription || "");
+        }
+        log(`Network adapters classified interfaces=${localInterfaces()
+          .map((entry) => `${entry.route}:${entry.name}:${entry.address}`)
+          .join(",")}`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("server-info", serverInfo());
+        }
+      } catch (parseError) {
+        log(`Network adapter descriptions invalid ${parseError.message}`);
+      }
+    },
+  );
 }
 
 function executableFfmpegPath() {
@@ -215,6 +267,7 @@ async function handleRequest(request, response) {
         version: VERSION,
         pairingRequired: true,
         addresses: localAddresses(),
+        interfaces: localInterfaces(),
         port: PORT,
         ...state,
       });
@@ -274,17 +327,21 @@ function serverInfo() {
   return {
     port: PORT,
     addresses: localAddresses(),
+    interfaces: localInterfaces(),
     pairingCode,
     pairedDevices: Object.keys(pairedTokens()),
   };
 }
 
 function createServer() {
+  refreshNetworkInterfaceDescriptions();
   server = http.createServer((request, response) => {
     handleRequest(request, response);
   });
   server.listen(PORT, "0.0.0.0", () => {
-    log(`LAN server listening port=${PORT} addresses=${localAddresses().join(",")}`);
+    log(`LAN server listening port=${PORT} interfaces=${localInterfaces()
+      .map((entry) => `${entry.route}:${entry.name}:${entry.address}`)
+      .join(",")}`);
     mainWindow?.webContents.send("server-info", serverInfo());
   });
   server.on("error", (error) => log(`LAN server failed ${error.stack || error}`));
@@ -315,6 +372,18 @@ function createWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    if (level >= 2) {
+      log(`Renderer console level=${level} line=${line} source=${sourceId} message=${message}`);
+    }
+  });
+  mainWindow.webContents.on("unresponsive", () => log("Renderer became unresponsive"));
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    log(`Renderer exited reason=${details.reason} code=${details.exitCode}`);
+  });
+  mainWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
+    log(`Renderer load failed code=${code} description=${description} url=${url}`);
+  });
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
   mainWindow.webContents.once("did-finish-load", () => {
     mainWindow.webContents.send("server-info", serverInfo());

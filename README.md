@@ -21,6 +21,8 @@ The project is designed to build on GitHub Actions, so no Android Studio, Gradle
 
 `Follow site and phone orientation` makes Cam Player apply the site's requested dimensions in the phone's physical orientation. For example, a `2000x1500` camera request produces `1500x2000` while the phone is portrait and changes live to `2000x1500` after a landscape rotation. The WebRTC track remains active and the page is not reloaded.
 
+For USB tethering, pair Source with the address marked `USB` in Cam Player. Pairing and the selected address remain saved. Cam Player and Browser logs report the selected ICE candidate pair so the actual USB, Wi-Fi, or Ethernet route can be verified.
+
 Cam Player accepts photos and Chromium-compatible video directly. MKV and AVI files are remuxed to MP4 with bundled FFmpeg; incompatible codecs use a compatibility H.264/AAC transcode. No separate runtime is required.
 
 ## Current MVP Flow
@@ -75,7 +77,7 @@ flowchart LR
 
 The browser installs its camera hook at document start, before site scripts can capture the original `getUserMedia()` function. H.264 RTSP access units pass directly into WebRTC without decoding or re-encoding. Other RTSP codecs automatically use the decoded Surface/WebRTC fallback. Video-file frames remain on the hardware-accelerated Surface/WebRTC path and are not converted to JPEG. Playback belongs to the foreground service, so switching from Source to Browser does not destroy the media pipeline. The selected source is restored if Android restarts the service.
 
-Cam Player renders its arbitrary-resolution output with WebGL. A latest-frame canvas track is sent by Chromium WebRTC, with H.264 preferred by Browser and `maintain-resolution` degradation preference. Cam Player and Source pair with a six-digit one-time code; signaling requires the resulting token. Media flows directly from Windows to Browser, avoiding an Android decode/encode hop.
+Cam Player renders its arbitrary-resolution output with WebGL. Its background is a cached, strongly blurred copy of the first media frame, so playback does not render a second moving video. Rendering follows decoded video-frame callbacks instead of a permanent 60 Hz timer. The WebRTC sender keeps the source resolution, uses H.264 normally, and selects HEVC for high-resolution output only when both peers expose it. A requested size is restored to the last confirmed working size only after the encoder explicitly fails to produce a frame. Cam Player and Source pair with a six-digit one-time code; signaling requires the resulting token. Media flows directly from Windows to Browser, avoiding an Android decode/encode hop.
 
 ## Browser Features
 
@@ -118,7 +120,7 @@ pnpm dist
 Windows output:
 
 ```text
-cam-player/dist/Cam-Player-0.1.0-Windows-x64.exe
+cam-player/dist/Cam-Player-0.2.0-Windows-x64.exe
 ```
 
 ## Notes

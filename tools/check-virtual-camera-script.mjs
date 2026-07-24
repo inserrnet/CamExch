@@ -19,9 +19,10 @@ const script = pieces.join("");
 new Function(script);
 
 for (const marker of [
-  "WebRTC preferred codec=H264",
+  "WebRTC offered codecs HEVC=",
   "WebRTC track settings size=",
-  "WebRTC inbound size=",
+  "WebRTC inbound codec=",
+  "WebRTC selected route=",
   "WebRTC receiver low-latency hints",
   "WebRTC frame latencyMs=",
   "getUserMedia resolved elapsedMs=",

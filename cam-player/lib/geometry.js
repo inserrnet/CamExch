@@ -81,11 +81,65 @@
     return { scale: 1, panX: 0, panY: 0 };
   }
 
+  function zoomAroundPoint(transform, point, output, nextScale) {
+    const previousScale = Math.max(0.0001, Number(transform.scale) || 1);
+    const ratio = nextScale / previousScale;
+    const centerX = output.width / 2 + transform.panX;
+    const centerY = output.height / 2 + transform.panY;
+    return {
+      scale: nextScale,
+      panX: point.x - output.width / 2 - (point.x - centerX) * ratio,
+      panY: point.y - output.height / 2 - (point.y - centerY) * ratio,
+    };
+  }
+
+  function dragInOutputCoordinates(transform, delta, previewSize, output) {
+    return {
+      ...transform,
+      panX: transform.panX + (delta.x / previewSize.width) * output.width,
+      // Pointer Y grows downwards, while the WebGL output coordinate grows upwards.
+      panY: transform.panY - (delta.y / previewSize.height) * output.height,
+    };
+  }
+
+  function wheelFactor(deltaY, sensitivity) {
+    return Math.exp(-Number(deltaY) * Number(sensitivity));
+  }
+
+  function isHighResolution(width, height) {
+    const w = Number(width) || 0;
+    const h = Number(height) || 0;
+    return w * h > 3840 * 2160 || Math.min(w, h) > 2160;
+  }
+
+  function preferredVideoCodecs(codecs, width, height) {
+    const available = Array.isArray(codecs) ? codecs : [];
+    const h264 = available.filter(
+      (codec) => String(codec.mimeType).toLowerCase() === "video/h264",
+    );
+    const hevc = available.filter((codec) => {
+      const mime = String(codec.mimeType).toLowerCase();
+      return mime === "video/h265" || mime === "video/hevc";
+    });
+    const selected = isHighResolution(width, height) && hevc.length ? hevc : h264;
+    return {
+      codecs: selected,
+      name: selected === hevc && hevc.length ? "HEVC" : h264.length ? "H264" : "default",
+      hevcAvailable: hevc.length > 0,
+      h264Available: h264.length > 0,
+    };
+  }
+
   return {
     positiveInteger,
     constraintValue,
     orientSize,
     resolveRequestedSize,
     fitTransform,
+    zoomAroundPoint,
+    dragInOutputCoordinates,
+    wheelFactor,
+    isHighResolution,
+    preferredVideoCodecs,
   };
 }));

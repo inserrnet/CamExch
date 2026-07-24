@@ -183,7 +183,12 @@ public class SourceForegroundService extends Service {
             }
             AppLog.info(this, "Forwarding WebRTC offer to Cam Player configLength="
                     + (configJson == null ? 0 : configJson.length()));
-            return camPlayerClient.answerOffer(offer, configJson);
+            long started = android.os.SystemClock.elapsedRealtime();
+            String answer = camPlayerClient.answerOffer(offer, configJson);
+            AppLog.info(this, "Cam Player WebRTC answer received elapsedMs="
+                    + (android.os.SystemClock.elapsedRealtime() - started)
+                    + " answerLength=" + answer.length());
+            return answer;
         }
         if (publisher == null && directH264) {
             if (directBridge == null || !directBridge.isReady()) {
@@ -262,7 +267,10 @@ public class SourceForegroundService extends Service {
                             + status.optInt("outputWidth", 0) + "x"
                             + status.optInt("outputHeight", 0));
                     AppLog.info(this, "Cam Player connected address=" + currentUri
-                            + " version=" + status.optString("version", "unknown"));
+                            + " version=" + status.optString("version", "unknown")
+                            + " output=" + status.optInt("outputWidth", 0) + "x"
+                            + status.optInt("outputHeight", 0)
+                            + " interfaces=" + String.valueOf(status.optJSONArray("interfaces")));
                 } catch (Throwable throwable) {
                     synchronized (SourceForegroundService.this) {
                         if (camPlayerClient != expectedClient || !"Cam Player".equals(mode)) {

@@ -35,11 +35,11 @@ void main() {
 const fragmentSource = `#version 300 es
 precision highp float;
 uniform sampler2D u_texture;
+uniform sampler2D u_background;
 uniform vec2 u_output;
 uniform vec2 u_source;
 uniform float u_scale;
 uniform vec2 u_pan;
-uniform float u_blur;
 uniform int u_rotation;
 in vec2 v_uv;
 out vec4 outColor;
@@ -55,36 +55,63 @@ vec4 sampleSource(vec2 uv) {
   return texture(u_texture, rotateUv(vec2(uv.x, 1.0 - uv.y)));
 }
 
-vec2 coverUv(vec2 pixel) {
-  float cover = max(u_output.x / u_source.x, u_output.y / u_source.y);
-  vec2 displayed = u_source * cover;
-  return (pixel - (u_output - displayed) * 0.5) / displayed;
-}
-
-vec4 blurredBackground(vec2 uv) {
-  vec2 stepSize = vec2(u_blur) / max(u_source, vec2(1.0));
-  vec4 color = sampleSource(uv) * 0.20;
-  color += sampleSource(uv + vec2(stepSize.x, 0.0)) * 0.12;
-  color += sampleSource(uv - vec2(stepSize.x, 0.0)) * 0.12;
-  color += sampleSource(uv + vec2(0.0, stepSize.y)) * 0.12;
-  color += sampleSource(uv - vec2(0.0, stepSize.y)) * 0.12;
-  color += sampleSource(uv + stepSize) * 0.08;
-  color += sampleSource(uv - stepSize) * 0.08;
-  color += sampleSource(uv + vec2(stepSize.x, -stepSize.y)) * 0.08;
-  color += sampleSource(uv + vec2(-stepSize.x, stepSize.y)) * 0.08;
-  return color;
-}
-
 void main() {
   vec2 pixel = v_uv * u_output;
-  vec2 bgUv = clamp(coverUv(pixel), vec2(0.0), vec2(1.0));
-  vec4 background = blurredBackground(bgUv);
+  vec4 background = texture(u_background, v_uv);
   float fit = min(u_output.x / u_source.x, u_output.y / u_source.y);
   vec2 displayed = u_source * fit * u_scale;
   vec2 center = u_output * 0.5 + u_pan;
   vec2 fgUv = (pixel - (center - displayed * 0.5)) / displayed;
   bool inside = fgUv.x >= 0.0 && fgUv.x <= 1.0 && fgUv.y >= 0.0 && fgUv.y <= 1.0;
   outColor = inside ? sampleSource(fgUv) : background;
+}`;
+
+const blurFragmentSource = `#version 300 es
+precision highp float;
+uniform sampler2D u_texture;
+uniform vec2 u_direction;
+uniform vec2 u_output;
+uniform vec2 u_source;
+uniform float u_radius;
+uniform int u_source_pass;
+uniform int u_rotation;
+in vec2 v_uv;
+out vec4 outColor;
+
+vec2 rotateUv(vec2 uv) {
+  if (u_rotation == 1) return vec2(uv.y, 1.0 - uv.x);
+  if (u_rotation == 2) return vec2(1.0 - uv.x, 1.0 - uv.y);
+  if (u_rotation == 3) return vec2(1.0 - uv.y, uv.x);
+  return uv;
+}
+
+vec4 sampleInput(vec2 uv) {
+  vec2 bounded = clamp(uv, vec2(0.0), vec2(1.0));
+  if (u_source_pass == 1) {
+    vec2 orientedSource = (u_rotation == 1 || u_rotation == 3)
+      ? u_source.yx
+      : u_source;
+    float cover = max(u_output.x / orientedSource.x, u_output.y / orientedSource.y);
+    vec2 displayed = orientedSource * cover;
+    bounded = (bounded * u_output - (u_output - displayed) * 0.5) / displayed;
+    bounded = rotateUv(vec2(bounded.x, 1.0 - bounded.y));
+  }
+  return texture(u_texture, bounded);
+}
+
+void main() {
+  if (u_radius < 0.01) {
+    outColor = sampleInput(v_uv);
+    return;
+  }
+  vec2 offset1 = u_direction * u_radius * 1.3846153846;
+  vec2 offset2 = u_direction * u_radius * 3.2307692308;
+  vec4 color = sampleInput(v_uv) * 0.2270270270;
+  color += sampleInput(v_uv + offset1) * 0.3162162162;
+  color += sampleInput(v_uv - offset1) * 0.3162162162;
+  color += sampleInput(v_uv + offset2) * 0.0702702703;
+  color += sampleInput(v_uv - offset2) * 0.0702702703;
+  outColor = color;
 }`;
 
 function compileShader(type, source) {
@@ -97,36 +124,75 @@ function compileShader(type, source) {
   return shader;
 }
 
-const program = gl.createProgram();
-gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vertexSource));
-gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fragmentSource));
-gl.linkProgram(program);
-if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-  throw new Error(gl.getProgramInfoLog(program));
+function createProgram(fragment) {
+  const created = gl.createProgram();
+  gl.attachShader(created, compileShader(gl.VERTEX_SHADER, vertexSource));
+  gl.attachShader(created, compileShader(gl.FRAGMENT_SHADER, fragment));
+  gl.linkProgram(created);
+  if (!gl.getProgramParameter(created, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(created));
+  }
+  return created;
 }
-gl.useProgram(program);
 
+const program = createProgram(fragmentSource);
+const blurProgram = createProgram(blurFragmentSource);
 const positionBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
-const positionLocation = gl.getAttribLocation(program, "a_position");
-gl.enableVertexAttribArray(positionLocation);
-gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
 
-const texture = gl.createTexture();
-gl.bindTexture(gl.TEXTURE_2D, texture);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+function bindQuad(activeProgram) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  const location = gl.getAttribLocation(activeProgram, "a_position");
+  gl.enableVertexAttribArray(location);
+  gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
+}
+
+function createLinearTexture() {
+  const created = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, created);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return created;
+}
+
+const texture = createLinearTexture();
+const backgroundSourceTexture = createLinearTexture();
+const backgroundPassTexture = createLinearTexture();
+const backgroundTexture = createLinearTexture();
+const backgroundFramebuffer = gl.createFramebuffer();
+gl.bindTexture(gl.TEXTURE_2D, backgroundTexture);
+gl.texImage2D(
+  gl.TEXTURE_2D,
+  0,
+  gl.RGBA,
+  1,
+  1,
+  0,
+  gl.RGBA,
+  gl.UNSIGNED_BYTE,
+  new Uint8Array([0, 0, 0, 255]),
+);
 
 const uniforms = {
+  texture: gl.getUniformLocation(program, "u_texture"),
+  background: gl.getUniformLocation(program, "u_background"),
   output: gl.getUniformLocation(program, "u_output"),
   source: gl.getUniformLocation(program, "u_source"),
   scale: gl.getUniformLocation(program, "u_scale"),
   pan: gl.getUniformLocation(program, "u_pan"),
-  blur: gl.getUniformLocation(program, "u_blur"),
   rotation: gl.getUniformLocation(program, "u_rotation"),
+};
+const blurUniforms = {
+  texture: gl.getUniformLocation(blurProgram, "u_texture"),
+  direction: gl.getUniformLocation(blurProgram, "u_direction"),
+  output: gl.getUniformLocation(blurProgram, "u_output"),
+  source: gl.getUniformLocation(blurProgram, "u_source"),
+  radius: gl.getUniformLocation(blurProgram, "u_radius"),
+  sourcePass: gl.getUniformLocation(blurProgram, "u_source_pass"),
+  rotation: gl.getUniformLocation(blurProgram, "u_rotation"),
 };
 
 let sourceElement = null;
@@ -144,10 +210,15 @@ let dragMode = "";
 let dragX = 0;
 let dragY = 0;
 let lastRenderAt = 0;
-let renderTimer = null;
+let videoFrameCallbackId = null;
+let timelineTimer = null;
+let backgroundSnapshotReady = false;
+let backgroundBlurTimer = null;
 let stream = null;
 let canvasTrack = null;
 let peers = new Map();
+let readyPeers = new Set();
+let lastWorkingOutput = { width: canvas.width, height: canvas.height };
 let recent = [];
 let currentServerInfo = null;
 let transforms = {
@@ -181,6 +252,106 @@ function sourceDimensions() {
 
 function maxTextureSize() {
   return gl.getParameter(gl.MAX_TEXTURE_SIZE);
+}
+
+function allocateRenderTexture(target, width, height) {
+  gl.bindTexture(gl.TEXTURE_2D, target);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    width,
+    height,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    null,
+  );
+}
+
+function captureBackgroundSnapshot() {
+  if (!sourceElement || !sourceWidth || !sourceHeight) return;
+  try {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, backgroundSourceTexture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      sourceElement,
+    );
+    backgroundSnapshotReady = true;
+    regenerateBackground("first frame");
+    log(`Background snapshot captured size=${sourceWidth}x${sourceHeight}`);
+  } catch (error) {
+    backgroundSnapshotReady = false;
+    log(`Background snapshot failed ${error.stack || error}`);
+  }
+}
+
+function regenerateBackground(reason) {
+  if (!backgroundSnapshotReady) return;
+  const maximumCacheDimension = 768;
+  const cacheScale = Math.min(
+    1,
+    maximumCacheDimension / Math.max(canvas.width, canvas.height),
+  );
+  const cacheWidth = Math.max(2, Math.round(canvas.width * cacheScale));
+  const cacheHeight = Math.max(2, Math.round(canvas.height * cacheScale));
+  const strength = Math.max(0, Math.min(100, Number(blurInput.value) || 0));
+  const radius = (strength / 100) * 48;
+
+  allocateRenderTexture(backgroundPassTexture, cacheWidth, cacheHeight);
+  allocateRenderTexture(backgroundTexture, cacheWidth, cacheHeight);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, backgroundFramebuffer);
+  gl.viewport(0, 0, cacheWidth, cacheHeight);
+  gl.useProgram(blurProgram);
+  bindQuad(blurProgram);
+  gl.uniform1i(blurUniforms.texture, 0);
+  gl.uniform1f(blurUniforms.radius, radius);
+  gl.uniform2f(blurUniforms.output, cacheWidth, cacheHeight);
+  gl.uniform2f(blurUniforms.source, sourceWidth, sourceHeight);
+
+  gl.framebufferTexture2D(
+    gl.FRAMEBUFFER,
+    gl.COLOR_ATTACHMENT0,
+    gl.TEXTURE_2D,
+    backgroundPassTexture,
+    0,
+  );
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, backgroundSourceTexture);
+  gl.uniform2f(blurUniforms.direction, 1 / cacheWidth, 0);
+  gl.uniform1i(blurUniforms.sourcePass, 1);
+  gl.uniform1i(blurUniforms.rotation, sourceRotation);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+  gl.framebufferTexture2D(
+    gl.FRAMEBUFFER,
+    gl.COLOR_ATTACHMENT0,
+    gl.TEXTURE_2D,
+    backgroundTexture,
+    0,
+  );
+  gl.bindTexture(gl.TEXTURE_2D, backgroundPassTexture);
+  gl.uniform2f(blurUniforms.direction, 0, 1 / cacheHeight);
+  gl.uniform1i(blurUniforms.sourcePass, 0);
+  gl.uniform1i(blurUniforms.rotation, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  log(`Static background rendered cache=${cacheWidth}x${cacheHeight} `
+    + `blur=${strength} radius=${radius.toFixed(1)} reason=${reason}`);
+  renderFrame(true);
+}
+
+function scheduleBackgroundRegeneration(reason) {
+  clearTimeout(backgroundBlurTimer);
+  backgroundBlurTimer = setTimeout(() => regenerateBackground(reason), 80);
 }
 
 function updateOutputLabel() {
@@ -227,13 +398,18 @@ function applyOutputSize(width, height, reason) {
   showFullFrame();
   updateOutputLabel();
   log(`Output size=${w}x${h} reason=${reason}`);
-  renderFrame(true);
+  if (backgroundSnapshotReady) {
+    regenerateBackground(`output ${reason}`);
+  } else {
+    renderFrame(true);
+  }
   savePreferences();
 }
 
 function uploadSource() {
   if (!sourceElement || !sourceWidth || !sourceHeight) return false;
   try {
+    gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceElement);
@@ -255,11 +431,17 @@ function renderFrame(force) {
   const t = transform();
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.useProgram(program);
+  bindQuad(program);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.uniform1i(uniforms.texture, 0);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, backgroundTexture);
+  gl.uniform1i(uniforms.background, 1);
   gl.uniform2f(uniforms.output, canvas.width, canvas.height);
   gl.uniform2f(uniforms.source, size.width, size.height);
   gl.uniform1f(uniforms.scale, t.scale);
   gl.uniform2f(uniforms.pan, t.panX, t.panY);
-  gl.uniform1f(uniforms.blur, Number(blurInput.value));
   gl.uniform1i(uniforms.rotation, sourceRotation);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
   if (canvasTrack && typeof canvasTrack.requestFrame === "function") {
@@ -267,21 +449,102 @@ function renderFrame(force) {
   }
 }
 
-function scheduleRenderLoop() {
-  clearInterval(renderTimer);
-  renderTimer = setInterval(() => {
+function stopVideoFrameLoop() {
+  if (videoFrameCallbackId == null) return;
+  if (typeof video.cancelVideoFrameCallback === "function") {
+    video.cancelVideoFrameCallback(videoFrameCallbackId);
+  } else {
+    clearTimeout(videoFrameCallbackId);
+  }
+  videoFrameCallbackId = null;
+}
+
+function scheduleVideoFrame() {
+  stopVideoFrameLoop();
+  if (!playing || sourceKind !== "video") return;
+  const callback = () => {
+    videoFrameCallbackId = null;
+    if (!playing) return;
     renderFrame(false);
-    updateTimeline();
-  }, 16);
+    scheduleVideoFrame();
+  };
+  if (typeof video.requestVideoFrameCallback === "function") {
+    videoFrameCallbackId = video.requestVideoFrameCallback(callback);
+  } else {
+    const fps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+    videoFrameCallbackId = setTimeout(callback, 1000 / fps);
+  }
 }
 
 function ensureStream() {
   if (stream) return stream;
-  const captureFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
-  stream = canvas.captureStream(captureFps);
+  stream = canvas.captureStream(0);
   canvasTrack = stream.getVideoTracks()[0];
   canvasTrack.contentHint = "detail";
   return stream;
+}
+
+function selectedCandidatePair(report) {
+  let pair = null;
+  report.forEach((entry) => {
+    if (entry.type === "transport" && entry.selectedCandidatePairId) {
+      pair = report.get(entry.selectedCandidatePairId);
+    }
+  });
+  if (!pair) {
+    report.forEach((entry) => {
+      if (entry.type === "candidate-pair"
+          && entry.state === "succeeded"
+          && (entry.nominated || entry.selected)) {
+        pair = entry;
+      }
+    });
+  }
+  if (!pair) return null;
+  const local = report.get(pair.localCandidateId);
+  const remote = report.get(pair.remoteCandidateId);
+  const describe = (candidate) => candidate
+    ? `${candidate.address || candidate.ip || "?"}:${candidate.port || "?"}`
+      + `/${candidate.protocol || "?"}/${candidate.candidateType || "?"}`
+    : "unknown";
+  return `${describe(local)} -> ${describe(remote)}`;
+}
+
+async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs) {
+  const startedAt = performance.now();
+  let lastRoute = "";
+  let lastEncodedSize = "0x0";
+  while (performance.now() - startedAt < timeoutMs) {
+    const report = await pc.getStats();
+    const route = selectedCandidatePair(report);
+    if (route && route !== lastRoute) {
+      lastRoute = route;
+      log(`WebRTC route id=${id} ${route}`);
+    }
+    let encoded = 0;
+    let encodedWidth = 0;
+    let encodedHeight = 0;
+    report.forEach((entry) => {
+      if (entry.type === "outbound-rtp"
+          && (entry.kind || entry.mediaType) === "video") {
+        encoded = Math.max(encoded, Number(entry.framesEncoded) || 0);
+        if (Number(entry.framesEncoded) > 0) {
+          encodedWidth = Number(entry.frameWidth) || 0;
+          encodedHeight = Number(entry.frameHeight) || 0;
+        }
+      }
+    });
+    lastEncodedSize = `${encodedWidth}x${encodedHeight}`;
+    if (encoded > 0
+        && encodedWidth === expected.width
+        && encodedHeight === expected.height) {
+      return { encoded, route, width: encodedWidth, height: encodedHeight };
+    }
+    renderFrame(true);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`encoder did not produce exact ${expected.width}x${expected.height} `
+    + `in ${timeoutMs}ms; lastEncodedSize=${lastEncodedSize}`);
 }
 
 function formatTime(seconds) {
@@ -324,8 +587,10 @@ function isImagePath(filePath) {
 async function loadMedia(file) {
   if (!file?.path || !file?.url) return;
   try {
+    stopVideoFrameLoop();
     video.pause();
     playing = false;
+    backgroundSnapshotReady = false;
     currentFile = file;
     if (isImagePath(file.path)) {
       await new Promise((resolve, reject) => {
@@ -359,7 +624,7 @@ async function loadMedia(file) {
     emptyState.hidden = true;
     updateRecent(file);
     updateOutputLabel();
-    renderFrame(true);
+    captureBackgroundSnapshot();
     log(`Media loaded kind=${sourceKind} size=${sourceWidth}x${sourceHeight} path=${file.path}`);
   } catch (error) {
     log(`Media load failed ${error.stack || error}`);
@@ -372,6 +637,7 @@ async function play() {
   try {
     await video.play();
     playing = true;
+    scheduleVideoFrame();
     updateOutputLabel();
     log("Playback started");
   } catch (error) {
@@ -383,6 +649,7 @@ function pause() {
   if (sourceKind !== "video") return;
   video.pause();
   playing = false;
+  stopVideoFrameLoop();
   updateOutputLabel();
   renderFrame(true);
   log(`Playback paused positionMs=${Math.round(video.currentTime * 1000)}`);
@@ -396,14 +663,43 @@ function savePreferences() {
     blur: Number(blurInput.value),
     followSite: followSiteToggle.checked,
     loop: document.getElementById("loopToggle").checked,
+    lastWorkingOutput,
     recent,
   });
 }
 
+async function lockSenderQuality(sender) {
+  try {
+    const parameters = sender.getParameters();
+    if (!parameters.encodings?.length) {
+      log("Sender quality lock deferred: negotiated encoding is unavailable");
+      return false;
+    }
+    const encoding = parameters.encodings[0];
+    encoding.scaleResolutionDownBy = 1;
+    encoding.maxFramerate = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+    encoding.priority = "high";
+    encoding.networkPriority = "high";
+    parameters.degradationPreference = "maintain-resolution";
+    await sender.setParameters(parameters);
+    const applied = sender.getParameters();
+    const active = applied.encodings?.[0] || {};
+    log(`Sender quality lock applied scale=${active.scaleResolutionDownBy || 1} `
+      + `maxFps=${active.maxFramerate || "default"} `
+      + `degradation=${applied.degradationPreference || "unknown"}`);
+    return true;
+  } catch (error) {
+    log(`Sender quality lock unavailable ${error}`);
+    return false;
+  }
+}
+
 async function handleOffer(payload) {
   const { id, sdp, constraints, orientation } = payload;
+  const outputBeforeOffer = { ...lastWorkingOutput };
   try {
     applySiteConfiguration({ constraints, orientation }, "offer");
+    const expectedOutput = { width: canvas.width, height: canvas.height };
     const pc = new RTCPeerConnection({ iceServers: [] });
     peers.set(id, pc);
     updateConnectionState();
@@ -415,6 +711,7 @@ async function handleOffer(payload) {
         disconnectTimer = setTimeout(() => {
           if (pc.connectionState === "disconnected") {
             peers.delete(id);
+            readyPeers.delete(id);
             pc.close();
             updateConnectionState();
           }
@@ -424,6 +721,7 @@ async function handleOffer(payload) {
       }
       if (["closed", "failed"].includes(pc.connectionState)) {
         peers.delete(id);
+        readyPeers.delete(id);
         try {
           pc.close();
         } catch (_) {
@@ -436,31 +734,54 @@ async function handleOffer(payload) {
     const sender = pc.addTrack(localStream.getVideoTracks()[0], localStream);
     const transceiver = pc.getTransceivers().find((item) => item.sender === sender);
     const capabilities = RTCRtpSender.getCapabilities?.("video");
-    const h264 = capabilities?.codecs?.filter(
-      (codec) => String(codec.mimeType).toLowerCase() === "video/h264",
-    ) || [];
-    if (transceiver && h264.length && transceiver.setCodecPreferences) {
-      transceiver.setCodecPreferences(h264);
+    const remoteOffersHevc = /a=rtpmap:\d+\s+(?:H265|HEVC)\/90000/i.test(sdp);
+    const mutuallyAvailableCodecs = (capabilities?.codecs || []).filter((codec) => {
+      const mime = String(codec.mimeType).toLowerCase();
+      return remoteOffersHevc || (mime !== "video/h265" && mime !== "video/hevc");
+    });
+    const codecChoice = CamGeometry.preferredVideoCodecs(
+      mutuallyAvailableCodecs,
+      canvas.width,
+      canvas.height,
+    );
+    if (transceiver && codecChoice.codecs.length && transceiver.setCodecPreferences) {
+      transceiver.setCodecPreferences(codecChoice.codecs);
     }
-    try {
-      const parameters = sender.getParameters();
-      if (!parameters.encodings?.length) parameters.encodings = [{}];
-      parameters.encodings[0].scaleResolutionDownBy = 1;
-      parameters.encodings[0].maxFramerate = Math.max(
-        1,
-        Math.min(60, Number(fpsInput.value) || 30),
-      );
-      parameters.degradationPreference = "maintain-resolution";
-      await sender.setParameters(parameters);
-    } catch (error) {
-      log(`Sender quality lock unavailable ${error}`);
-    }
+    log(`Encoder preference id=${id} selected=${codecChoice.name} `
+      + `output=${canvas.width}x${canvas.height} highResolution=`
+      + `${CamGeometry.isHighResolution(canvas.width, canvas.height)} `
+      + `h264=${codecChoice.h264Available} hevc=${codecChoice.hevcAvailable} `
+      + `remoteHevc=${remoteOffersHevc}`);
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
+    await lockSenderQuality(sender);
     await waitForIce(pc, 3500);
-    log(`Answer ready id=${id} bytes=${pc.localDescription.sdp.length} h264Variants=${h264.length}`);
+    log(`Answer ready id=${id} bytes=${pc.localDescription.sdp.length} `
+      + `preferredCodec=${codecChoice.name}`);
     window.camPlayer.answerOffer({ id, sdp: pc.localDescription.sdp });
     renderFrame(true);
+    waitForFirstEncodedFrame(pc, id, expectedOutput, 8000).then((result) => {
+      readyPeers.add(id);
+      lastWorkingOutput = { ...expectedOutput };
+      savePreferences();
+      log(`First encoded frame id=${id} frames=${result.encoded} `
+        + `output=${result.width}x${result.height} route=${result.route || "pending"}`);
+      updateConnectionState();
+    }).catch((error) => {
+      log(`Encoder readiness failed id=${id} output=${canvas.width}x${canvas.height} `
+        + `preferredCodec=${codecChoice.name} reason=${error.message}`);
+      if (canvas.width !== outputBeforeOffer.width || canvas.height !== outputBeforeOffer.height) {
+        log(`Restoring last working output=${outputBeforeOffer.width}x${outputBeforeOffer.height} `
+          + `after explicit encoder failure`);
+        applyOutputSize(
+          outputBeforeOffer.width,
+          outputBeforeOffer.height,
+          "last working fallback after encoder failure",
+        );
+      }
+      updateConnectionState();
+    });
+    let lastRoute = "";
     const statsTimer = setInterval(async () => {
       if (pc.connectionState === "closed") {
         clearInterval(statsTimer);
@@ -468,6 +789,11 @@ async function handleOffer(payload) {
       }
       try {
         const report = await pc.getStats();
+        const route = selectedCandidatePair(report);
+        if (route && route !== lastRoute) {
+          lastRoute = route;
+          log(`WebRTC route id=${id} ${route}`);
+        }
         report.forEach((entry) => {
           if (entry.type !== "outbound-rtp" || (entry.kind || entry.mediaType) !== "video") return;
           const codec = entry.codecId ? report.get(entry.codecId) : null;
@@ -483,6 +809,7 @@ async function handleOffer(payload) {
   } catch (error) {
     peers.get(id)?.close();
     peers.delete(id);
+    readyPeers.delete(id);
     updateConnectionState();
     log(`Offer failed id=${id} ${error.stack || error}`);
     window.camPlayer.answerOffer({ id, error: error.message || String(error) });
@@ -523,7 +850,9 @@ function applySiteConfiguration(config, reason) {
 function updateConnectionState() {
   const count = peers.size;
   connectionStatus.textContent = count
-    ? "Browser connected"
+    ? readyPeers.size
+      ? "Browser streaming"
+      : "Browser connected; waiting for first frame"
     : currentServerInfo?.pairedDevices?.length
       ? "Source paired; waiting for Browser"
       : "Waiting for Source pairing";
@@ -536,28 +865,29 @@ function clientToOutput(event) {
   const rect = canvas.getBoundingClientRect();
   return {
     x: ((event.clientX - rect.left) / rect.width) * canvas.width,
-    y: ((event.clientY - rect.top) / rect.height) * canvas.height,
+    y: (1 - (event.clientY - rect.top) / rect.height) * canvas.height,
   };
 }
 
 preview.addEventListener("wheel", (event) => {
   event.preventDefault();
-  const factor = Math.exp(-event.deltaY * 0.0015);
   if (spacePressed) {
+    const factor = CamGeometry.wheelFactor(event.deltaY, 0.0015);
     previewZoom = Math.max(0.05, Math.min(40, previewZoom * factor));
     applyPreviewTransform();
     return;
   }
   if (!sourceElement) return;
+  const factor = CamGeometry.wheelFactor(event.deltaY, 0.00075);
   const point = clientToOutput(event);
   const t = transform();
-  const centerX = canvas.width / 2 + t.panX;
-  const centerY = canvas.height / 2 + t.panY;
   const nextScale = Math.max(0.05, Math.min(20, t.scale * factor));
-  const ratio = nextScale / t.scale;
-  t.panX = point.x - canvas.width / 2 - (point.x - centerX) * ratio;
-  t.panY = point.y - canvas.height / 2 - (point.y - centerY) * ratio;
-  t.scale = nextScale;
+  Object.assign(t, CamGeometry.zoomAroundPoint(
+    t,
+    point,
+    { width: canvas.width, height: canvas.height },
+    nextScale,
+  ));
   renderFrame(true);
   savePreferences();
 }, { passive: false });
@@ -582,8 +912,12 @@ preview.addEventListener("pointermove", (event) => {
   } else if (sourceElement) {
     const rect = canvas.getBoundingClientRect();
     const t = transform();
-    t.panX += (dx / rect.width) * canvas.width;
-    t.panY += (dy / rect.height) * canvas.height;
+    Object.assign(t, CamGeometry.dragInOutputCoordinates(
+      t,
+      { x: dx, y: dy },
+      { width: rect.width, height: rect.height },
+      { width: canvas.width, height: canvas.height },
+    ));
     renderFrame(true);
   }
 });
@@ -632,10 +966,13 @@ document.getElementById("resetSourceButton").addEventListener("click", () => {
   renderFrame(true);
   savePreferences();
 });
-document.getElementById("fitPreviewButton").addEventListener("click", showFullFrame);
+document.getElementById("fitPreviewButton").addEventListener("click", (event) => {
+  showFullFrame();
+  event.currentTarget.blur();
+});
 document.getElementById("rotateButton").addEventListener("click", () => {
   sourceRotation = (sourceRotation + 1) % 4;
-  renderFrame(true);
+  regenerateBackground("source rotation");
   savePreferences();
 });
 document.getElementById("loopToggle").addEventListener("change", (event) => {
@@ -645,9 +982,9 @@ document.getElementById("loopToggle").addEventListener("change", (event) => {
 timeline.addEventListener("input", () => {
   if (sourceKind === "video" && Number.isFinite(video.duration)) {
     video.currentTime = (Number(timeline.value) / 1000) * video.duration;
-    renderFrame(true);
   }
 });
+video.addEventListener("seeked", () => renderFrame(true));
 recentFiles.addEventListener("change", () => {
   const selected = recent.find((item) => item.path === recentFiles.value);
   if (selected) {
@@ -660,7 +997,7 @@ recentFiles.addEventListener("change", () => {
   }
   recentFiles.value = "";
 });
-for (const input of [fpsInput, blurInput, followSiteToggle]) {
+for (const input of [fpsInput, followSiteToggle]) {
   input.addEventListener("change", () => {
     if (input === fpsInput && peers.size === 0 && stream) {
       stream.getTracks().forEach((track) => track.stop());
@@ -672,6 +1009,13 @@ for (const input of [fpsInput, blurInput, followSiteToggle]) {
     savePreferences();
   });
 }
+blurInput.addEventListener("input", () => {
+  scheduleBackgroundRegeneration("blur control");
+});
+blurInput.addEventListener("change", () => {
+  regenerateBackground("blur committed");
+  savePreferences();
+});
 document.getElementById("copyLogButton").addEventListener("click", async () => {
   await window.camPlayer.copyText(await window.camPlayer.readLog());
 });
@@ -688,6 +1032,9 @@ function applyServerInfo(info) {
     ? info.addresses.map((value) => `${value}:${info.port}`).join(", ")
     : `port ${info.port}`;
   document.getElementById("addressValue").textContent = address;
+  document.getElementById("routeValue").textContent = info.interfaces?.length
+    ? info.interfaces.map((value) => `${value.route}: ${value.address}`).join(", ")
+    : "Unknown";
   document.getElementById("pairingCodeValue").textContent = info.pairingCode;
   updateConnectionState();
 }
@@ -700,19 +1047,39 @@ async function initialize() {
   recent = Array.isArray(preferences.recent) ? preferences.recent : [];
   renderRecent();
   fpsInput.value = String(preferences.fps || 30);
-  blurInput.value = String(preferences.blur ?? 16);
+  blurInput.value = String(preferences.blur ?? 40);
   followSiteToggle.checked = !!preferences.followSite;
   document.getElementById("loopToggle").checked = preferences.loop !== false;
+  if (preferences.lastWorkingOutput?.width && preferences.lastWorkingOutput?.height) {
+    lastWorkingOutput = {
+      width: Number(preferences.lastWorkingOutput.width),
+      height: Number(preferences.lastWorkingOutput.height),
+    };
+  }
   try {
     applyOutputSize(preferences.width || 720, preferences.height || 1280, "startup");
   } catch (error) {
     applyOutputSize(720, 1280, "startup fallback");
     log(`Stored output size rejected ${error}`);
   }
-  scheduleRenderLoop();
+  clearInterval(timelineTimer);
+  timelineTimer = setInterval(updateTimeline, 200);
   applyPreviewTransform();
   logOutput.textContent = await window.camPlayer.readLog();
   updateConnectionState();
 }
+
+window.addEventListener("beforeunload", () => {
+  stopVideoFrameLoop();
+  clearInterval(timelineTimer);
+  clearTimeout(backgroundBlurTimer);
+  for (const peer of peers.values()) {
+    try {
+      peer.close();
+    } catch (_) {
+    }
+  }
+  stream?.getTracks().forEach((track) => track.stop());
+});
 
 initialize();

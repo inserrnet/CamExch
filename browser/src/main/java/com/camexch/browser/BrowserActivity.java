@@ -11,6 +11,9 @@ import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Debug;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Base64;
@@ -55,6 +58,14 @@ public class BrowserActivity extends Activity {
     private final NativeCameraAuthorizationStore nativeCameraAuthorizations = new NativeCameraAuthorizationStore();
     private CameraRoutePreferences cameraRoutePreferences;
     private FloatingCameraControls floatingCameraControls;
+    private final Handler diagnosticsHandler = new Handler(Looper.getMainLooper());
+    private final Runnable diagnosticsTask = new Runnable() {
+        @Override
+        public void run() {
+            logProcessDiagnostics();
+            diagnosticsHandler.postDelayed(this, 30_000L);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -69,6 +80,15 @@ public class BrowserActivity extends Activity {
         WebView.setWebContentsDebuggingEnabled(true);
         buildUi();
         addTab(HOME_URL);
+        try {
+            android.content.pm.PackageInfo webViewPackage = WebView.getCurrentWebViewPackage();
+            AppLog.info(this, "WebView package=" + (webViewPackage == null
+                    ? "unknown"
+                    : webViewPackage.packageName + " version=" + webViewPackage.versionName));
+        } catch (RuntimeException error) {
+            AppLog.info(this, "WebView package diagnostics failed " + error);
+        }
+        diagnosticsHandler.post(diagnosticsTask);
         cameraRoutePreferences = new CameraRoutePreferences(this);
         floatingCameraControls = new FloatingCameraControls(this, this::selectCameraRouteMode);
         floatingCameraControls.setMode(cameraRoutePreferences.getMode());
@@ -89,6 +109,7 @@ public class BrowserActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        diagnosticsHandler.removeCallbacks(diagnosticsTask);
         if (floatingCameraControls != null) {
             floatingCameraControls.hide();
         }
@@ -96,6 +117,19 @@ public class BrowserActivity extends Activity {
             AppLog.clear(this);
         }
         super.onDestroy();
+    }
+
+    private void logProcessDiagnostics() {
+        Debug.MemoryInfo memory = new Debug.MemoryInfo();
+        Debug.getMemoryInfo(memory);
+        Runtime runtime = Runtime.getRuntime();
+        long javaUsedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024L * 1024L);
+        AppLog.info(this, "Browser memory pssMb=" + memory.getTotalPss() / 1024
+                + " privateDirtyMb=" + memory.getTotalPrivateDirty() / 1024
+                + " javaUsedMb=" + javaUsedMb
+                + " nativeHeapMb=" + Debug.getNativeHeapAllocatedSize() / (1024L * 1024L)
+                + " tabs=" + tabs.size()
+                + " activeTab=" + activeTab);
     }
 
     @Override
