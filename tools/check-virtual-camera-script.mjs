@@ -47,6 +47,11 @@ for (const marker of [
   "native passthrough enumerateDevices count=",
   "video diagnostics route=",
   "canvas diagnostics target=",
+  "microphone getUserMedia requested=",
+  "microphone getUserMedia resolved requested=",
+  "microphone native result tracks=",
+  "Cam Player configuration reason=",
+  "device orientation changed=",
 ]) {
   if (!script.includes(marker)) {
     throw new Error(`Missing browser telemetry marker: ${marker}`);

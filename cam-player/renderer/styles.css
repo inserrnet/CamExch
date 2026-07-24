@@ -1,0 +1,286 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", Arial, sans-serif;
+  background: #17191c;
+  color: #f4f5f6;
+  font-size: 14px;
+}
+
+* {
+  box-sizing: border-box;
+  letter-spacing: 0;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button,
+select,
+input[type="number"] {
+  height: 32px;
+  border: 1px solid #4a4f55;
+  border-radius: 4px;
+  background: #272b30;
+  color: #f4f5f6;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover {
+  background: #343a40;
+  border-color: #707880;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+.preview:focus-visible {
+  outline: 2px solid #36a269;
+  outline-offset: 1px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 46px;
+  padding: 7px 9px;
+  border-bottom: 1px solid #35393e;
+  background: #202328;
+}
+
+.command {
+  padding: 0 12px;
+}
+
+.icon {
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  font-weight: 700;
+}
+
+.toolbar select {
+  width: min(250px, 23vw);
+}
+
+.toolbar #timeline {
+  flex: 1;
+  min-width: 80px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  min-height: 0;
+  flex: 1;
+}
+
+.preview {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #0d0f11;
+  user-select: none;
+  touch-action: none;
+}
+
+#outputCanvas {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: center;
+  background: #000;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+#emptyState {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #8f969e;
+  pointer-events: none;
+}
+
+.settings {
+  min-height: 0;
+  overflow: auto;
+  border-left: 1px solid #35393e;
+  background: #202328;
+  padding: 14px;
+}
+
+h1 {
+  margin: 0 0 12px;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: #cbd0d5;
+}
+
+.settings section {
+  padding: 13px 0;
+  border-top: 1px solid #363a40;
+}
+
+.settings section:first-of-type {
+  border-top: 0;
+}
+
+.settings label:not(.toggle) {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: #cbd0d5;
+}
+
+.settings input[type="number"] {
+  width: 100%;
+  padding: 0 8px;
+}
+
+.settings input[type="range"] {
+  width: 100%;
+}
+
+.dimension-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr 34px;
+  align-items: end;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.dimension-row label {
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch !important;
+  gap: 4px !important;
+  margin: 0 !important;
+  font-size: 12px;
+}
+
+.wide {
+  margin-top: 11px;
+  white-space: normal;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.hint {
+  margin: 9px 0 0;
+  color: #9299a1;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.status {
+  margin-top: 10px;
+  padding: 8px;
+  border-left: 3px solid #d6a23a;
+  background: #292d31;
+}
+
+.status.connected {
+  border-color: #36a269;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 6px 8px;
+  margin: 11px 0 0;
+}
+
+dt {
+  color: #9299a1;
+}
+
+dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mono {
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
+
+.pairing {
+  font-family: Consolas, monospace;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.log-section pre {
+  height: 130px;
+  margin: 8px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid #3b4046;
+  background: #141619;
+  color: #bfc6cc;
+  font: 11px/1.35 Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 820px) {
+  main {
+    grid-template-columns: minmax(0, 1fr) 270px;
+  }
+
+  .time-label {
+    display: none;
+  }
+}

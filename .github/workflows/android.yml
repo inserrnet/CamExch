@@ -1,4 +1,4 @@
-name: Android APK
+name: CamExch Suite
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
 
     steps:
@@ -53,3 +53,50 @@ jobs:
           path: |
             source/build/outputs/apk/debug/*.apk
             browser/build/outputs/apk/debug/*.apk
+
+  cam-player:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: cam-player
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "11.9.0"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: cam-player/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test Cam Player
+        run: pnpm test
+
+      - name: Build portable Cam Player
+        run: pnpm dist
+
+      - name: Create checksum
+        shell: pwsh
+        run: |
+          $artifact = Get-ChildItem dist\Cam-Player-*-Windows-x64.exe | Select-Object -First 1
+          $hash = (Get-FileHash -Algorithm SHA256 $artifact.FullName).Hash
+          "$hash  $($artifact.Name)" | Set-Content -Encoding ascii dist\SHA256SUMS.txt
+
+      - name: Upload Cam Player
+        uses: actions/upload-artifact@v4
+        with:
+          name: cam-player-windows-x64
+          path: |
+            cam-player/dist/Cam-Player-*-Windows-x64.exe
+            cam-player/dist/SHA256SUMS.txt

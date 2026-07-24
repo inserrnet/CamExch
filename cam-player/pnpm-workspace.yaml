@@ -1,0 +1,5 @@
+blockExoticSubdeps: false
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  ffmpeg-static: true

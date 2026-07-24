@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' file:; media-src 'self' file: blob:; img-src 'self' file: blob: data:; script-src 'self'; style-src 'self'">
+  <title>Cam Player</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="toolbar">
+    <button id="openButton" class="command">Open</button>
+    <select id="recentFiles" aria-label="Recent files">
+      <option value="">Recent files</option>
+    </select>
+    <button id="playButton" class="icon" title="Play" aria-label="Play">&#9654;</button>
+    <button id="pauseButton" class="icon" title="Pause" aria-label="Pause">&#10074;&#10074;</button>
+    <label class="toggle"><input id="loopToggle" type="checkbox" checked> Loop</label>
+    <input id="timeline" type="range" min="0" max="1000" value="0" aria-label="Timeline">
+    <span id="timeLabel" class="mono">00:00 / 00:00</span>
+  </header>
+
+  <main>
+    <section id="preview" class="preview" tabindex="0" aria-label="Output preview">
+      <canvas id="outputCanvas" width="720" height="1280"></canvas>
+      <div id="emptyState">Open a video or photo</div>
+    </section>
+
+    <aside class="settings">
+      <h1>Cam Player</h1>
+
+      <section>
+        <h2>Output</h2>
+        <div class="dimension-row">
+          <label>Width <input id="widthInput" type="number" min="2" step="2" value="720"></label>
+          <span>&times;</span>
+          <label>Height <input id="heightInput" type="number" min="2" step="2" value="1280"></label>
+          <button id="applySizeButton" class="icon" title="Apply output size" aria-label="Apply output size">&#10003;</button>
+        </div>
+        <label class="toggle wide">
+          <input id="followSiteToggle" type="checkbox">
+          Follow site and phone orientation
+        </label>
+        <label>Blur <input id="blurInput" type="range" min="0" max="40" value="16"></label>
+        <label>Maximum FPS <input id="fpsInput" type="number" min="1" max="60" value="30"></label>
+      </section>
+
+      <section>
+        <h2>Transform</h2>
+        <div class="button-row">
+          <button id="resetSourceButton" class="command">Reset</button>
+          <button id="fitPreviewButton" class="command">Show full frame</button>
+          <button id="rotateButton" class="command">Rotate 90&deg;</button>
+        </div>
+        <p class="hint">Wheel: source scale. Drag: source position. Space + wheel/drag: preview.</p>
+      </section>
+
+      <section>
+        <h2>Connection</h2>
+        <div id="connectionStatus" class="status">Waiting for Source</div>
+        <dl>
+          <dt>Address</dt><dd id="addressValue" class="mono">-</dd>
+          <dt>Pairing code</dt><dd id="pairingCodeValue" class="pairing">------</dd>
+          <dt>Output</dt><dd id="outputValue" class="mono">720×1280 @ 30</dd>
+          <dt>Peers</dt><dd id="peerValue">0</dd>
+        </dl>
+      </section>
+
+      <section class="log-section">
+        <div class="section-title">
+          <h2>Log</h2>
+          <div>
+            <button id="copyLogButton" class="icon" title="Copy log" aria-label="Copy log">&#10697;</button>
+            <button id="clearLogButton" class="icon" title="Clear log" aria-label="Clear log">&#10005;</button>
+          </div>
+        </div>
+        <pre id="logOutput"></pre>
+      </section>
+    </aside>
+  </main>
+
+  <video id="videoSource" playsinline hidden></video>
+  <img id="imageSource" alt="" hidden>
+
+  <script src="../lib/geometry.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

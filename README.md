@@ -4,8 +4,24 @@ CamExch is an Android MVP made of two apps:
 
 - **CamExch Source** chooses the `Front Camera 4` source: RTSP URL, video file, or photo file.
 - **CamExch Browser** is a small WebView browser with tabs. It leaves the rear camera untouched and replaces front-camera `getUserMedia()` requests with the Source app frame stream.
+- **Cam Player** is a portable Windows photo/video player that sends its composed output directly to Browser over LAN WebRTC. Source handles discovery, pairing, constraints, and signaling; it does not decode or re-encode Cam Player video.
 
 The project is designed to build on GitHub Actions, so no Android Studio, Gradle, or Git installation is required on the local computer.
+
+## Cam Player Flow
+
+1. Download and run `Cam-Player-*-Windows-x64.exe`.
+2. Open a photo or video. Video starts paused on its first frame.
+3. Enter any even output width and height supported by the GPU.
+4. Use the mouse wheel to scale the source and drag to position it.
+5. Hold Space while scrolling or dragging to inspect the preview without changing output.
+6. In Source, select `Cam Player`, tap `Find`, enter the pairing code shown by Cam Player, and tap `Pair`.
+7. Tap `Start` in Source.
+8. Select `F` in Browser before the website requests the camera.
+
+`Follow site and phone orientation` makes Cam Player apply the site's requested dimensions in the phone's physical orientation. For example, a `2000x1500` camera request produces `1500x2000` while the phone is portrait and changes live to `2000x1500` after a landscape rotation. The WebRTC track remains active and the page is not reloaded.
+
+Cam Player accepts photos and Chromium-compatible video directly. MKV and AVI files are remuxed to MP4 with bundled FFmpeg; incompatible codecs use a compatibility H.264/AAC transcode. No separate runtime is required.
 
 ## Current MVP Flow
 
@@ -49,12 +65,17 @@ flowchart LR
     B --> C["WebRTC SurfaceTexture"]
     C --> D["Local WebRTC peer"]
     E["Photo"] --> F["MJPEG fallback"]
+    I["Cam Player on Windows"] -->|"LAN WebRTC media"| G
+    I -->|"HTTP signaling"| J["Source control plane"]
+    J --> G
     D --> G["CamExch Browser getUserMedia hook"]
     F --> G
     G --> H["Website MediaStreamTrack"]
 ```
 
 The browser installs its camera hook at document start, before site scripts can capture the original `getUserMedia()` function. H.264 RTSP access units pass directly into WebRTC without decoding or re-encoding. Other RTSP codecs automatically use the decoded Surface/WebRTC fallback. Video-file frames remain on the hardware-accelerated Surface/WebRTC path and are not converted to JPEG. Playback belongs to the foreground service, so switching from Source to Browser does not destroy the media pipeline. The selected source is restored if Android restarts the service.
+
+Cam Player renders its arbitrary-resolution output with WebGL. A latest-frame canvas track is sent by Chromium WebRTC, with H.264 preferred by Browser and `maintain-resolution` degradation preference. Cam Player and Source pair with a six-digit one-time code; signaling requires the resulting token. Media flows directly from Windows to Browser, avoiding an Android decode/encode hop.
 
 ## Browser Features
 
@@ -66,6 +87,7 @@ The browser installs its camera hook at document start, before site scripts can 
 - Automatic front-camera override for `video: true`, `facingMode: "user"`, an unconstrained default camera request, or `deviceId: "camexch-front-camera-4"`.
 - A physical camera selected by `deviceId` is inspected through `MediaStreamTrack.getSettings()` and replaced automatically when it reports `facingMode: "user"`.
 - Rear camera requests are passed through to the real Android camera.
+- Explicit microphone diagnostics record whether audio was requested and which audio tracks were returned. Audio routing itself is unchanged.
 
 ## Build
 
@@ -82,6 +104,21 @@ APK outputs:
 ```text
 source/build/outputs/apk/debug/source-debug.apk
 browser/build/outputs/apk/debug/browser-debug.apk
+```
+
+Cam Player local build, when Node.js and pnpm are available:
+
+```bash
+cd cam-player
+pnpm install
+pnpm test
+pnpm dist
+```
+
+Windows output:
+
+```text
+cam-player/dist/Cam-Player-0.1.0-Windows-x64.exe
 ```
 
 ## Notes

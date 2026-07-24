@@ -32,7 +32,11 @@ public class SourceBridgeProvider extends ContentProvider {
             if ("mode".equals(method)) {
                 result.putString("value", service.getBridgeMode());
             } else if ("offer".equals(method)) {
-                result.putString("value", service.answerBridgeOffer(arg));
+                String config = extras == null ? "" : extras.getString("config", "");
+                result.putString("value", service.answerBridgeOffer(arg, config));
+            } else if ("configure".equals(method)) {
+                service.configureCamPlayer(arg);
+                result.putString("value", "OK");
             } else if ("photo".equals(method)) {
                 result.putByteArray("value", FrameStore.getJpeg());
             } else {

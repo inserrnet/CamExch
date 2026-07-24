@@ -105,6 +105,16 @@ public class BrowserActivity extends Activity {
         if (floatingCameraControls != null) {
             floatingCameraControls.onConfigurationChanged();
         }
+        String orientation = orientationName(newConfig);
+        String script = "window.__camexchDeviceOrientationChanged&&"
+                + "window.__camexchDeviceOrientationChanged('" + orientation + "',true)";
+        WebView activeWebView = currentWebView();
+        if (activeWebView != null) {
+            activeWebView.evaluateJavascript(script, result -> AppLog.info(
+                    BrowserActivity.this,
+                    "Cam Player active-tab orientation update=" + orientation + " result=" + result
+            ));
+        }
     }
 
     @Override
@@ -354,8 +364,15 @@ public class BrowserActivity extends Activity {
     private void handlePermissionRequest(PermissionRequest request) {
         String[] requested = request.getResources();
         boolean requestsVideo = Arrays.asList(requested).contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE);
+        boolean requestsAudio = Arrays.asList(requested).contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE);
+        AppLog.info(this, "Microphone WebView permission requested=" + requestsAudio
+                + " origin=" + request.getOrigin()
+                + " cameraRoute=" + (cameraRoutePreferences == null
+                ? CameraRouteMode.AUTO : cameraRoutePreferences.getMode()));
         if (!requestsVideo) {
             request.grant(requested);
+            AppLog.info(this, "Microphone WebView permission decision=granted requested="
+                    + requestsAudio + " video=false");
             return;
         }
 
@@ -364,6 +381,8 @@ public class BrowserActivity extends Activity {
         if (rearAuthorized) {
             AppLog.info(this, "Granted one-shot native rear camera request origin=" + request.getOrigin());
             request.grant(requested);
+            AppLog.info(this, "Microphone WebView permission decision=granted requested="
+                    + requestsAudio + " nativeVideo=true");
             return;
         }
 
@@ -381,8 +400,12 @@ public class BrowserActivity extends Activity {
                 + " page=" + (webView == null ? "none" : webView.getUrl()));
         if (nonVideo.isEmpty()) {
             request.deny();
+            AppLog.info(this, "Microphone WebView permission decision=none requested="
+                    + requestsAudio + " nativeVideoDenied=true");
         } else {
             request.grant(nonVideo.toArray(new String[0]));
+            AppLog.info(this, "Microphone WebView permission decision=granted requested="
+                    + requestsAudio + " nativeVideoDenied=true resources=" + nonVideo);
         }
     }
 
@@ -585,6 +608,25 @@ public class BrowserActivity extends Activity {
         }
 
         @JavascriptInterface
+        public String answerOfferWithConfig(String offer, String config) {
+            AppLog.info(BrowserActivity.this, "IPC offer length=" + (offer == null ? 0 : offer.length())
+                    + " configLength=" + (config == null ? 0 : config.length()));
+            Bundle extras = new Bundle();
+            extras.putString("config", config == null ? "" : config);
+            return callString("offer", offer, extras);
+        }
+
+        @JavascriptInterface
+        public String configureCamPlayer(String config) {
+            return callString("configure", config);
+        }
+
+        @JavascriptInterface
+        public String getDeviceOrientation() {
+            return orientationName(getResources().getConfiguration());
+        }
+
+        @JavascriptInterface
         public String getPhotoDataUrl() {
             try {
                 Bundle result = getContentResolver().call(Uri.parse(BRIDGE_URI), "photo", null, null);
@@ -605,8 +647,12 @@ public class BrowserActivity extends Activity {
         }
 
         private String callString(String method, String arg) {
+            return callString(method, arg, null);
+        }
+
+        private String callString(String method, String arg, Bundle extras) {
             try {
-                Bundle result = getContentResolver().call(Uri.parse(BRIDGE_URI), method, arg, null);
+                Bundle result = getContentResolver().call(Uri.parse(BRIDGE_URI), method, arg, extras);
                 String error = result == null ? "No response from Source" : result.getString("error");
                 if (error != null) {
                     AppLog.info(BrowserActivity.this, "IPC " + method + " error=" + error);
@@ -620,6 +666,11 @@ public class BrowserActivity extends Activity {
                 return "ERROR:" + throwable;
             }
         }
+    }
+
+    private static String orientationName(Configuration configuration) {
+        return configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+                ? "landscape" : "portrait";
     }
 
     private static final class Tab {

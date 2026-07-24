@@ -27,14 +27,26 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 public class SourceActivity extends Activity {
     private static final int PICK_FILE = 42;
     private static final int REQUEST_OVERLAY = 43;
     private static final String UI_PREFERENCES = "source_ui";
     private static final String PREF_RTSP_URI = "rtsp_uri";
     private static final String DEFAULT_RTSP_URI = "rtsp://192.168.4.132:554/live";
+    private static final String CAM_PLAYER_PREFERENCES = "cam_player";
+    private static final String PREF_CAM_PLAYER_ADDRESS = "address";
+    private static final String PREF_CAM_PLAYER_TOKEN = "token";
+    private static final String DEFAULT_CAM_PLAYER_ADDRESS = "192.168.4.1:8791";
 
     private EditText rtspInput;
+    private EditText camPlayerInput;
+    private EditText pairingCodeInput;
+    private Button pairButton;
+    private Button findCamPlayerButton;
+    private TextView camPlayerDiscoveryLabel;
     private TextView selectedFileLabel;
     private TextView statusLabel;
     private Uri selectedUri;
@@ -42,6 +54,8 @@ public class SourceActivity extends Activity {
     private boolean receiverRegistered;
     private boolean diagnosticsOnly;
     private boolean startVideoAfterOverlayPermission;
+    private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
+    private CamPlayerDiscovery camPlayerDiscovery;
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -88,11 +102,20 @@ public class SourceActivity extends Activity {
 
     @Override
     protected void onStop() {
+        if (camPlayerDiscovery != null) {
+            camPlayerDiscovery.stop();
+        }
         if (receiverRegistered) {
             unregisterReceiver(statusReceiver);
             receiverRegistered = false;
         }
         super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        networkExecutor.shutdownNow();
+        super.onDestroy();
     }
 
     @Override
@@ -136,7 +159,7 @@ public class SourceActivity extends Activity {
         ArrayAdapter<String> adapter = new ArrayAdapter<>(
                 this,
                 android.R.layout.simple_spinner_item,
-                new String[]{"RTSP", "Video", "Photo"}
+                new String[]{"RTSP", "Video", "Photo", "Cam Player"}
         );
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         modeSpinner.setAdapter(adapter);
@@ -156,6 +179,38 @@ public class SourceActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         ));
+
+        LinearLayout camPlayerAddressRow = new LinearLayout(this);
+        camPlayerAddressRow.setOrientation(LinearLayout.HORIZONTAL);
+        camPlayerInput = new EditText(this);
+        camPlayerInput.setSingleLine(true);
+        camPlayerInput.setHint(DEFAULT_CAM_PLAYER_ADDRESS);
+        camPlayerInput.setText(getSharedPreferences(CAM_PLAYER_PREFERENCES, MODE_PRIVATE)
+                .getString(PREF_CAM_PLAYER_ADDRESS, DEFAULT_CAM_PLAYER_ADDRESS));
+        findCamPlayerButton = new Button(this);
+        findCamPlayerButton.setText("Find");
+        camPlayerAddressRow.addView(camPlayerInput,
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        camPlayerAddressRow.addView(findCamPlayerButton);
+        root.addView(camPlayerAddressRow);
+
+        LinearLayout camPlayerPairRow = new LinearLayout(this);
+        camPlayerPairRow.setOrientation(LinearLayout.HORIZONTAL);
+        pairingCodeInput = new EditText(this);
+        pairingCodeInput.setSingleLine(true);
+        pairingCodeInput.setHint("Pairing code");
+        pairingCodeInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        pairButton = new Button(this);
+        pairButton.setText("Pair");
+        camPlayerPairRow.addView(pairingCodeInput,
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        camPlayerPairRow.addView(pairButton);
+        root.addView(camPlayerPairRow);
+
+        camPlayerDiscoveryLabel = new TextView(this);
+        camPlayerDiscoveryLabel.setText("Cam Player is not connected");
+        camPlayerDiscoveryLabel.setTextColor(0xff455a64);
+        root.addView(camPlayerDiscoveryLabel);
 
         selectedFileLabel = new TextView(this);
         selectedFileLabel.setText("No file selected");
@@ -199,7 +254,12 @@ public class SourceActivity extends Activity {
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 mode = (String) parent.getItemAtPosition(position);
                 rtspInput.setVisibility("RTSP".equals(mode) ? View.VISIBLE : View.GONE);
-                pickButton.setEnabled(!"RTSP".equals(mode));
+                boolean camPlayerMode = "Cam Player".equals(mode);
+                camPlayerAddressRow.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
+                camPlayerPairRow.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
+                camPlayerDiscoveryLabel.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
+                pickButton.setEnabled("Video".equals(mode) || "Photo".equals(mode));
+                pickButton.setVisibility(camPlayerMode || "RTSP".equals(mode) ? View.GONE : View.VISIBLE);
             }
 
             @Override
@@ -208,6 +268,8 @@ public class SourceActivity extends Activity {
         });
 
         pickButton.setOnClickListener(view -> pickFile());
+        pairButton.setOnClickListener(view -> pairCamPlayer());
+        findCamPlayerButton.setOnClickListener(view -> findCamPlayer());
         startButton.setOnClickListener(view -> startSelectedSource());
         stopButton.setOnClickListener(view -> stopSource());
         logButton.setOnClickListener(view -> showLogDialog());
@@ -231,6 +293,21 @@ public class SourceActivity extends Activity {
             }
             getSharedPreferences(UI_PREFERENCES, MODE_PRIVATE).edit()
                     .putString(PREF_RTSP_URI, uriText)
+                    .apply();
+        } else if ("Cam Player".equals(mode)) {
+            uriText = camPlayerInput.getText().toString().trim();
+            if (uriText.isEmpty()) {
+                showError("Enter the Cam Player address");
+                return;
+            }
+            String token = getSharedPreferences(CAM_PLAYER_PREFERENCES, MODE_PRIVATE)
+                    .getString(PREF_CAM_PLAYER_TOKEN, "");
+            if (token.isEmpty()) {
+                showError("Pair Source with Cam Player first");
+                return;
+            }
+            getSharedPreferences(CAM_PLAYER_PREFERENCES, MODE_PRIVATE).edit()
+                    .putString(PREF_CAM_PLAYER_ADDRESS, uriText)
                     .apply();
         } else {
             if (selectedUri == null) {
@@ -259,6 +336,75 @@ public class SourceActivity extends Activity {
         AppLog.info(this, "Starting mode=" + mode + " uri=" + uriText);
         startServiceCompat(intent);
         statusLabel.setText(mode + " starting");
+    }
+
+    private void pairCamPlayer() {
+        String address = camPlayerInput.getText().toString().trim();
+        String code = pairingCodeInput.getText().toString().trim();
+        if (address.isEmpty() || code.isEmpty()) {
+            showError("Enter the Cam Player address and pairing code");
+            return;
+        }
+        pairButton.setEnabled(false);
+        camPlayerDiscoveryLabel.setText("Pairing...");
+        networkExecutor.execute(() -> {
+            try {
+                String token = CamPlayerClient.pair(
+                        address,
+                        code,
+                        Build.MANUFACTURER + " " + Build.MODEL
+                );
+                getSharedPreferences(CAM_PLAYER_PREFERENCES, MODE_PRIVATE).edit()
+                        .putString(PREF_CAM_PLAYER_ADDRESS, address)
+                        .putString(PREF_CAM_PLAYER_TOKEN, token)
+                        .apply();
+                AppLog.info(this, "Cam Player paired address=" + address);
+                runOnUiThread(() -> {
+                    pairButton.setEnabled(true);
+                    pairingCodeInput.setText("");
+                    camPlayerDiscoveryLabel.setText("Cam Player paired");
+                    Toast.makeText(this, "Cam Player paired", Toast.LENGTH_SHORT).show();
+                });
+            } catch (Throwable throwable) {
+                AppLog.error(this, "Cam Player pairing failed", throwable);
+                runOnUiThread(() -> {
+                    pairButton.setEnabled(true);
+                    camPlayerDiscoveryLabel.setText("Pairing failed");
+                    showError(throwable.getMessage() == null
+                            ? "Unable to pair Cam Player" : throwable.getMessage());
+                });
+            }
+        });
+    }
+
+    private void findCamPlayer() {
+        findCamPlayerButton.setEnabled(false);
+        camPlayerDiscoveryLabel.setText("Searching for Cam Player...");
+        if (camPlayerDiscovery == null) {
+            camPlayerDiscovery = new CamPlayerDiscovery(this, new CamPlayerDiscovery.Listener() {
+                @Override
+                public void onEndpoint(String name, String address) {
+                    AppLog.info(SourceActivity.this,
+                            "Cam Player discovered name=" + name + " address=" + address);
+                    runOnUiThread(() -> {
+                        camPlayerInput.setText(address);
+                        camPlayerDiscoveryLabel.setText(name + " at " + address);
+                        findCamPlayerButton.setEnabled(true);
+                    });
+                }
+
+                @Override
+                public void onError(String message) {
+                    AppLog.info(SourceActivity.this, message);
+                    runOnUiThread(() -> {
+                        camPlayerDiscoveryLabel.setText(message);
+                        findCamPlayerButton.setEnabled(true);
+                    });
+                }
+            });
+        }
+        camPlayerDiscovery.start();
+        camPlayerDiscoveryLabel.postDelayed(() -> findCamPlayerButton.setEnabled(true), 8_000);
     }
 
     private void stopSource() {
@@ -322,6 +468,10 @@ public class SourceActivity extends Activity {
                 .setTitle("CamExch Source log")
                 .setMessage(AppLog.read(this))
                 .setPositiveButton("Copy log", (dialog, which) -> copyLog())
+                .setNeutralButton("Clear log", (dialog, which) -> {
+                    AppLog.clear(this);
+                    Toast.makeText(this, "Log cleared", Toast.LENGTH_SHORT).show();
+                })
                 .setNegativeButton("Close", null)
                 .show();
     }

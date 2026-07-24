@@ -30,6 +30,8 @@ import androidx.media3.exoplayer.rtsp.RtspMediaSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @OptIn(markerClass = UnstableApi.class)
 public class SourceForegroundService extends Service {
@@ -63,6 +65,8 @@ public class SourceForegroundService extends Service {
     private Handler metricsHandler;
     private FloatingPlaybackControls playbackControls;
     private boolean videoPausePending;
+    private CamPlayerClient camPlayerClient;
+    private final ExecutorService camPlayerExecutor = Executors.newSingleThreadExecutor();
     private long rtspPipelineStartedRealtimeMs;
     private long rtspRecoveryNotBeforeRealtimeMs;
     private int rtspWatchdogRecoveries;
@@ -141,6 +145,7 @@ public class SourceForegroundService extends Service {
     @Override
     public void onDestroy() {
         instance = null;
+        camPlayerExecutor.shutdownNow();
         removePlaybackControls();
         releaseVideoPipeline();
         if (server != null) {
@@ -168,6 +173,18 @@ public class SourceForegroundService extends Service {
     }
 
     synchronized String answerBridgeOffer(String offer) throws Exception {
+        return answerBridgeOffer(offer, "");
+    }
+
+    synchronized String answerBridgeOffer(String offer, String configJson) throws Exception {
+        if ("Cam Player".equals(mode)) {
+            if (camPlayerClient == null) {
+                throw new IllegalStateException("Cam Player connection is not active");
+            }
+            AppLog.info(this, "Forwarding WebRTC offer to Cam Player configLength="
+                    + (configJson == null ? 0 : configJson.length()));
+            return camPlayerClient.answerOffer(offer, configJson);
+        }
         if (publisher == null && directH264) {
             if (directBridge == null || !directBridge.isReady()) {
                 throw new IllegalStateException("Direct H264 source is not ready");
@@ -183,6 +200,15 @@ public class SourceForegroundService extends Service {
             scheduleDirectRtspRefresh();
         }
         return answer;
+    }
+
+    synchronized void configureCamPlayer(String configJson) throws Exception {
+        if (!"Cam Player".equals(mode) || camPlayerClient == null) {
+            return;
+        }
+        AppLog.info(this, "Forwarding live configuration to Cam Player length="
+                + (configJson == null ? 0 : configJson.length()));
+        camPlayerClient.configure(configJson);
     }
 
     @Override
@@ -211,6 +237,44 @@ public class SourceForegroundService extends Service {
                 .putString(EXTRA_MODE, mode)
                 .putString(EXTRA_URI, uriText)
                 .apply();
+
+        if ("Cam Player".equals(mode)) {
+            releaseVideoPipeline();
+            directH264 = false;
+            if (currentUri.trim().isEmpty()) {
+                reportError(mode, new IllegalArgumentException("Cam Player address is empty"));
+                return;
+            }
+            String token = getSharedPreferences("cam_player", MODE_PRIVATE)
+                    .getString("token", "");
+            camPlayerClient = new CamPlayerClient(currentUri, token);
+            CamPlayerClient expectedClient = camPlayerClient;
+            reportStatus("Cam Player connecting");
+            camPlayerExecutor.execute(() -> {
+                try {
+                    org.json.JSONObject status = expectedClient.status();
+                    synchronized (SourceForegroundService.this) {
+                        if (camPlayerClient != expectedClient || !"Cam Player".equals(mode)) {
+                            return;
+                        }
+                    }
+                    reportStatus("Cam Player ready "
+                            + status.optInt("outputWidth", 0) + "x"
+                            + status.optInt("outputHeight", 0));
+                    AppLog.info(this, "Cam Player connected address=" + currentUri
+                            + " version=" + status.optString("version", "unknown"));
+                } catch (Throwable throwable) {
+                    synchronized (SourceForegroundService.this) {
+                        if (camPlayerClient != expectedClient || !"Cam Player".equals(mode)) {
+                            return;
+                        }
+                        camPlayerClient = null;
+                    }
+                    reportError("Cam Player", throwable);
+                }
+            });
+            return;
+        }
 
         if ("Photo".equals(mode)) {
             releaseVideoPipeline();
@@ -547,6 +611,7 @@ public class SourceForegroundService extends Service {
         mode = "Idle";
         error = "";
         directH264 = false;
+        camPlayerClient = null;
         removePlaybackControls();
         getSharedPreferences("source", MODE_PRIVATE).edit().clear().apply();
         releaseVideoPipeline();
