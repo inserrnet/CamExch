@@ -187,11 +187,11 @@ public class SourceActivity extends Activity {
         camPlayerInput.setHint(DEFAULT_CAM_PLAYER_ADDRESS);
         camPlayerInput.setText(getSharedPreferences(CAM_PLAYER_PREFERENCES, MODE_PRIVATE)
                 .getString(PREF_CAM_PLAYER_ADDRESS, DEFAULT_CAM_PLAYER_ADDRESS));
-        findCamPlayerButton = new Button(this);
-        findCamPlayerButton.setText("Find");
         camPlayerAddressRow.addView(camPlayerInput,
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        camPlayerAddressRow.addView(findCamPlayerButton);
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                ));
         root.addView(camPlayerAddressRow);
 
         LinearLayout camPlayerPairRow = new LinearLayout(this);
@@ -211,6 +211,13 @@ public class SourceActivity extends Activity {
         camPlayerDiscoveryLabel.setText("Cam Player is not connected");
         camPlayerDiscoveryLabel.setTextColor(0xff455a64);
         root.addView(camPlayerDiscoveryLabel);
+
+        LinearLayout camPlayerFindRow = new LinearLayout(this);
+        camPlayerFindRow.setGravity(Gravity.END);
+        findCamPlayerButton = new Button(this);
+        findCamPlayerButton.setText("Find on network");
+        camPlayerFindRow.addView(findCamPlayerButton);
+        root.addView(camPlayerFindRow);
 
         selectedFileLabel = new TextView(this);
         selectedFileLabel.setText("No file selected");
@@ -258,6 +265,7 @@ public class SourceActivity extends Activity {
                 camPlayerAddressRow.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
                 camPlayerPairRow.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
                 camPlayerDiscoveryLabel.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
+                camPlayerFindRow.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
                 pickButton.setEnabled("Video".equals(mode) || "Photo".equals(mode));
                 pickButton.setVisibility(camPlayerMode || "RTSP".equals(mode) ? View.GONE : View.VISIBLE);
             }

@@ -42,6 +42,10 @@
           <input id="followSiteToggle" type="checkbox">
           Follow site and phone orientation
         </label>
+        <label class="toggle wide">
+          <input id="fallbackResolutionToggle" type="checkbox">
+          Fallback to last working resolution
+        </label>
         <label>Background blur <input id="blurInput" type="range" min="0" max="100" value="40"></label>
         <label>Maximum FPS <input id="fpsInput" type="number" min="1" max="60" value="30"></label>
       </section>
@@ -60,8 +64,7 @@
         <h2>Connection</h2>
         <div id="connectionStatus" class="status">Waiting for Source</div>
         <dl>
-          <dt>Address</dt><dd id="addressValue" class="mono">-</dd>
-          <dt>Route</dt><dd id="routeValue" class="mono">-</dd>
+          <dt>Network</dt><dd id="networkValue" class="mono network-list">-</dd>
           <dt>Pairing code</dt><dd id="pairingCodeValue" class="pairing">------</dd>
           <dt>Output</dt><dd id="outputValue" class="mono">720×1280 @ 30</dd>
           <dt>Peers</dt><dd id="peerValue">0</dd>

@@ -250,6 +250,10 @@ dd {
   font-size: 12px;
 }
 
+.network-list {
+  white-space: pre-line;
+}
+
 .pairing {
   font-family: Consolas, monospace;
   font-size: 20px;

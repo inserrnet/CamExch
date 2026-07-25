@@ -130,6 +130,41 @@
     };
   }
 
+  function negotiatedVideoCodec(sdp) {
+    const lines = String(sdp || "").split(/\r?\n/);
+    const videoLine = lines.find((line) => line.startsWith("m=video "));
+    if (!videoLine) return "unknown";
+    const payloads = videoLine.trim().split(/\s+/).slice(3);
+    const codecs = new Map();
+    for (const line of lines) {
+      const match = /^a=rtpmap:(\d+)\s+([^/\s]+)/i.exec(line);
+      if (match) codecs.set(match[1], match[2].toUpperCase());
+    }
+    for (const payload of payloads) {
+      const codec = codecs.get(payload);
+      if (codec && codec !== "RTX" && codec !== "RED" && codec !== "ULPFEC") {
+        return codec;
+      }
+    }
+    return "unknown";
+  }
+
+  function formatNetworkInterfaces(interfaces, port) {
+    const seen = new Set();
+    return (Array.isArray(interfaces) ? interfaces : [])
+      .filter((item) => item && item.address)
+      .map((item) => {
+        const route = item.route || item.name || "Network";
+        return `${route}: ${item.address}:${port}`;
+      })
+      .filter((line) => {
+        if (seen.has(line)) return false;
+        seen.add(line);
+        return true;
+      })
+      .join("\n");
+  }
+
   return {
     positiveInteger,
     constraintValue,
@@ -141,5 +176,7 @@
     wheelFactor,
     isHighResolution,
     preferredVideoCodecs,
+    negotiatedVideoCodec,
+    formatNetworkInterfaces,
   };
 }));

@@ -10,6 +10,7 @@ const heightInput = document.getElementById("heightInput");
 const fpsInput = document.getElementById("fpsInput");
 const blurInput = document.getElementById("blurInput");
 const followSiteToggle = document.getElementById("followSiteToggle");
+const fallbackResolutionToggle = document.getElementById("fallbackResolutionToggle");
 const timeline = document.getElementById("timeline");
 const timeLabel = document.getElementById("timeLabel");
 const recentFiles = document.getElementById("recentFiles");
@@ -211,9 +212,11 @@ let dragX = 0;
 let dragY = 0;
 let lastRenderAt = 0;
 let videoFrameCallbackId = null;
+let pausedFrameTimer = null;
 let timelineTimer = null;
 let backgroundSnapshotReady = false;
 let backgroundBlurTimer = null;
+let mediaGeneration = 0;
 let stream = null;
 let canvasTrack = null;
 let peers = new Map();
@@ -269,7 +272,14 @@ function allocateRenderTexture(target, width, height) {
   );
 }
 
-function captureBackgroundSnapshot() {
+function ensureFramebufferComplete(label) {
+  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  if (status !== gl.FRAMEBUFFER_COMPLETE) {
+    throw new Error(`${label} framebuffer incomplete status=0x${status.toString(16)}`);
+  }
+}
+
+function captureBackgroundSnapshot(reason = "first frame") {
   if (!sourceElement || !sourceWidth || !sourceHeight) return;
   try {
     gl.activeTexture(gl.TEXTURE0);
@@ -284,7 +294,7 @@ function captureBackgroundSnapshot() {
       sourceElement,
     );
     backgroundSnapshotReady = true;
-    regenerateBackground("first frame");
+    regenerateBackground(reason);
     log(`Background snapshot captured size=${sourceWidth}x${sourceHeight}`);
   } catch (error) {
     backgroundSnapshotReady = false;
@@ -302,50 +312,60 @@ function regenerateBackground(reason) {
   const cacheWidth = Math.max(2, Math.round(canvas.width * cacheScale));
   const cacheHeight = Math.max(2, Math.round(canvas.height * cacheScale));
   const strength = Math.max(0, Math.min(100, Number(blurInput.value) || 0));
-  const radius = (strength / 100) * 48;
+  const radius = (strength / 100) * 96;
 
-  allocateRenderTexture(backgroundPassTexture, cacheWidth, cacheHeight);
-  allocateRenderTexture(backgroundTexture, cacheWidth, cacheHeight);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, backgroundFramebuffer);
-  gl.viewport(0, 0, cacheWidth, cacheHeight);
-  gl.useProgram(blurProgram);
-  bindQuad(blurProgram);
-  gl.uniform1i(blurUniforms.texture, 0);
-  gl.uniform1f(blurUniforms.radius, radius);
-  gl.uniform2f(blurUniforms.output, cacheWidth, cacheHeight);
-  gl.uniform2f(blurUniforms.source, sourceWidth, sourceHeight);
+  try {
+    allocateRenderTexture(backgroundPassTexture, cacheWidth, cacheHeight);
+    allocateRenderTexture(backgroundTexture, cacheWidth, cacheHeight);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, backgroundFramebuffer);
+    gl.viewport(0, 0, cacheWidth, cacheHeight);
+    gl.useProgram(blurProgram);
+    bindQuad(blurProgram);
+    gl.uniform1i(blurUniforms.texture, 0);
+    gl.uniform1f(blurUniforms.radius, radius);
+    gl.uniform2f(blurUniforms.output, cacheWidth, cacheHeight);
+    gl.uniform2f(blurUniforms.source, sourceWidth, sourceHeight);
 
-  gl.framebufferTexture2D(
-    gl.FRAMEBUFFER,
-    gl.COLOR_ATTACHMENT0,
-    gl.TEXTURE_2D,
-    backgroundPassTexture,
-    0,
-  );
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, backgroundSourceTexture);
-  gl.uniform2f(blurUniforms.direction, 1 / cacheWidth, 0);
-  gl.uniform1i(blurUniforms.sourcePass, 1);
-  gl.uniform1i(blurUniforms.rotation, sourceRotation);
-  gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      backgroundPassTexture,
+      0,
+    );
+    ensureFramebufferComplete("horizontal blur");
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, backgroundSourceTexture);
+    gl.uniform2f(blurUniforms.direction, 1 / cacheWidth, 0);
+    gl.uniform1i(blurUniforms.sourcePass, 1);
+    gl.uniform1i(blurUniforms.rotation, sourceRotation);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-  gl.framebufferTexture2D(
-    gl.FRAMEBUFFER,
-    gl.COLOR_ATTACHMENT0,
-    gl.TEXTURE_2D,
-    backgroundTexture,
-    0,
-  );
-  gl.bindTexture(gl.TEXTURE_2D, backgroundPassTexture);
-  gl.uniform2f(blurUniforms.direction, 0, 1 / cacheHeight);
-  gl.uniform1i(blurUniforms.sourcePass, 0);
-  gl.uniform1i(blurUniforms.rotation, 0);
-  gl.drawArrays(gl.TRIANGLES, 0, 6);
-
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.viewport(0, 0, canvas.width, canvas.height);
-  log(`Static background rendered cache=${cacheWidth}x${cacheHeight} `
-    + `blur=${strength} radius=${radius.toFixed(1)} reason=${reason}`);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      backgroundTexture,
+      0,
+    );
+    ensureFramebufferComplete("vertical blur");
+    gl.bindTexture(gl.TEXTURE_2D, backgroundPassTexture);
+    gl.uniform2f(blurUniforms.direction, 0, 1 / cacheHeight);
+    gl.uniform1i(blurUniforms.sourcePass, 0);
+    gl.uniform1i(blurUniforms.rotation, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    const error = gl.getError();
+    if (error !== gl.NO_ERROR) {
+      throw new Error(`WebGL blur error=0x${error.toString(16)}`);
+    }
+    log(`Static background rendered cache=${cacheWidth}x${cacheHeight} `
+      + `blur=${strength} radius=${radius.toFixed(1)} reason=${reason}`);
+  } catch (error) {
+    log(`Static background failed reason=${reason} ${error.stack || error}`);
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
   renderFrame(true);
 }
 
@@ -476,6 +496,18 @@ function scheduleVideoFrame() {
   }
 }
 
+function stopPausedFrameHeartbeat() {
+  clearInterval(pausedFrameTimer);
+  pausedFrameTimer = null;
+}
+
+function updatePausedFrameHeartbeat() {
+  stopPausedFrameHeartbeat();
+  if (playing || !sourceElement || peers.size === 0) return;
+  renderFrame(true);
+  pausedFrameTimer = setInterval(() => renderFrame(true), 500);
+}
+
 function ensureStream() {
   if (stream) return stream;
   stream = canvas.captureStream(0);
@@ -587,11 +619,14 @@ function isImagePath(filePath) {
 async function loadMedia(file) {
   if (!file?.path || !file?.url) return;
   try {
+    const generation = ++mediaGeneration;
     stopVideoFrameLoop();
+    stopPausedFrameHeartbeat();
     video.pause();
     playing = false;
     backgroundSnapshotReady = false;
     currentFile = file;
+    let firstFramePresented = true;
     if (isImagePath(file.path)) {
       await new Promise((resolve, reject) => {
         image.onload = resolve;
@@ -603,6 +638,15 @@ async function loadMedia(file) {
       sourceHeight = image.naturalHeight;
       sourceKind = "photo";
     } else {
+      let decodedFrameResolve;
+      const decodedFrame = new Promise((resolve) => {
+        decodedFrameResolve = resolve;
+      });
+      if (typeof video.requestVideoFrameCallback === "function") {
+        video.requestVideoFrameCallback(() => decodedFrameResolve(true));
+      } else {
+        video.addEventListener("timeupdate", () => decodedFrameResolve(true), { once: true });
+      }
       await new Promise((resolve, reject) => {
         video.onloadeddata = resolve;
         video.onerror = () => reject(new Error(video.error?.message || "Unable to load video"));
@@ -615,6 +659,12 @@ async function loadMedia(file) {
       sourceWidth = video.videoWidth;
       sourceHeight = video.videoHeight;
       sourceKind = "video";
+      firstFramePresented = await Promise.race([
+        decodedFrame,
+        new Promise((resolve) => setTimeout(() => resolve(false), 4000)),
+      ]);
+      if (generation !== mediaGeneration) return;
+      log(`First decoded video frame ready=${firstFramePresented}`);
     }
     sourceRotation = 0;
     transforms = {
@@ -624,7 +674,20 @@ async function loadMedia(file) {
     emptyState.hidden = true;
     updateRecent(file);
     updateOutputLabel();
-    captureBackgroundSnapshot();
+    if (firstFramePresented) {
+      captureBackgroundSnapshot("presented first frame");
+    } else {
+      renderFrame(true);
+      if (typeof video.requestVideoFrameCallback === "function") {
+        video.requestVideoFrameCallback(() => {
+          if (generation === mediaGeneration) {
+            captureBackgroundSnapshot("delayed presented frame");
+          }
+        });
+      }
+      log("Background snapshot deferred until a decoded frame is presented");
+    }
+    updatePausedFrameHeartbeat();
     log(`Media loaded kind=${sourceKind} size=${sourceWidth}x${sourceHeight} path=${file.path}`);
   } catch (error) {
     log(`Media load failed ${error.stack || error}`);
@@ -637,6 +700,7 @@ async function play() {
   try {
     await video.play();
     playing = true;
+    stopPausedFrameHeartbeat();
     scheduleVideoFrame();
     updateOutputLabel();
     log("Playback started");
@@ -652,6 +716,7 @@ function pause() {
   stopVideoFrameLoop();
   updateOutputLabel();
   renderFrame(true);
+  updatePausedFrameHeartbeat();
   log(`Playback paused positionMs=${Math.round(video.currentTime * 1000)}`);
 }
 
@@ -662,6 +727,7 @@ function savePreferences() {
     fps: Number(fpsInput.value),
     blur: Number(blurInput.value),
     followSite: followSiteToggle.checked,
+    fallbackResolution: fallbackResolutionToggle.checked,
     loop: document.getElementById("loopToggle").checked,
     lastWorkingOutput,
     recent,
@@ -703,6 +769,7 @@ async function handleOffer(payload) {
     const pc = new RTCPeerConnection({ iceServers: [] });
     peers.set(id, pc);
     updateConnectionState();
+    updatePausedFrameHeartbeat();
     let disconnectTimer = null;
     pc.onconnectionstatechange = () => {
       log(`Peer id=${id} state=${pc.connectionState}`);
@@ -714,6 +781,7 @@ async function handleOffer(payload) {
             readyPeers.delete(id);
             pc.close();
             updateConnectionState();
+            updatePausedFrameHeartbeat();
           }
         }, 5000);
       } else {
@@ -727,12 +795,15 @@ async function handleOffer(payload) {
         } catch (_) {
         }
         updateConnectionState();
+        updatePausedFrameHeartbeat();
       }
     };
-    await pc.setRemoteDescription({ type: "offer", sdp });
     const localStream = ensureStream();
-    const sender = pc.addTrack(localStream.getVideoTracks()[0], localStream);
-    const transceiver = pc.getTransceivers().find((item) => item.sender === sender);
+    const transceiver = pc.addTransceiver(localStream.getVideoTracks()[0], {
+      direction: "sendonly",
+      streams: [localStream],
+    });
+    const sender = transceiver.sender;
     const capabilities = RTCRtpSender.getCapabilities?.("video");
     const remoteOffersHevc = /a=rtpmap:\d+\s+(?:H265|HEVC)\/90000/i.test(sdp);
     const mutuallyAvailableCodecs = (capabilities?.codecs || []).filter((codec) => {
@@ -752,12 +823,14 @@ async function handleOffer(payload) {
       + `${CamGeometry.isHighResolution(canvas.width, canvas.height)} `
       + `h264=${codecChoice.h264Available} hevc=${codecChoice.hevcAvailable} `
       + `remoteHevc=${remoteOffersHevc}`);
+    await pc.setRemoteDescription({ type: "offer", sdp });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     await lockSenderQuality(sender);
     await waitForIce(pc, 3500);
     log(`Answer ready id=${id} bytes=${pc.localDescription.sdp.length} `
-      + `preferredCodec=${codecChoice.name}`);
+      + `preferredCodec=${codecChoice.name} negotiatedCodec=`
+      + `${CamGeometry.negotiatedVideoCodec(pc.localDescription.sdp)}`);
     window.camPlayer.answerOffer({ id, sdp: pc.localDescription.sdp });
     renderFrame(true);
     waitForFirstEncodedFrame(pc, id, expectedOutput, 8000).then((result) => {
@@ -770,14 +843,18 @@ async function handleOffer(payload) {
     }).catch((error) => {
       log(`Encoder readiness failed id=${id} output=${canvas.width}x${canvas.height} `
         + `preferredCodec=${codecChoice.name} reason=${error.message}`);
-      if (canvas.width !== outputBeforeOffer.width || canvas.height !== outputBeforeOffer.height) {
+      if (fallbackResolutionToggle.checked
+          && (canvas.width !== outputBeforeOffer.width
+              || canvas.height !== outputBeforeOffer.height)) {
         log(`Restoring last working output=${outputBeforeOffer.width}x${outputBeforeOffer.height} `
-          + `after explicit encoder failure`);
+          + `after explicit encoder failure fallbackEnabled=true`);
         applyOutputSize(
           outputBeforeOffer.width,
           outputBeforeOffer.height,
           "last working fallback after encoder failure",
         );
+      } else {
+        log(`Output preserved=${canvas.width}x${canvas.height} fallbackEnabled=false`);
       }
       updateConnectionState();
     });
@@ -811,6 +888,7 @@ async function handleOffer(payload) {
     peers.delete(id);
     readyPeers.delete(id);
     updateConnectionState();
+    updatePausedFrameHeartbeat();
     log(`Offer failed id=${id} ${error.stack || error}`);
     window.camPlayer.answerOffer({ id, error: error.message || String(error) });
   }
@@ -1009,6 +1087,12 @@ for (const input of [fpsInput, followSiteToggle]) {
     savePreferences();
   });
 }
+fallbackResolutionToggle.addEventListener("change", savePreferences);
+document.addEventListener("click", (event) => {
+  if (event.target instanceof HTMLButtonElement) {
+    setTimeout(() => event.target.blur(), 0);
+  }
+});
 blurInput.addEventListener("input", () => {
   scheduleBackgroundRegeneration("blur control");
 });
@@ -1028,13 +1112,8 @@ window.camPlayer.onOffer(handleOffer);
 window.camPlayer.onConfig((config) => applySiteConfiguration(config, "orientation"));
 function applyServerInfo(info) {
   currentServerInfo = info;
-  const address = info.addresses?.length
-    ? info.addresses.map((value) => `${value}:${info.port}`).join(", ")
-    : `port ${info.port}`;
-  document.getElementById("addressValue").textContent = address;
-  document.getElementById("routeValue").textContent = info.interfaces?.length
-    ? info.interfaces.map((value) => `${value.route}: ${value.address}`).join(", ")
-    : "Unknown";
+  document.getElementById("networkValue").textContent =
+    CamGeometry.formatNetworkInterfaces(info.interfaces, info.port) || `Port: ${info.port}`;
   document.getElementById("pairingCodeValue").textContent = info.pairingCode;
   updateConnectionState();
 }
@@ -1049,6 +1128,7 @@ async function initialize() {
   fpsInput.value = String(preferences.fps || 30);
   blurInput.value = String(preferences.blur ?? 40);
   followSiteToggle.checked = !!preferences.followSite;
+  fallbackResolutionToggle.checked = preferences.fallbackResolution === true;
   document.getElementById("loopToggle").checked = preferences.loop !== false;
   if (preferences.lastWorkingOutput?.width && preferences.lastWorkingOutput?.height) {
     lastWorkingOutput = {
@@ -1071,6 +1151,7 @@ async function initialize() {
 
 window.addEventListener("beforeunload", () => {
   stopVideoFrameLoop();
+  stopPausedFrameHeartbeat();
   clearInterval(timelineTimer);
   clearTimeout(backgroundBlurTimer);
   for (const peer of peers.values()) {

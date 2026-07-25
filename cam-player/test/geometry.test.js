@@ -101,3 +101,27 @@ test("high resolution falls back to H264 when HEVC is unavailable", () => {
   assert.equal(result.name, "H264");
   assert.equal(result.hevcAvailable, false);
 });
+
+test("reports the actually negotiated primary video codec", () => {
+  const sdp = [
+    "v=0",
+    "m=video 9 UDP/TLS/RTP/SAVPF 98 99 96 97",
+    "a=rtpmap:96 H264/90000",
+    "a=rtpmap:97 rtx/90000",
+    "a=rtpmap:98 H265/90000",
+    "a=rtpmap:99 rtx/90000",
+  ].join("\r\n");
+  assert.equal(geometry.negotiatedVideoCodec(sdp), "H265");
+});
+
+test("formats dynamic network routes without duplicate address fields or commas", () => {
+  assert.equal(geometry.formatNetworkInterfaces([
+    { route: "Wi-Fi", address: "192.168.4.132" },
+    { route: "USB", address: "10.137.181.58" },
+    { route: "Ethernet", address: "192.168.56.1" },
+  ], 8791), [
+    "Wi-Fi: 192.168.4.132:8791",
+    "USB: 10.137.181.58:8791",
+    "Ethernet: 192.168.56.1:8791",
+  ].join("\n"));
+});
