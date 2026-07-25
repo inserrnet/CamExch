@@ -221,6 +221,7 @@ let stream = null;
 let canvasTrack = null;
 let peers = new Map();
 let readyPeers = new Set();
+const peerMaintenance = new Map();
 let lastWorkingOutput = { width: canvas.width, height: canvas.height };
 let recent = [];
 let currentServerInfo = null;
@@ -546,6 +547,7 @@ async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs) {
   const startedAt = performance.now();
   let lastRoute = "";
   let lastEncodedSize = "0x0";
+  let lastCodec = "unknown";
   while (performance.now() - startedAt < timeoutMs) {
     const report = await pc.getStats();
     const route = selectedCandidatePair(report);
@@ -563,6 +565,8 @@ async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs) {
         if (Number(entry.framesEncoded) > 0) {
           encodedWidth = Number(entry.frameWidth) || 0;
           encodedHeight = Number(entry.frameHeight) || 0;
+          const codec = entry.codecId ? report.get(entry.codecId) : null;
+          lastCodec = codec?.mimeType || "unknown";
         }
       }
     });
@@ -570,13 +574,19 @@ async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs) {
     if (encoded > 0
         && encodedWidth === expected.width
         && encodedHeight === expected.height) {
-      return { encoded, route, width: encodedWidth, height: encodedHeight };
+      return {
+        encoded,
+        route,
+        width: encodedWidth,
+        height: encodedHeight,
+        codec: lastCodec,
+      };
     }
     renderFrame(true);
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error(`encoder did not produce exact ${expected.width}x${expected.height} `
-    + `in ${timeoutMs}ms; lastEncodedSize=${lastEncodedSize}`);
+    + `in ${timeoutMs}ms; lastEncodedSize=${lastEncodedSize}; lastCodec=${lastCodec}`);
 }
 
 function formatTime(seconds) {
@@ -760,6 +770,35 @@ async function lockSenderQuality(sender) {
   }
 }
 
+function describeTransceivers(pc) {
+  return pc.getTransceivers().map((transceiver, index) => {
+    const track = transceiver.sender?.track;
+    return `#${index}{mid=${transceiver.mid ?? "null"},direction=${transceiver.direction},`
+      + `current=${transceiver.currentDirection || "null"},sender=`
+      + `${track ? `${track.kind}/${track.readyState}/${track.id}` : "none"}}`;
+  }).join(" ");
+}
+
+function closePeer(id, reason) {
+  const pc = peers.get(id);
+  const maintenance = peerMaintenance.get(id);
+  clearTimeout(maintenance?.disconnectTimer);
+  clearInterval(maintenance?.statsTimer);
+  peerMaintenance.delete(id);
+  peers.delete(id);
+  readyPeers.delete(id);
+  if (pc) {
+    pc.onconnectionstatechange = null;
+    try {
+      pc.close();
+    } catch (_) {
+    }
+  }
+  log(`Peer closed id=${id} reason=${reason}`);
+  updateConnectionState();
+  updatePausedFrameHeartbeat();
+}
+
 async function handleOffer(payload) {
   const { id, sdp, constraints, orientation } = payload;
   const outputBeforeOffer = { ...lastWorkingOutput };
@@ -768,53 +807,57 @@ async function handleOffer(payload) {
     const expectedOutput = { width: canvas.width, height: canvas.height };
     const pc = new RTCPeerConnection({ iceServers: [] });
     peers.set(id, pc);
+    peerMaintenance.set(id, { disconnectTimer: null, statsTimer: null });
     updateConnectionState();
     updatePausedFrameHeartbeat();
-    let disconnectTimer = null;
     pc.onconnectionstatechange = () => {
       log(`Peer id=${id} state=${pc.connectionState}`);
+      const maintenance = peerMaintenance.get(id);
+      if (!maintenance) return;
       if (pc.connectionState === "disconnected") {
-        clearTimeout(disconnectTimer);
-        disconnectTimer = setTimeout(() => {
+        clearTimeout(maintenance.disconnectTimer);
+        maintenance.disconnectTimer = setTimeout(() => {
           if (pc.connectionState === "disconnected") {
-            peers.delete(id);
-            readyPeers.delete(id);
-            pc.close();
-            updateConnectionState();
-            updatePausedFrameHeartbeat();
+            closePeer(id, "disconnected timeout");
           }
         }, 5000);
       } else {
-        clearTimeout(disconnectTimer);
+        clearTimeout(maintenance.disconnectTimer);
+        maintenance.disconnectTimer = null;
       }
       if (["closed", "failed"].includes(pc.connectionState)) {
-        peers.delete(id);
-        readyPeers.delete(id);
-        try {
-          pc.close();
-        } catch (_) {
-        }
-        updateConnectionState();
-        updatePausedFrameHeartbeat();
+        closePeer(id, `connection ${pc.connectionState}`);
       }
     };
-    const localStream = ensureStream();
-    const transceiver = pc.addTransceiver(localStream.getVideoTracks()[0], {
-      direction: "sendonly",
-      streams: [localStream],
-    });
-    const sender = transceiver.sender;
     const capabilities = RTCRtpSender.getCapabilities?.("video");
     const remoteOffersHevc = /a=rtpmap:\d+\s+(?:H265|HEVC)\/90000/i.test(sdp);
+    const remoteOffersH264 = /a=rtpmap:\d+\s+H264\/90000/i.test(sdp);
+    const remoteOffersVp9 = /a=rtpmap:\d+\s+VP9\/90000/i.test(sdp);
     const mutuallyAvailableCodecs = (capabilities?.codecs || []).filter((codec) => {
       const mime = String(codec.mimeType).toLowerCase();
-      return remoteOffersHevc || (mime !== "video/h265" && mime !== "video/hevc");
+      if (mime === "video/h265" || mime === "video/hevc") return remoteOffersHevc;
+      if (mime === "video/h264") return remoteOffersH264;
+      if (mime === "video/vp9") return remoteOffersVp9;
+      return false;
     });
     const codecChoice = CamGeometry.preferredVideoCodecs(
       mutuallyAvailableCodecs,
       canvas.width,
       canvas.height,
     );
+    const effectiveOfferSdp = codecChoice.name === "default"
+      ? sdp
+      : CamGeometry.prioritizeVideoCodec(sdp, codecChoice.name);
+    log(`Remote offer codec order id=${id} originalFirst=`
+      + `${CamGeometry.negotiatedVideoCodec(sdp)} effectiveFirst=`
+      + `${CamGeometry.negotiatedVideoCodec(effectiveOfferSdp)} selected=${codecChoice.name}`);
+    await pc.setRemoteDescription({ type: "offer", sdp: effectiveOfferSdp });
+    log(`Remote offer applied id=${id} transceivers=${describeTransceivers(pc)}`);
+    const localStream = ensureStream();
+    const sender = pc.addTrack(localStream.getVideoTracks()[0], localStream);
+    const transceiver = pc.getTransceivers().find((item) => item.sender === sender);
+    if (!transceiver) throw new Error("Video sender is not attached to an offered transceiver");
+    log(`Video sender attached id=${id} transceivers=${describeTransceivers(pc)}`);
     if (transceiver && codecChoice.codecs.length && transceiver.setCodecPreferences) {
       transceiver.setCodecPreferences(codecChoice.codecs);
     }
@@ -822,23 +865,35 @@ async function handleOffer(payload) {
       + `output=${canvas.width}x${canvas.height} highResolution=`
       + `${CamGeometry.isHighResolution(canvas.width, canvas.height)} `
       + `h264=${codecChoice.h264Available} hevc=${codecChoice.hevcAvailable} `
-      + `remoteHevc=${remoteOffersHevc}`);
-    await pc.setRemoteDescription({ type: "offer", sdp });
+      + `vp9=${codecChoice.vp9Available} remoteH264=${remoteOffersH264} `
+      + `remoteHevc=${remoteOffersHevc} remoteVp9=${remoteOffersVp9}`);
     const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+    const orderedSdp = codecChoice.name === "default"
+      ? answer.sdp
+      : CamGeometry.prioritizeVideoCodec(answer.sdp, codecChoice.name);
+    await pc.setLocalDescription({ type: "answer", sdp: orderedSdp });
     await lockSenderQuality(sender);
     await waitForIce(pc, 3500);
+    const answerFirstCodec = CamGeometry.negotiatedVideoCodec(pc.localDescription.sdp);
     log(`Answer ready id=${id} bytes=${pc.localDescription.sdp.length} `
-      + `preferredCodec=${codecChoice.name} negotiatedCodec=`
-      + `${CamGeometry.negotiatedVideoCodec(pc.localDescription.sdp)}`);
+      + `preferredCodec=${codecChoice.name} answerFirstCodec=${answerFirstCodec} `
+      + `transceivers=${describeTransceivers(pc)}`);
+    if (codecChoice.name !== "default"
+        && codecChoice.name !== answerFirstCodec
+        && !(codecChoice.name === "HEVC" && ["H265", "HEVC"].includes(answerFirstCodec))) {
+      throw new Error(`Codec negotiation mismatch preferred=${codecChoice.name} `
+        + `answerFirst=${answerFirstCodec}`);
+    }
     window.camPlayer.answerOffer({ id, sdp: pc.localDescription.sdp });
     renderFrame(true);
     waitForFirstEncodedFrame(pc, id, expectedOutput, 8000).then((result) => {
+      if (!peers.has(id)) return;
       readyPeers.add(id);
       lastWorkingOutput = { ...expectedOutput };
       savePreferences();
       log(`First encoded frame id=${id} frames=${result.encoded} `
-        + `output=${result.width}x${result.height} route=${result.route || "pending"}`);
+        + `output=${result.width}x${result.height} actualCodec=${result.codec} `
+        + `route=${result.route || "pending"}`);
       updateConnectionState();
     }).catch((error) => {
       log(`Encoder readiness failed id=${id} output=${canvas.width}x${canvas.height} `
@@ -856,7 +911,7 @@ async function handleOffer(payload) {
       } else {
         log(`Output preserved=${canvas.width}x${canvas.height} fallbackEnabled=false`);
       }
-      updateConnectionState();
+      closePeer(id, `encoder readiness failed: ${error.message}`);
     });
     let lastRoute = "";
     const statsTimer = setInterval(async () => {
@@ -883,12 +938,10 @@ async function handleOffer(payload) {
         log(`WebRTC stats failed id=${id} ${error}`);
       }
     }, 5000);
+    const maintenance = peerMaintenance.get(id);
+    if (maintenance) maintenance.statsTimer = statsTimer;
   } catch (error) {
-    peers.get(id)?.close();
-    peers.delete(id);
-    readyPeers.delete(id);
-    updateConnectionState();
-    updatePausedFrameHeartbeat();
+    closePeer(id, `offer failed: ${error.message || error}`);
     log(`Offer failed id=${id} ${error.stack || error}`);
     window.camPlayer.answerOffer({ id, error: error.message || String(error) });
   }
@@ -1154,12 +1207,7 @@ window.addEventListener("beforeunload", () => {
   stopPausedFrameHeartbeat();
   clearInterval(timelineTimer);
   clearTimeout(backgroundBlurTimer);
-  for (const peer of peers.values()) {
-    try {
-      peer.close();
-    } catch (_) {
-    }
-  }
+  for (const id of Array.from(peers.keys())) closePeer(id, "renderer unload");
   stream?.getTracks().forEach((track) => track.stop());
 });
 

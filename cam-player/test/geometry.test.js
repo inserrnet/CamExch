@@ -83,13 +83,15 @@ test("uses half the former source wheel sensitivity", () => {
   assert.ok(Math.abs(Math.log(nextFactor) * 2 - Math.log(oldFactor)) < 1e-12);
 });
 
-test("prefers H264 normally and HEVC for high resolution", () => {
+test("prefers H264 normally, HEVC for high resolution, and VP9 above UHD", () => {
   const codecs = [
     { mimeType: "video/H264" },
     { mimeType: "video/H265" },
+    { mimeType: "video/VP9" },
   ];
   assert.equal(geometry.preferredVideoCodecs(codecs, 1080, 1920).name, "H264");
   assert.equal(geometry.preferredVideoCodecs(codecs, 2400, 3200).name, "HEVC");
+  assert.equal(geometry.preferredVideoCodecs(codecs, 3072, 4080).name, "VP9");
 });
 
 test("high resolution falls back to H264 when HEVC is unavailable", () => {
@@ -112,6 +114,34 @@ test("reports the actually negotiated primary video codec", () => {
     "a=rtpmap:99 rtx/90000",
   ].join("\r\n");
   assert.equal(geometry.negotiatedVideoCodec(sdp), "H265");
+});
+
+test("moves a preferred video codec and its RTX payload to the front", () => {
+  const sdp = [
+    "v=0",
+    "m=video 9 UDP/TLS/RTP/SAVPF 98 99 96 97",
+    "a=rtpmap:96 H264/90000",
+    "a=fmtp:97 apt=96",
+    "a=rtpmap:97 rtx/90000",
+    "a=rtpmap:98 H265/90000",
+    "a=fmtp:99 apt=98",
+    "a=rtpmap:99 rtx/90000",
+  ].join("\r\n");
+  const preferred = geometry.prioritizeVideoCodec(sdp, "H264");
+  assert.match(preferred, /m=video 9 UDP\/TLS\/RTP\/SAVPF 96 97 98 99/);
+  assert.equal(geometry.negotiatedVideoCodec(preferred), "H264");
+});
+
+test("treats HEVC and H265 as the same SDP codec preference", () => {
+  const sdp = [
+    "m=video 9 UDP/TLS/RTP/SAVPF 96 98",
+    "a=rtpmap:96 H264/90000",
+    "a=rtpmap:98 H265/90000",
+  ].join("\n");
+  assert.match(
+    geometry.prioritizeVideoCodec(sdp, "HEVC"),
+    /m=video 9 UDP\/TLS\/RTP\/SAVPF 98 96/,
+  );
 });
 
 test("formats dynamic network routes without duplicate address fields or commas", () => {
