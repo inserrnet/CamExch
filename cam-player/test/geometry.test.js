@@ -83,6 +83,37 @@ test("uses half the former source wheel sensitivity", () => {
   assert.ok(Math.abs(Math.log(nextFactor) * 2 - Math.log(oldFactor)) < 1e-12);
 });
 
+test("renders every 24 FPS media frame when the output limit is 30 FPS", () => {
+  let previous = null;
+  let rendered = 0;
+  for (let frame = 0; frame < 120; frame += 1) {
+    const current = frame / 24;
+    if (geometry.shouldRenderMediaFrame(previous, current, 30)) {
+      previous = current;
+      rendered += 1;
+    }
+  }
+  assert.equal(rendered, 120);
+});
+
+test("evenly limits 60 FPS media to 30 FPS using media timestamps", () => {
+  let previous = null;
+  const renderedFrames = [];
+  for (let frame = 0; frame < 120; frame += 1) {
+    const current = frame / 60;
+    if (geometry.shouldRenderMediaFrame(previous, current, 30)) {
+      previous = current;
+      renderedFrames.push(frame);
+    }
+  }
+  assert.deepEqual(renderedFrames.slice(0, 6), [0, 2, 4, 6, 8, 10]);
+  assert.equal(renderedFrames.length, 60);
+});
+
+test("renders immediately when a looping video's media timestamp resets", () => {
+  assert.equal(geometry.shouldRenderMediaFrame(12.4, 0, 30), true);
+});
+
 test("prefers H264 normally, HEVC for high resolution, and VP9 above UHD", () => {
   const codecs = [
     { mimeType: "video/H264" },

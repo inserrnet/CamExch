@@ -106,6 +106,18 @@
     return Math.exp(-Number(deltaY) * Number(sensitivity));
   }
 
+  function shouldRenderMediaFrame(previousMediaTime, currentMediaTime, maximumFps) {
+    const current = Number(currentMediaTime);
+    const previous = previousMediaTime == null ? Number.NaN : Number(previousMediaTime);
+    const fps = Math.max(1, Math.min(60, Number(maximumFps) || 30));
+    if (!Number.isFinite(current)
+        || !Number.isFinite(previous)
+        || current <= previous) {
+      return true;
+    }
+    return current - previous >= (1 / fps) * 0.9;
+  }
+
   function isHighResolution(width, height) {
     const w = Number(width) || 0;
     const h = Number(height) || 0;
@@ -238,6 +250,7 @@
     zoomAroundPoint,
     dragInOutputCoordinates,
     wheelFactor,
+    shouldRenderMediaFrame,
     isHighResolution,
     isUltraHighResolution,
     preferredVideoCodecs,

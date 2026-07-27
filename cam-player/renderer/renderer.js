@@ -211,6 +211,7 @@ let dragMode = "";
 let dragX = 0;
 let dragY = 0;
 let lastRenderAt = 0;
+let lastRenderedMediaTime = null;
 let uploadedTextureWidth = 0;
 let uploadedTextureHeight = 0;
 let videoFrameCallbackId = null;
@@ -473,14 +474,22 @@ function uploadSource() {
   }
 }
 
-function renderFrame(force) {
+function renderFrame(force, frameMetadata = null) {
   if (!sourceElement) return false;
   const now = performance.now();
   const fps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
   const activeFps = playing ? fps : Math.min(10, fps);
-  const minimumFrameIntervalMs = (1000 / activeFps) * 0.9;
-  if (!force && now - lastRenderAt < minimumFrameIntervalMs) return false;
-  lastRenderAt = now;
+  const mediaTime = Number(frameMetadata?.mediaTime);
+  if (!force) {
+    if (Number.isFinite(mediaTime)) {
+      if (!CamGeometry.shouldRenderMediaFrame(lastRenderedMediaTime, mediaTime, activeFps)) {
+        return false;
+      }
+    } else {
+      const minimumFrameIntervalMs = (1000 / activeFps) * 0.9;
+      if (now - lastRenderAt < minimumFrameIntervalMs) return false;
+    }
+  }
   const renderStartedAt = performance.now();
   if (!uploadSource()) return false;
   const size = sourceDimensions();
@@ -506,6 +515,10 @@ function renderFrame(force) {
   const renderTimeMs = performance.now() - renderStartedAt;
   cadenceRenderTimeMs += renderTimeMs;
   cadenceMaxRenderTimeMs = Math.max(cadenceMaxRenderTimeMs, renderTimeMs);
+  lastRenderAt = now;
+  if (Number.isFinite(mediaTime)) {
+    lastRenderedMediaTime = mediaTime;
+  }
   return true;
 }
 
@@ -550,11 +563,11 @@ function stopVideoFrameLoop() {
 function scheduleVideoFrame() {
   stopVideoFrameLoop();
   if (!playing || sourceKind !== "video") return;
-  const callback = () => {
+  const callback = (_now, metadata) => {
     videoFrameCallbackId = null;
     if (!playing) return;
     cadenceDecodedFrames += 1;
-    if (renderFrame(false)) {
+    if (renderFrame(false, metadata)) {
       cadenceRenderedFrames += 1;
     } else {
       cadenceSkippedFrames += 1;
@@ -707,6 +720,7 @@ async function loadMedia(file) {
     stopPausedFrameHeartbeat();
     video.pause();
     playing = false;
+    lastRenderedMediaTime = null;
     uploadedTextureWidth = 0;
     uploadedTextureHeight = 0;
     backgroundSnapshotReady = false;
@@ -786,6 +800,7 @@ async function play() {
     await video.play();
     playing = true;
     lastRenderAt = 0;
+    lastRenderedMediaTime = null;
     resetPlaybackCadence();
     stopPausedFrameHeartbeat();
     scheduleVideoFrame();
