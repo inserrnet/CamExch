@@ -15,7 +15,7 @@ app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
 const PORT = 8791;
-const VERSION = "0.2.2";
+const VERSION = "0.2.3";
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 let mainWindow;
 let server;

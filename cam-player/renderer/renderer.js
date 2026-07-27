@@ -211,9 +211,17 @@ let dragMode = "";
 let dragX = 0;
 let dragY = 0;
 let lastRenderAt = 0;
+let uploadedTextureWidth = 0;
+let uploadedTextureHeight = 0;
 let videoFrameCallbackId = null;
 let pausedFrameTimer = null;
 let timelineTimer = null;
+let cadenceStartedAt = 0;
+let cadenceDecodedFrames = 0;
+let cadenceRenderedFrames = 0;
+let cadenceSkippedFrames = 0;
+let cadenceRenderTimeMs = 0;
+let cadenceMaxRenderTimeMs = 0;
 let backgroundSnapshotReady = false;
 let backgroundBlurTimer = null;
 let mediaGeneration = 0;
@@ -433,7 +441,31 @@ function uploadSource() {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceElement);
+    if (uploadedTextureWidth !== sourceWidth || uploadedTextureHeight !== sourceHeight) {
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        sourceWidth,
+        sourceHeight,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        null,
+      );
+      uploadedTextureWidth = sourceWidth;
+      uploadedTextureHeight = sourceHeight;
+      log(`Source texture allocated size=${sourceWidth}x${sourceHeight}`);
+    }
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      sourceElement,
+    );
     return true;
   } catch (error) {
     log(`Texture upload failed ${error}`);
@@ -442,12 +474,15 @@ function uploadSource() {
 }
 
 function renderFrame(force) {
-  if (!sourceElement || !uploadSource()) return;
+  if (!sourceElement) return false;
   const now = performance.now();
   const fps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
   const activeFps = playing ? fps : Math.min(10, fps);
-  if (!force && now - lastRenderAt < 1000 / activeFps) return;
+  const minimumFrameIntervalMs = (1000 / activeFps) * 0.9;
+  if (!force && now - lastRenderAt < minimumFrameIntervalMs) return false;
   lastRenderAt = now;
+  const renderStartedAt = performance.now();
+  if (!uploadSource()) return false;
   const size = sourceDimensions();
   const t = transform();
   gl.viewport(0, 0, canvas.width, canvas.height);
@@ -468,6 +503,38 @@ function renderFrame(force) {
   if (canvasTrack && typeof canvasTrack.requestFrame === "function") {
     canvasTrack.requestFrame();
   }
+  const renderTimeMs = performance.now() - renderStartedAt;
+  cadenceRenderTimeMs += renderTimeMs;
+  cadenceMaxRenderTimeMs = Math.max(cadenceMaxRenderTimeMs, renderTimeMs);
+  return true;
+}
+
+function resetPlaybackCadence() {
+  cadenceStartedAt = performance.now();
+  cadenceDecodedFrames = 0;
+  cadenceRenderedFrames = 0;
+  cadenceSkippedFrames = 0;
+  cadenceRenderTimeMs = 0;
+  cadenceMaxRenderTimeMs = 0;
+}
+
+function reportPlaybackCadence() {
+  const now = performance.now();
+  const elapsedMs = now - cadenceStartedAt;
+  if (elapsedMs < 5000) return;
+  const elapsedSeconds = Math.max(0.001, elapsedMs / 1000);
+  const averageRenderMs = cadenceRenderedFrames
+    ? cadenceRenderTimeMs / cadenceRenderedFrames
+    : 0;
+  log(
+    `Playback cadence decodedFps=${(cadenceDecodedFrames / elapsedSeconds).toFixed(1)} `
+      + `renderedFps=${(cadenceRenderedFrames / elapsedSeconds).toFixed(1)} `
+      + `skipped=${cadenceSkippedFrames} `
+      + `renderAvgMs=${averageRenderMs.toFixed(2)} `
+      + `renderMaxMs=${cadenceMaxRenderTimeMs.toFixed(2)} `
+      + `output=${canvas.width}x${canvas.height}`,
+  );
+  resetPlaybackCadence();
 }
 
 function stopVideoFrameLoop() {
@@ -486,7 +553,13 @@ function scheduleVideoFrame() {
   const callback = () => {
     videoFrameCallbackId = null;
     if (!playing) return;
-    renderFrame(false);
+    cadenceDecodedFrames += 1;
+    if (renderFrame(false)) {
+      cadenceRenderedFrames += 1;
+    } else {
+      cadenceSkippedFrames += 1;
+    }
+    reportPlaybackCadence();
     scheduleVideoFrame();
   };
   if (typeof video.requestVideoFrameCallback === "function") {
@@ -634,6 +707,8 @@ async function loadMedia(file) {
     stopPausedFrameHeartbeat();
     video.pause();
     playing = false;
+    uploadedTextureWidth = 0;
+    uploadedTextureHeight = 0;
     backgroundSnapshotReady = false;
     currentFile = file;
     let firstFramePresented = true;
@@ -710,6 +785,8 @@ async function play() {
   try {
     await video.play();
     playing = true;
+    lastRenderAt = 0;
+    resetPlaybackCadence();
     stopPausedFrameHeartbeat();
     scheduleVideoFrame();
     updateOutputLabel();
