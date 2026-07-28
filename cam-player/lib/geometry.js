@@ -126,6 +126,15 @@
     return Math.max(4_000_000, Math.min(50_000_000, calculated));
   }
 
+  function videoBitrateProfile(width, height, framesPerSecond) {
+    const maximum = targetVideoBitrate(width, height, framesPerSecond);
+    return {
+      minimum: Math.min(maximum, Math.max(2_000_000, Math.round(maximum * 0.3))),
+      start: Math.min(maximum, Math.max(3_000_000, Math.round(maximum * 0.6))),
+      maximum,
+    };
+  }
+
   function isHighResolution(width, height) {
     const w = Number(width) || 0;
     const h = Number(height) || 0;
@@ -233,6 +242,69 @@
     return lines.join(separator);
   }
 
+  function applyVideoBitrateHints(sdp, preferredCodec, profile) {
+    const source = String(sdp || "");
+    const separator = source.includes("\r\n") ? "\r\n" : "\n";
+    const lines = source.split(/\r?\n/);
+    const videoIndex = lines.findIndex((line) => line.startsWith("m=video "));
+    if (videoIndex < 0) return source;
+    const sectionEndOffset = lines.slice(videoIndex + 1)
+      .findIndex((line) => line.startsWith("m="));
+    const sectionEnd = sectionEndOffset < 0
+      ? lines.length
+      : videoIndex + 1 + sectionEndOffset;
+    const names = String(preferredCodec || "").toUpperCase() === "HEVC"
+      ? new Set(["H265", "HEVC"])
+      : new Set([String(preferredCodec || "").toUpperCase()]);
+    const payloads = new Set();
+    for (let index = videoIndex + 1; index < sectionEnd; index += 1) {
+      const match = /^a=rtpmap:(\d+)\s+([^/\s]+)/i.exec(lines[index]);
+      if (match && names.has(match[2].toUpperCase())) payloads.add(match[1]);
+    }
+    if (!payloads.size) return source;
+
+    const minimumKbps = Math.max(1, Math.round(Number(profile?.minimum) / 1000));
+    const startKbps = Math.max(minimumKbps, Math.round(Number(profile?.start) / 1000));
+    const maximumKbps = Math.max(startKbps, Math.round(Number(profile?.maximum) / 1000));
+    if (![minimumKbps, startKbps, maximumKbps].every(Number.isFinite)) return source;
+    const hints = [
+      `x-google-min-bitrate=${minimumKbps}`,
+      `x-google-start-bitrate=${startKbps}`,
+      `x-google-max-bitrate=${maximumKbps}`,
+    ];
+
+    for (const payload of payloads) {
+      const fmtpIndex = lines.findIndex((line, index) => (
+        index > videoIndex
+        && index < sectionEnd
+        && new RegExp(`^a=fmtp:${payload}\\s+`, "i").test(line)
+      ));
+      if (fmtpIndex >= 0) {
+        const prefix = `a=fmtp:${payload} `;
+        const parameters = lines[fmtpIndex].slice(prefix.length)
+          .split(";")
+          .map((item) => item.trim())
+          .filter((item) => item && !/^x-google-(?:min|start|max)-bitrate=/i.test(item));
+        lines[fmtpIndex] = prefix + [...parameters, ...hints].join(";");
+      } else {
+        lines.splice(sectionEnd, 0, `a=fmtp:${payload} ${hints.join(";")}`);
+      }
+    }
+
+    const updatedSectionEnd = sectionEnd + Math.max(0, lines.length - source.split(/\r?\n/).length);
+    const bandwidthIndex = lines.findIndex((line, index) => (
+      index > videoIndex
+      && index < updatedSectionEnd
+      && /^b=AS:/i.test(line)
+    ));
+    if (bandwidthIndex >= 0) {
+      lines[bandwidthIndex] = `b=AS:${maximumKbps}`;
+    } else {
+      lines.splice(videoIndex + 1, 0, `b=AS:${maximumKbps}`);
+    }
+    return lines.join(separator);
+  }
+
   function formatNetworkInterfaces(interfaces, port) {
     const seen = new Set();
     return (Array.isArray(interfaces) ? interfaces : [])
@@ -260,11 +332,13 @@
     wheelFactor,
     shouldRenderMediaFrame,
     targetVideoBitrate,
+    videoBitrateProfile,
     isHighResolution,
     isUltraHighResolution,
     preferredVideoCodecs,
     negotiatedVideoCodec,
     prioritizeVideoCodec,
+    applyVideoBitrateHints,
     formatNetworkInterfaces,
   };
 }));

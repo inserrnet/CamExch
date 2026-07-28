@@ -121,6 +121,17 @@ test("allocates detail-preserving WebRTC bitrate by output size", () => {
   assert.equal(geometry.targetVideoBitrate(3072, 4080, 60), 50_000_000);
 });
 
+test("keeps a quality floor below the WebRTC bitrate ceiling", () => {
+  assert.deepEqual(
+    geometry.videoBitrateProfile(720, 1280, 60),
+    {
+      minimum: 6_635_520,
+      start: 13_271_040,
+      maximum: 22_118_400,
+    },
+  );
+});
+
 test("prefers H264 normally, HEVC for high resolution, and VP9 above UHD", () => {
   const codecs = [
     { mimeType: "video/H264" },
@@ -180,6 +191,29 @@ test("treats HEVC and H265 as the same SDP codec preference", () => {
     geometry.prioritizeVideoCodec(sdp, "HEVC"),
     /m=video 9 UDP\/TLS\/RTP\/SAVPF 98 96/,
   );
+});
+
+test("adds encoder bitrate hints to the selected video codec", () => {
+  const sdp = [
+    "v=0",
+    "m=video 9 UDP/TLS/RTP/SAVPF 96 97 98",
+    "a=rtpmap:96 H264/90000",
+    "a=fmtp:96 profile-level-id=42e01f;packetization-mode=1",
+    "a=rtpmap:97 rtx/90000",
+    "a=fmtp:97 apt=96",
+    "a=rtpmap:98 VP9/90000",
+  ].join("\r\n");
+  const result = geometry.applyVideoBitrateHints(
+    sdp,
+    "H264",
+    { minimum: 6_000_000, start: 12_000_000, maximum: 20_000_000 },
+  );
+  assert.match(result, /m=video[^\r\n]*\r\nb=AS:20000/);
+  assert.match(
+    result,
+    /a=fmtp:96 profile-level-id=42e01f;packetization-mode=1;x-google-min-bitrate=6000;x-google-start-bitrate=12000;x-google-max-bitrate=20000/,
+  );
+  assert.doesNotMatch(result, /a=fmtp:98[^\r\n]*x-google/);
 });
 
 test("formats dynamic network routes without duplicate address fields or commas", () => {

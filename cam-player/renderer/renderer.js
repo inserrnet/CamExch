@@ -838,7 +838,7 @@ function savePreferences() {
 
 async function lockSenderQuality(sender, width, height) {
   const maximumFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
-  const targetBitrate = CamGeometry.targetVideoBitrate(width, height, maximumFps);
+  const bitrateProfile = CamGeometry.videoBitrateProfile(width, height, maximumFps);
   try {
     const parameters = sender.getParameters();
     if (!parameters.encodings?.length) {
@@ -848,7 +848,7 @@ async function lockSenderQuality(sender, width, height) {
     const encoding = parameters.encodings[0];
     encoding.scaleResolutionDownBy = 1;
     encoding.maxFramerate = maximumFps;
-    encoding.maxBitrate = targetBitrate;
+    encoding.maxBitrate = bitrateProfile.maximum;
     encoding.priority = "high";
     encoding.networkPriority = "high";
     parameters.degradationPreference = "maintain-resolution";
@@ -857,13 +857,15 @@ async function lockSenderQuality(sender, width, height) {
     const active = applied.encodings?.[0] || {};
     log(`Sender quality lock applied scale=${active.scaleResolutionDownBy || 1} `
       + `maxFps=${active.maxFramerate || "default"} `
-      + `targetMbps=${(targetBitrate / 1_000_000).toFixed(2)} `
+      + `minMbps=${(bitrateProfile.minimum / 1_000_000).toFixed(2)} `
+      + `startMbps=${(bitrateProfile.start / 1_000_000).toFixed(2)} `
+      + `targetMbps=${(bitrateProfile.maximum / 1_000_000).toFixed(2)} `
       + `maxBitrate=${active.maxBitrate || "default"} `
       + `degradation=${applied.degradationPreference || "unknown"}`);
-    return targetBitrate;
+    return bitrateProfile;
   } catch (error) {
     log(`Sender quality lock unavailable ${error}`);
-    return 0;
+    return bitrateProfile;
   }
 }
 
@@ -961,9 +963,21 @@ async function handleOffer(payload) {
       canvas.width,
       canvas.height,
     );
-    const effectiveOfferSdp = codecChoice.name === "default"
+    const bitrateProfile = CamGeometry.videoBitrateProfile(
+      expectedOutput.width,
+      expectedOutput.height,
+      Math.max(1, Math.min(60, Number(fpsInput.value) || 30)),
+    );
+    const prioritizedOfferSdp = codecChoice.name === "default"
       ? sdp
       : CamGeometry.prioritizeVideoCodec(sdp, codecChoice.name);
+    const effectiveOfferSdp = codecChoice.name === "default"
+      ? prioritizedOfferSdp
+      : CamGeometry.applyVideoBitrateHints(
+        prioritizedOfferSdp,
+        codecChoice.name,
+        bitrateProfile,
+      );
     log(`Remote offer codec order id=${id} originalFirst=`
       + `${CamGeometry.negotiatedVideoCodec(sdp)} effectiveFirst=`
       + `${CamGeometry.negotiatedVideoCodec(effectiveOfferSdp)} selected=${codecChoice.name}`);
@@ -984,11 +998,18 @@ async function handleOffer(payload) {
       + `vp9=${codecChoice.vp9Available} remoteH264=${remoteOffersH264} `
       + `remoteHevc=${remoteOffersHevc} remoteVp9=${remoteOffersVp9}`);
     const answer = await pc.createAnswer();
-    const orderedSdp = codecChoice.name === "default"
+    const prioritizedAnswerSdp = codecChoice.name === "default"
       ? answer.sdp
       : CamGeometry.prioritizeVideoCodec(answer.sdp, codecChoice.name);
+    const orderedSdp = codecChoice.name === "default"
+      ? prioritizedAnswerSdp
+      : CamGeometry.applyVideoBitrateHints(
+        prioritizedAnswerSdp,
+        codecChoice.name,
+        bitrateProfile,
+      );
     await pc.setLocalDescription({ type: "answer", sdp: orderedSdp });
-    const targetBitrate = await lockSenderQuality(
+    const appliedBitrateProfile = await lockSenderQuality(
       sender,
       expectedOutput.width,
       expectedOutput.height,
@@ -1077,7 +1098,8 @@ async function handleOffer(payload) {
             + `size=${entry.frameWidth || 0}x${entry.frameHeight || 0} `
             + `fps=${entry.framesPerSecond || 0} encoded=${entry.framesEncoded || 0} `
             + `bytes=${bytes} bitrateMbps=${bitrateMbps.toFixed(2)} `
-            + `targetMbps=${(targetBitrate / 1_000_000).toFixed(2)} `
+            + `minMbps=${(appliedBitrateProfile.minimum / 1_000_000).toFixed(2)} `
+            + `targetMbps=${(appliedBitrateProfile.maximum / 1_000_000).toFixed(2)} `
             + `avgQp=${averageQp.toFixed(1)} avgEncodeMs=${averageEncodeMs.toFixed(2)} `
             + `quality=${entry.qualityLimitationReason || "none"}`);
         });
