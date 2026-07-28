@@ -118,6 +118,14 @@
     return current - previous >= (1 / fps) * 0.9;
   }
 
+  function targetVideoBitrate(width, height, framesPerSecond) {
+    const w = Math.max(2, Number(width) || 0);
+    const h = Math.max(2, Number(height) || 0);
+    const fps = Math.max(1, Math.min(60, Number(framesPerSecond) || 30));
+    const calculated = Math.round(w * h * fps * 0.4);
+    return Math.max(4_000_000, Math.min(50_000_000, calculated));
+  }
+
   function isHighResolution(width, height) {
     const w = Number(width) || 0;
     const h = Number(height) || 0;
@@ -251,6 +259,7 @@
     dragInOutputCoordinates,
     wheelFactor,
     shouldRenderMediaFrame,
+    targetVideoBitrate,
     isHighResolution,
     isUltraHighResolution,
     preferredVideoCodecs,

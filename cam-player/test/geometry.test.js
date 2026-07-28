@@ -114,6 +114,13 @@ test("renders immediately when a looping video's media timestamp resets", () => 
   assert.equal(geometry.shouldRenderMediaFrame(12.4, 0, 30), true);
 });
 
+test("allocates detail-preserving WebRTC bitrate by output size", () => {
+  assert.equal(geometry.targetVideoBitrate(480, 640, 30), 4_000_000);
+  assert.equal(geometry.targetVideoBitrate(720, 1280, 30), 11_059_200);
+  assert.equal(geometry.targetVideoBitrate(1200, 1600, 30), 23_040_000);
+  assert.equal(geometry.targetVideoBitrate(3072, 4080, 60), 50_000_000);
+});
+
 test("prefers H264 normally, HEVC for high resolution, and VP9 above UHD", () => {
   const codecs = [
     { mimeType: "video/H264" },

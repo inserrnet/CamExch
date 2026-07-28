@@ -836,7 +836,9 @@ function savePreferences() {
   });
 }
 
-async function lockSenderQuality(sender) {
+async function lockSenderQuality(sender, width, height) {
+  const maximumFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+  const targetBitrate = CamGeometry.targetVideoBitrate(width, height, maximumFps);
   try {
     const parameters = sender.getParameters();
     if (!parameters.encodings?.length) {
@@ -845,7 +847,8 @@ async function lockSenderQuality(sender) {
     }
     const encoding = parameters.encodings[0];
     encoding.scaleResolutionDownBy = 1;
-    encoding.maxFramerate = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+    encoding.maxFramerate = maximumFps;
+    encoding.maxBitrate = targetBitrate;
     encoding.priority = "high";
     encoding.networkPriority = "high";
     parameters.degradationPreference = "maintain-resolution";
@@ -854,11 +857,13 @@ async function lockSenderQuality(sender) {
     const active = applied.encodings?.[0] || {};
     log(`Sender quality lock applied scale=${active.scaleResolutionDownBy || 1} `
       + `maxFps=${active.maxFramerate || "default"} `
+      + `targetMbps=${(targetBitrate / 1_000_000).toFixed(2)} `
+      + `maxBitrate=${active.maxBitrate || "default"} `
       + `degradation=${applied.degradationPreference || "unknown"}`);
-    return true;
+    return targetBitrate;
   } catch (error) {
     log(`Sender quality lock unavailable ${error}`);
-    return false;
+    return 0;
   }
 }
 
@@ -913,7 +918,12 @@ async function handleOffer(payload) {
     }
     const pc = new RTCPeerConnection({ iceServers: [] });
     peers.set(id, pc);
-    peerMaintenance.set(id, { disconnectTimer: null, statsTimer: null });
+    peerMaintenance.set(id, {
+      disconnectTimer: null,
+      statsTimer: null,
+      lastOutboundBytes: 0,
+      lastOutboundTimestamp: 0,
+    });
     updateConnectionState();
     updatePausedFrameHeartbeat();
     pc.onconnectionstatechange = () => {
@@ -978,7 +988,11 @@ async function handleOffer(payload) {
       ? answer.sdp
       : CamGeometry.prioritizeVideoCodec(answer.sdp, codecChoice.name);
     await pc.setLocalDescription({ type: "answer", sdp: orderedSdp });
-    await lockSenderQuality(sender);
+    const targetBitrate = await lockSenderQuality(
+      sender,
+      expectedOutput.width,
+      expectedOutput.height,
+    );
     await waitForIce(pc, 3500);
     const answerFirstCodec = CamGeometry.negotiatedVideoCodec(pc.localDescription.sdp);
     log(`Answer ready id=${id} bytes=${pc.localDescription.sdp.length} `
@@ -1034,11 +1048,38 @@ async function handleOffer(payload) {
         }
         report.forEach((entry) => {
           if (entry.type !== "outbound-rtp" || (entry.kind || entry.mediaType) !== "video") return;
+          if (entry.framesEncoded == null) return;
           const codec = entry.codecId ? report.get(entry.codecId) : null;
+          const maintenance = peerMaintenance.get(id);
+          const bytes = Number(entry.bytesSent) || 0;
+          const timestamp = Number(entry.timestamp) || performance.now();
+          let bitrateMbps = 0;
+          if (maintenance?.lastOutboundTimestamp > 0
+              && timestamp > maintenance.lastOutboundTimestamp
+              && bytes >= maintenance.lastOutboundBytes) {
+            bitrateMbps = ((bytes - maintenance.lastOutboundBytes) * 8)
+              / ((timestamp - maintenance.lastOutboundTimestamp) / 1000)
+              / 1_000_000;
+          }
+          if (maintenance) {
+            maintenance.lastOutboundBytes = bytes;
+            maintenance.lastOutboundTimestamp = timestamp;
+          }
+          const encodedFrames = Number(entry.framesEncoded) || 0;
+          const averageQp = encodedFrames > 0 && Number.isFinite(Number(entry.qpSum))
+            ? Number(entry.qpSum) / encodedFrames
+            : 0;
+          const averageEncodeMs = encodedFrames > 0
+              && Number.isFinite(Number(entry.totalEncodeTime))
+            ? (Number(entry.totalEncodeTime) * 1000) / encodedFrames
+            : 0;
           log(`WebRTC outbound id=${id} codec=${codec?.mimeType || "unknown"} `
             + `size=${entry.frameWidth || 0}x${entry.frameHeight || 0} `
             + `fps=${entry.framesPerSecond || 0} encoded=${entry.framesEncoded || 0} `
-            + `bytes=${entry.bytesSent || 0} quality=${entry.qualityLimitationReason || "none"}`);
+            + `bytes=${bytes} bitrateMbps=${bitrateMbps.toFixed(2)} `
+            + `targetMbps=${(targetBitrate / 1_000_000).toFixed(2)} `
+            + `avgQp=${averageQp.toFixed(1)} avgEncodeMs=${averageEncodeMs.toFixed(2)} `
+            + `quality=${entry.qualityLimitationReason || "none"}`);
         });
       } catch (error) {
         log(`WebRTC stats failed id=${id} ${error}`);
