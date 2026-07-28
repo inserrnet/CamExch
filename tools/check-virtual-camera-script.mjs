@@ -41,7 +41,7 @@ for (const marker of [
   "RTCPeerConnection.removeTrack",
   "managed camera session discarded reason=",
   "page unhandledrejection",
-  "source standby first track ready",
+  "source standby deferred until page camera request",
   "high resolution rear native direct size=",
   "shared source WebRTC released idle=true",
   "getUserMedia native passthrough elapsedMs=",
@@ -53,6 +53,9 @@ for (const marker of [
   "microphone native result tracks=",
   "Cam Player configuration reason=",
   "shared source geometry changed old=",
+  "Source first decoded geometry ready size=",
+  "Source switch inherited active geometry=",
+  "camera DOM geometry reason=",
   "device orientation changed=",
 ]) {
   if (!script.includes(marker)) {
@@ -76,6 +79,7 @@ let canvasRequestFrameCount = 0;
 let sourceOnline = false;
 let sourceOfferCount = 0;
 let sourceConfigureCount = 0;
+let lastSourceOfferConfig = null;
 let deviceChangeCount = 0;
 class FakeTrack {
   constructor(deviceId = "rear-id") {
@@ -155,24 +159,28 @@ class FakeMediaStreamTrackProcessor {
 }
 
 class FakeSourceTrack extends FakeTrack {
-  constructor() {
+  constructor(dimensionsReady = true) {
     super("source-id");
     this.label = "RTSP source";
     this.muted = true;
+    this.dimensionsReady = dimensionsReady;
   }
 
   getSettings() {
-    return {
+    const settings = {
       facingMode: "user",
       deviceId: "source-id",
-      width: TEST_SOURCE_WIDTH,
-      height: TEST_SOURCE_HEIGHT,
       frameRate: 30,
     };
+    if (this.dimensionsReady) {
+      settings.width = TEST_SOURCE_WIDTH;
+      settings.height = TEST_SOURCE_HEIGHT;
+    }
+    return settings;
   }
 
   clone() {
-    const clone = new FakeSourceTrack();
+    const clone = new FakeSourceTrack(this.dimensionsReady);
     clone.muted = false;
     return clone;
   }
@@ -242,7 +250,7 @@ class FakeRTCPeerConnection {
   }
 
   async setRemoteDescription() {
-    const track = new FakeSourceTrack();
+    const track = new FakeSourceTrack(false);
     queueMicrotask(() => {
       this.ontrack?.({
         track,
@@ -251,6 +259,9 @@ class FakeRTCPeerConnection {
       setTimeout(() => {
         track.muted = false;
         track.onunmute?.();
+        setTimeout(() => {
+          track.dimensionsReady = true;
+        }, 1);
       }, 0);
     });
   }
@@ -536,6 +547,11 @@ context.CamExchBridge = {
     sourceOfferCount += 1;
     return sourceOnline ? "fake-answer" : "ERROR:source offline";
   },
+  answerOfferWithConfig: (_offer, config) => {
+    sourceOfferCount += 1;
+    lastSourceOfferConfig = JSON.parse(config);
+    return sourceOnline ? "fake-answer" : "ERROR:source offline";
+  },
   configureCamPlayer: () => {
     sourceConfigureCount += 1;
     return "OK";
@@ -543,7 +559,7 @@ context.CamExchBridge = {
 };
 const testScript = script.replace(
   /\}\)\(\);$/,
-  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,rtc:rtcStream,managed:managedStreams,proxy:createRouteProxy,configure:configureManagedController,install:installHooks,installFrame:installFrame};})();",
+  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,rtc:rtcStream,prepare:prepareSourceStandby,managed:managedStreams,proxy:createRouteProxy,configure:configureManagedController,install:installHooks,installFrame:installFrame};})();",
 );
 vm.runInNewContext(testScript, context);
 
@@ -960,6 +976,11 @@ const stableTrackBeforeOnlineSwitch = activeEntry.controller.track;
 const nativeCountBeforeOnlineSwitch = nativeGetCount;
 const deviceChangesBeforeOnlineSwitch = deviceChangeCount;
 sourceOnline = true;
+const standbyOfferStart = sourceOfferCount;
+await context.__camexchForTest.prepare();
+if (sourceOfferCount !== standbyOfferStart) {
+  throw new Error("Selecting Source created an unnecessary standby WebRTC offer");
+}
 const geometryOfferStart = sourceOfferCount;
 const firstGeometryStream = await context.__camexchForTest.rtc({
   video: true,
@@ -989,12 +1010,15 @@ for (const stream of [firstGeometryStream, sameGeometryStream, requestedGeometry
   stream.getTracks().forEach((track) => track.stop());
 }
 const onlineSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
+const inheritedSwitchVideo = lastSourceOfferConfig?.constraints?.video;
 if (onlineSourceSwitch.switched !== 1 || onlineSourceSwitch.failed !== 0
     || activeEntry.controller.track !== stableTrackBeforeOnlineSwitch
     || activeEntry.controller.route !== "SOURCE"
     || onlineSourceSwitch.devicechange !== 1
     || deviceChangeCount !== deviceChangesBeforeOnlineSwitch + 1
-    || stableTrackBeforeOnlineSwitch.label !== "Front Camera 4") {
+    || stableTrackBeforeOnlineSwitch.label !== "Front Camera 4"
+    || inheritedSwitchVideo?.width?.ideal !== 1280
+    || inheritedSwitchVideo?.height?.ideal !== 720) {
   throw new Error("Online Source switch did not preserve and relabel the page track");
 }
 const sourceSettings = stableTrackBeforeOnlineSwitch.getSettings();

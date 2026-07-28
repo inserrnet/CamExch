@@ -894,9 +894,23 @@ function closePeer(id, reason) {
 async function handleOffer(payload) {
   const { id, sdp, constraints, orientation } = payload;
   const outputBeforeOffer = { ...lastWorkingOutput };
+  const activeOutputBeforeOffer = { width: canvas.width, height: canvas.height };
   try {
     applySiteConfiguration({ constraints, orientation }, "offer");
     const expectedOutput = { width: canvas.width, height: canvas.height };
+    if (activeOutputBeforeOffer.width !== expectedOutput.width
+        || activeOutputBeforeOffer.height !== expectedOutput.height) {
+      const existingPeerIds = Array.from(peers.keys());
+      log(`Output geometry changed ${activeOutputBeforeOffer.width}x`
+        + `${activeOutputBeforeOffer.height} -> ${expectedOutput.width}x`
+        + `${expectedOutput.height}; superseding peers=${existingPeerIds.length}`);
+      for (const existingId of existingPeerIds) {
+        closePeer(
+          existingId,
+          `superseded by output ${expectedOutput.width}x${expectedOutput.height}`,
+        );
+      }
+    }
     const pc = new RTCPeerConnection({ iceServers: [] });
     peers.set(id, pc);
     peerMaintenance.set(id, { disconnectTimer: null, statsTimer: null });
