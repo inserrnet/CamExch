@@ -15,7 +15,7 @@ app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
 const PORT = 8791;
-const VERSION = "0.2.4";
+const VERSION = "0.2.8";
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 let mainWindow;
 let server;
@@ -25,7 +25,7 @@ let pairingCode = String(crypto.randomInt(100000, 1000000));
 let state = {
   outputWidth: 720,
   outputHeight: 1280,
-  fps: 30,
+  fps: 60,
   file: "",
   playing: false,
   peerCount: 0,

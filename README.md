@@ -120,7 +120,7 @@ pnpm dist
 Windows output:
 
 ```text
-cam-player/dist/Cam-Player-0.2.4-Windows-x64.exe
+cam-player/dist/Cam-Player-0.2.8-Windows-x64.exe
 ```
 
 ## Notes

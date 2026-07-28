@@ -159,7 +159,17 @@ function createLinearTexture() {
   return created;
 }
 
-const texture = createLinearTexture();
+function createDetailTexture() {
+  const created = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, created);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return created;
+}
+
+const texture = createDetailTexture();
 const backgroundSourceTexture = createLinearTexture();
 const backgroundPassTexture = createLinearTexture();
 const backgroundTexture = createLinearTexture();
@@ -214,6 +224,7 @@ let lastRenderAt = 0;
 let lastRenderedMediaTime = null;
 let uploadedTextureWidth = 0;
 let uploadedTextureHeight = 0;
+let detailMinificationEnabled = null;
 let videoFrameCallbackId = null;
 let pausedFrameTimer = null;
 let timelineTimer = null;
@@ -225,6 +236,9 @@ let cadenceRenderTimeMs = 0;
 let cadenceMaxRenderTimeMs = 0;
 let backgroundSnapshotReady = false;
 let backgroundBlurTimer = null;
+let senderQualityRefreshTimer = null;
+let siteConfigurationTimer = null;
+let pendingSiteConfiguration = null;
 let mediaGeneration = 0;
 let stream = null;
 let canvasTrack = null;
@@ -433,6 +447,7 @@ function applyOutputSize(width, height, reason) {
   } else {
     renderFrame(true);
   }
+  scheduleSenderQualityRefresh(`output ${reason}`);
   savePreferences();
 }
 
@@ -467,6 +482,22 @@ function uploadSource() {
       gl.UNSIGNED_BYTE,
       sourceElement,
     );
+    const oriented = sourceDimensions();
+    const fit = Math.min(canvas.width / oriented.width, canvas.height / oriented.height);
+    const sourceToOutputScale = fit * transform().scale;
+    const needsMipmaps = sourceToOutputScale < 0.95;
+    gl.texParameteri(
+      gl.TEXTURE_2D,
+      gl.TEXTURE_MIN_FILTER,
+      needsMipmaps ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR,
+    );
+    if (needsMipmaps) gl.generateMipmap(gl.TEXTURE_2D);
+    if (detailMinificationEnabled !== needsMipmaps) {
+      detailMinificationEnabled = needsMipmaps;
+      log(`Detail minification mode=${needsMipmaps ? "mipmap-trilinear" : "linear-native"} `
+        + `sourceToOutputScale=${sourceToOutputScale.toFixed(3)} `
+        + `source=${oriented.width}x${oriented.height} output=${canvas.width}x${canvas.height}`);
+    }
     return true;
   } catch (error) {
     log(`Texture upload failed ${error}`);
@@ -592,7 +623,7 @@ function updatePausedFrameHeartbeat() {
   stopPausedFrameHeartbeat();
   if (playing || !sourceElement || peers.size === 0) return;
   renderFrame(true);
-  pausedFrameTimer = setInterval(() => renderFrame(true), 500);
+  pausedFrameTimer = setInterval(() => renderFrame(true), 100);
 }
 
 function ensureStream() {
@@ -723,6 +754,7 @@ async function loadMedia(file) {
     lastRenderedMediaTime = null;
     uploadedTextureWidth = 0;
     uploadedTextureHeight = 0;
+    detailMinificationEnabled = null;
     backgroundSnapshotReady = false;
     currentFile = file;
     let firstFramePresented = true;
@@ -824,6 +856,7 @@ function pause() {
 
 function savePreferences() {
   window.camPlayer.writePreferences({
+    preferencesVersion: 2,
     width: canvas.width,
     height: canvas.height,
     fps: Number(fpsInput.value),
@@ -867,6 +900,28 @@ async function lockSenderQuality(sender, width, height) {
     log(`Sender quality lock unavailable ${error}`);
     return bitrateProfile;
   }
+}
+
+function scheduleSenderQualityRefresh(reason) {
+  clearTimeout(senderQualityRefreshTimer);
+  senderQualityRefreshTimer = setTimeout(async () => {
+    const active = [];
+    for (const [id, maintenance] of peerMaintenance.entries()) {
+      if (!maintenance?.sender || !peers.has(id)) continue;
+      active.push(
+        lockSenderQuality(maintenance.sender, canvas.width, canvas.height)
+          .then(() => {
+            maintenance.outputWidth = canvas.width;
+            maintenance.outputHeight = canvas.height;
+          }),
+      );
+    }
+    if (active.length) {
+      await Promise.allSettled(active);
+      log(`Sender quality refreshed peers=${active.length} `
+        + `output=${canvas.width}x${canvas.height} fps=${fpsInput.value} reason=${reason}`);
+    }
+  }, 80);
 }
 
 function describeTransceivers(pc) {
@@ -925,6 +980,9 @@ async function handleOffer(payload) {
       statsTimer: null,
       lastOutboundBytes: 0,
       lastOutboundTimestamp: 0,
+      sender: null,
+      outputWidth: expectedOutput.width,
+      outputHeight: expectedOutput.height,
     });
     updateConnectionState();
     updatePausedFrameHeartbeat();
@@ -938,7 +996,7 @@ async function handleOffer(payload) {
           if (pc.connectionState === "disconnected") {
             closePeer(id, "disconnected timeout");
           }
-        }, 5000);
+        }, 1500);
       } else {
         clearTimeout(maintenance.disconnectTimer);
         maintenance.disconnectTimer = null;
@@ -985,6 +1043,8 @@ async function handleOffer(payload) {
     log(`Remote offer applied id=${id} transceivers=${describeTransceivers(pc)}`);
     const localStream = ensureStream();
     const sender = pc.addTrack(localStream.getVideoTracks()[0], localStream);
+    const senderMaintenance = peerMaintenance.get(id);
+    if (senderMaintenance) senderMaintenance.sender = sender;
     const transceiver = pc.getTransceivers().find((item) => item.sender === sender);
     if (!transceiver) throw new Error("Video sender is not attached to an offered transceiver");
     log(`Video sender attached id=${id} transceivers=${describeTransceivers(pc)}`);
@@ -1144,7 +1204,23 @@ function applySiteConfiguration(config, reason) {
     log(`Site size unchanged reason=${resolved.reason}`);
     return;
   }
+  if (resolved.width === canvas.width && resolved.height === canvas.height) {
+    log(`Site size already active=${canvas.width}x${canvas.height} `
+      + `reason=${reason} ${resolved.reason}`);
+    return;
+  }
   applyOutputSize(resolved.width, resolved.height, `site ${reason} ${resolved.reason}`);
+}
+
+function scheduleSiteConfiguration(config, reason) {
+  pendingSiteConfiguration = { config, reason };
+  clearTimeout(siteConfigurationTimer);
+  siteConfigurationTimer = setTimeout(() => {
+    const pending = pendingSiteConfiguration;
+    pendingSiteConfiguration = null;
+    if (!pending) return;
+    applySiteConfiguration(pending.config, pending.reason);
+  }, 120);
 }
 
 function updateConnectionState() {
@@ -1306,6 +1382,7 @@ for (const input of [fpsInput, followSiteToggle]) {
     }
     updateOutputLabel();
     renderFrame(true);
+    if (input === fpsInput) scheduleSenderQualityRefresh("maximum FPS changed");
     savePreferences();
   });
 }
@@ -1331,7 +1408,7 @@ document.getElementById("clearLogButton").addEventListener("click", async () => 
 });
 
 window.camPlayer.onOffer(handleOffer);
-window.camPlayer.onConfig((config) => applySiteConfiguration(config, "orientation"));
+window.camPlayer.onConfig((config) => scheduleSiteConfiguration(config, "live configuration"));
 function applyServerInfo(info) {
   currentServerInfo = info;
   document.getElementById("networkValue").textContent =
@@ -1347,7 +1424,9 @@ async function initialize() {
   applyServerInfo(await window.camPlayer.getServerInfo());
   recent = Array.isArray(preferences.recent) ? preferences.recent : [];
   renderRecent();
-  fpsInput.value = String(preferences.fps || 30);
+  fpsInput.value = String(
+    Number(preferences.preferencesVersion) >= 2 ? preferences.fps || 60 : 60,
+  );
   blurInput.value = String(preferences.blur ?? 40);
   followSiteToggle.checked = !!preferences.followSite;
   fallbackResolutionToggle.checked = preferences.fallbackResolution === true;
@@ -1376,6 +1455,8 @@ window.addEventListener("beforeunload", () => {
   stopPausedFrameHeartbeat();
   clearInterval(timelineTimer);
   clearTimeout(backgroundBlurTimer);
+  clearTimeout(senderQualityRefreshTimer);
+  clearTimeout(siteConfigurationTimer);
   for (const id of Array.from(peers.keys())) closePeer(id, "renderer unload");
   stream?.getTracks().forEach((track) => track.stop());
 });

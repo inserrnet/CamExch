@@ -52,11 +52,16 @@ for (const marker of [
   "microphone getUserMedia resolved requested=",
   "microphone native result tracks=",
   "Cam Player configuration reason=",
-  "shared source geometry changed old=",
+  "Cam Player configuration delivered reason=",
+  "shared source geometry updated old=",
+  "rear autofocus inspect route=",
+  "rear autofocus verification route=",
   "Source first decoded geometry ready size=",
   "Source switch inherited active geometry=",
   "camera DOM geometry reason=",
   "device orientation changed=",
+  "camera request id=",
+  "Source track contentHint=",
 ]) {
   if (!script.includes(marker)) {
     throw new Error(`Missing browser telemetry marker: ${marker}`);
@@ -74,6 +79,7 @@ let nativeGetDelayGate = null;
 const TEST_SOURCE_WIDTH = 944;
 const TEST_SOURCE_HEIGHT = 960;
 let continuousFocusCount = 0;
+let singleShotFocusCount = 0;
 let canvasDrawCount = 0;
 let canvasRequestFrameCount = 0;
 let sourceOnline = false;
@@ -103,13 +109,16 @@ class FakeTrack {
   }
 
   getCapabilities() {
-    return { focusMode: ["manual", "continuous"] };
+    return { focusMode: ["manual", "single-shot", "continuous"] };
   }
 
   async applyConstraints(constraints) {
     this.lastConstraints = constraints;
     if (constraints?.advanced?.[0]?.focusMode === "continuous") {
       continuousFocusCount += 1;
+    }
+    if (constraints?.advanced?.[0]?.focusMode === "single-shot") {
+      singleShotFocusCount += 1;
     }
   }
 
@@ -552,8 +561,9 @@ context.CamExchBridge = {
     lastSourceOfferConfig = JSON.parse(config);
     return sourceOnline ? "fake-answer" : "ERROR:source offline";
   },
-  configureCamPlayer: () => {
+  configureCamPlayer: (config) => {
     sourceConfigureCount += 1;
+    lastSourceOfferConfig = JSON.parse(config);
     return "OK";
   },
 };
@@ -1002,9 +1012,9 @@ const requestedGeometryStream = await context.__camexchForTest.rtc({
   },
   audio: false,
 });
-if (sourceOfferCount !== firstGeometryOffers + 1
-    || sourceConfigureCount !== 0) {
-  throw new Error("A changed Source geometry was applied to a live WebRTC track");
+if (sourceOfferCount !== firstGeometryOffers
+    || sourceConfigureCount !== 1) {
+  throw new Error("A changed Source geometry rebuilt WebRTC instead of live configuration");
 }
 for (const stream of [firstGeometryStream, sameGeometryStream, requestedGeometryStream]) {
   stream.getTracks().forEach((track) => track.stop());
@@ -1311,5 +1321,19 @@ for (let cycle = 0; cycle < 4; cycle += 1) {
     throw new Error(`Repeated F to R switch failed at cycle ${cycle}`);
   }
 }
+
+await context.__camexchSwitchCamera("NATIVE");
+const focusBeforeNativeRear = continuousFocusCount;
+const singleShotBeforeNativeRear = singleShotFocusCount;
+const nativeRearStream = await context.navigator.mediaDevices.getUserMedia({
+  video: { facingMode: { exact: "environment" } },
+  audio: false,
+});
+if (continuousFocusCount !== focusBeforeNativeRear + 1
+    || singleShotFocusCount !== singleShotBeforeNativeRear + 1
+    || nativeRearStream.getVideoTracks()[0].getSettings().facingMode !== "environment") {
+  throw new Error("Native rear passthrough did not explicitly start continuous autofocus");
+}
+nativeRearStream.getTracks().forEach((track) => track.stop());
 
 console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);
