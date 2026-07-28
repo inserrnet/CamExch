@@ -40,6 +40,7 @@ uniform sampler2D u_background;
 uniform vec2 u_output;
 uniform vec2 u_source;
 uniform float u_scale;
+uniform float u_lod_bias;
 uniform vec2 u_pan;
 uniform int u_rotation;
 in vec2 v_uv;
@@ -53,7 +54,7 @@ vec2 rotateUv(vec2 uv) {
 }
 
 vec4 sampleSource(vec2 uv) {
-  return texture(u_texture, rotateUv(vec2(uv.x, 1.0 - uv.y)));
+  return texture(u_texture, rotateUv(vec2(uv.x, 1.0 - uv.y)), u_lod_bias);
 }
 
 void main() {
@@ -193,6 +194,7 @@ const uniforms = {
   output: gl.getUniformLocation(program, "u_output"),
   source: gl.getUniformLocation(program, "u_source"),
   scale: gl.getUniformLocation(program, "u_scale"),
+  lodBias: gl.getUniformLocation(program, "u_lod_bias"),
   pan: gl.getUniformLocation(program, "u_pan"),
   rotation: gl.getUniformLocation(program, "u_rotation"),
 };
@@ -494,7 +496,7 @@ function uploadSource() {
     if (needsMipmaps) gl.generateMipmap(gl.TEXTURE_2D);
     if (detailMinificationEnabled !== needsMipmaps) {
       detailMinificationEnabled = needsMipmaps;
-      log(`Detail minification mode=${needsMipmaps ? "mipmap-trilinear" : "linear-native"} `
+      log(`Detail minification mode=${needsMipmaps ? "detail-biased-trilinear" : "linear-native"} `
         + `sourceToOutputScale=${sourceToOutputScale.toFixed(3)} `
         + `source=${oriented.width}x${oriented.height} output=${canvas.width}x${canvas.height}`);
     }
@@ -537,6 +539,7 @@ function renderFrame(force, frameMetadata = null) {
   gl.uniform2f(uniforms.output, canvas.width, canvas.height);
   gl.uniform2f(uniforms.source, size.width, size.height);
   gl.uniform1f(uniforms.scale, t.scale);
+  gl.uniform1f(uniforms.lodBias, detailMinificationEnabled ? -0.55 : 0);
   gl.uniform2f(uniforms.pan, t.panX, t.panY);
   gl.uniform1i(uniforms.rotation, sourceRotation);
   gl.drawArrays(gl.TRIANGLES, 0, 6);

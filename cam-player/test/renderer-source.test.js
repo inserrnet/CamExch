@@ -10,10 +10,12 @@ const renderer = fs.readFileSync(
   "utf8",
 );
 
-test("uses mipmap trilinear minification for detail-preserving downscaling", () => {
+test("uses detail-biased trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.LINEAR_MIPMAP_LINEAR/);
   assert.match(renderer, /gl\.generateMipmap\(gl\.TEXTURE_2D\)/);
   assert.match(renderer, /sourceToOutputScale < 0\.95/);
+  assert.match(renderer, /uniform float u_lod_bias/);
+  assert.match(renderer, /detailMinificationEnabled \? -0\.55 : 0/);
 });
 
 test("keeps a paused camera track alive at ten frames per second", () => {
