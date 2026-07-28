@@ -52,6 +52,7 @@ for (const marker of [
   "microphone getUserMedia resolved requested=",
   "microphone native result tracks=",
   "Cam Player configuration reason=",
+  "shared source geometry changed old=",
   "device orientation changed=",
 ]) {
   if (!script.includes(marker)) {
@@ -73,6 +74,8 @@ let continuousFocusCount = 0;
 let canvasDrawCount = 0;
 let canvasRequestFrameCount = 0;
 let sourceOnline = false;
+let sourceOfferCount = 0;
+let sourceConfigureCount = 0;
 let deviceChangeCount = 0;
 class FakeTrack {
   constructor(deviceId = "rear-id") {
@@ -527,12 +530,20 @@ context.globalThis = context;
 context.CamExchBridge = {
   authorizeNativeCamera: () => "OK",
   getCameraRouteMode: () => "AUTO",
+  getDeviceOrientation: () => "portrait",
   getMode: () => sourceOnline ? "RTSP" : "ERROR:source offline",
-  answerOffer: () => sourceOnline ? "fake-answer" : "ERROR:source offline",
+  answerOffer: () => {
+    sourceOfferCount += 1;
+    return sourceOnline ? "fake-answer" : "ERROR:source offline";
+  },
+  configureCamPlayer: () => {
+    sourceConfigureCount += 1;
+    return "OK";
+  },
 };
 const testScript = script.replace(
   /\}\)\(\);$/,
-  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,managed:managedStreams,proxy:createRouteProxy,configure:configureManagedController,install:installHooks,installFrame:installFrame};})();",
+  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,rtc:rtcStream,managed:managedStreams,proxy:createRouteProxy,configure:configureManagedController,install:installHooks,installFrame:installFrame};})();",
 );
 vm.runInNewContext(testScript, context);
 
@@ -949,6 +960,34 @@ const stableTrackBeforeOnlineSwitch = activeEntry.controller.track;
 const nativeCountBeforeOnlineSwitch = nativeGetCount;
 const deviceChangesBeforeOnlineSwitch = deviceChangeCount;
 sourceOnline = true;
+const geometryOfferStart = sourceOfferCount;
+const firstGeometryStream = await context.__camexchForTest.rtc({
+  video: true,
+  audio: false,
+});
+const firstGeometryOffers = sourceOfferCount;
+const sameGeometryStream = await context.__camexchForTest.rtc({
+  video: true,
+  audio: false,
+});
+if (firstGeometryOffers !== geometryOfferStart + 1
+    || sourceOfferCount !== firstGeometryOffers) {
+  throw new Error("An unchanged Source geometry did not reuse its WebRTC session");
+}
+const requestedGeometryStream = await context.__camexchForTest.rtc({
+  video: {
+    width: { min: 320, ideal: 640 },
+    height: { min: 240, ideal: 480 },
+  },
+  audio: false,
+});
+if (sourceOfferCount !== firstGeometryOffers + 1
+    || sourceConfigureCount !== 0) {
+  throw new Error("A changed Source geometry was applied to a live WebRTC track");
+}
+for (const stream of [firstGeometryStream, sameGeometryStream, requestedGeometryStream]) {
+  stream.getTracks().forEach((track) => track.stop());
+}
 const onlineSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
 if (onlineSourceSwitch.switched !== 1 || onlineSourceSwitch.failed !== 0
     || activeEntry.controller.track !== stableTrackBeforeOnlineSwitch
