@@ -21,7 +21,7 @@ public class VirtualCameraScriptTest {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "focusMode:'continuous'"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "rear autofocus continuous refreshed"));
+                "rear autofocus mode=continuous applied"));
         assertFalse(VirtualCameraScript.SCRIPT.contains(
                 "focusMode:'single-shot'"));
     }

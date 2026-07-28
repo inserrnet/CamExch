@@ -55,7 +55,7 @@ for (const marker of [
   "Cam Player configuration delivered reason=",
   "shared source geometry updated old=",
   "rear autofocus inspect route=",
-  "rear autofocus verification route=",
+  "rear autofocus mode=continuous applied route=",
   "Source first decoded geometry ready size=",
   "Source switch inherited active geometry=",
   "camera DOM geometry reason=",
@@ -79,7 +79,6 @@ let nativeGetDelayGate = null;
 const TEST_SOURCE_WIDTH = 944;
 const TEST_SOURCE_HEIGHT = 960;
 let continuousFocusCount = 0;
-let singleShotFocusCount = 0;
 let canvasDrawCount = 0;
 let canvasRequestFrameCount = 0;
 let sourceOnline = false;
@@ -100,7 +99,7 @@ class FakeTrack {
 
   getSettings() {
     return {
-      facingMode: "environment",
+      facingMode: this.deviceId === "front-id" ? "user" : "environment",
       deviceId: this.deviceId,
       width: 1280,
       height: 720,
@@ -116,9 +115,6 @@ class FakeTrack {
     this.lastConstraints = constraints;
     if (constraints?.advanced?.[0]?.focusMode === "continuous") {
       continuousFocusCount += 1;
-    }
-    if (constraints?.advanced?.[0]?.focusMode === "single-shot") {
-      singleShotFocusCount += 1;
     }
   }
 
@@ -1324,14 +1320,13 @@ for (let cycle = 0; cycle < 4; cycle += 1) {
 
 await context.__camexchSwitchCamera("NATIVE");
 const focusBeforeNativeRear = continuousFocusCount;
-const singleShotBeforeNativeRear = singleShotFocusCount;
 const nativeRearStream = await context.navigator.mediaDevices.getUserMedia({
   video: { facingMode: { exact: "environment" } },
   audio: false,
 });
 if (continuousFocusCount !== focusBeforeNativeRear + 1
-    || singleShotFocusCount !== singleShotBeforeNativeRear + 1
-    || nativeRearStream.getVideoTracks()[0].getSettings().facingMode !== "environment") {
+    || nativeRearStream.getVideoTracks()[0].getSettings().facingMode !== "environment"
+    || nativeRearStream.getVideoTracks()[0].getSettings().deviceId !== "main-rear-id") {
   throw new Error("Native rear passthrough did not explicitly start continuous autofocus");
 }
 nativeRearStream.getTracks().forEach((track) => track.stop());
