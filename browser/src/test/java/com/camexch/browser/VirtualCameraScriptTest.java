@@ -51,7 +51,11 @@ public class VirtualCameraScriptTest {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "Selected Cam Player route has no matching ICE candidate"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "strictRoute='+routedOffer.strict"));
+                "localCandidatesPreserved='+routedOffer.kept"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "strictRoute='+routedAnswer.strict"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "if(localSide)return {sdp:sdp"));
     }
 
     @Test

@@ -578,12 +578,14 @@ const routeSdp = [
   "v=0",
   "a=candidate:1 1 udp 2122260223 192.168.4.213 5000 typ host",
   "a=candidate:2 1 udp 2122260223 10.175.214.213 5001 typ host",
+  "a=candidate:3 1 udp 2122260223 phone-usb.local 5002 typ host",
 ].join("\r\n");
 const usbOffer = context.__camexchForTest.ice(routeSdp, "10.175.214.58:8791", true);
-if (!usbOffer.strict || usbOffer.kept !== 1
+if (usbOffer.strict || usbOffer.applied || usbOffer.kept !== 3
     || !usbOffer.sdp.includes("10.175.214.213")
-    || usbOffer.sdp.includes("192.168.4.213")) {
-  throw new Error("Strict USB offer filtering retained a Wi-Fi candidate");
+    || !usbOffer.sdp.includes("192.168.4.213")
+    || !usbOffer.sdp.includes("phone-usb.local")) {
+  throw new Error("Browser offer candidates were filtered before USB negotiation");
 }
 const playerSdp = [
   "v=0",
@@ -598,12 +600,13 @@ if (!usbAnswer.strict || usbAnswer.kept !== 1
 }
 let missingUsbRejected = false;
 try {
-  context.__camexchForTest.ice(routeSdp, "10.99.77.58:8791", true);
+  context.__camexchForTest.ice(playerSdp, "10.99.77.58:8791", false);
 } catch (error) {
-  missingUsbRejected = String(error).includes("no matching ICE candidate");
+  missingUsbRejected = String(error).includes("side=player")
+    && String(error).includes("observed=");
 }
 if (!missingUsbRejected) {
-  throw new Error("Missing selected USB route silently fell back to another interface");
+  throw new Error("Missing selected Player USB route silently fell back to another interface");
 }
 
 const canvasBeforeHighResolutionProxy = canvasDrawCount;
