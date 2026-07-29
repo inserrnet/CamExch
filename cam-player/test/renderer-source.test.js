@@ -10,19 +10,53 @@ const renderer = fs.readFileSync(
   "utf8",
 );
 
-test("uses detail-biased trilinear minification for downscaling", () => {
+test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.LINEAR_MIPMAP_LINEAR/);
   assert.match(renderer, /gl\.generateMipmap\(gl\.TEXTURE_2D\)/);
   assert.match(renderer, /sourceToOutputScale < 0\.95/);
   assert.match(renderer, /uniform float u_lod_bias/);
-  assert.match(renderer, /detailMinificationEnabled \? -0\.55 : 0/);
+  assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("keeps a paused camera track alive at ten frames per second", () => {
+test("keeps a paused camera track alive without re-rendering the static source", () => {
   assert.match(
     renderer,
-    /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 100\)/,
+    /pausedFrameTimer = setInterval\(emitCurrentFrame, 250\)/,
   );
+  assert.match(renderer, /function emitCurrentFrame\(\)/);
+  assert.doesNotMatch(renderer, /setInterval\(\(\) => renderFrame\(true\)/);
+});
+
+test("uploads an unchanged source only when its texture is dirty", () => {
+  assert.match(renderer, /if \(sourceTextureDirty\) \{/);
+  assert.match(renderer, /sourceTextureDirty = false/);
+  assert.match(renderer, /sourceMipmapsValid = false/);
+  assert.match(renderer, /needsMipmaps && !sourceMipmapsValid/);
+});
+
+test("stores the background snapshot in a bounded texture", () => {
+  assert.match(renderer, /const maximumSnapshotDimension = 768/);
+  assert.match(renderer, /backgroundSnapshotTexture/);
+  assert.doesNotMatch(renderer, /backgroundSourceTexture/);
+});
+
+test("keeps the rendering color space explicit and avoids sharpening bias", () => {
+  assert.match(renderer, /drawingBufferColorSpace" in gl/);
+  assert.match(renderer, /unpackColorSpace" in gl/);
+  assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
+});
+
+test("uses content-aware sender profiles and requests keyframes", () => {
+  assert.match(renderer, /sourceKind === "video" && playing \? "motion" : "detail"/);
+  assert.match(renderer, /Math\.min\(4, configuredFps\)/);
+  assert.match(renderer, /sender\.generateKeyFrame/);
+  assert.match(renderer, /Keyframe fallback replaced canvas track/);
+});
+
+test("supersedes old peers before creating a replacement encoder", () => {
+  assert.match(renderer, /const existingPeerIds = Array\.from\(peers\.keys\(\)\)/);
+  assert.match(renderer, /`superseded by offer \$\{id\}`/);
+  assert.match(renderer, /sender\.replaceTrack\(null\)/);
 });
 
 test("refreshes active WebRTC sender parameters after live output changes", () => {

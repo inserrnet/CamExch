@@ -40,10 +40,18 @@ import android.widget.Toast;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public class BrowserActivity extends Activity {
     private static final String HOME_URL = "https://webcamtests.com/";
@@ -58,6 +66,11 @@ public class BrowserActivity extends Activity {
     private final NativeCameraAuthorizationStore nativeCameraAuthorizations = new NativeCameraAuthorizationStore();
     private CameraRoutePreferences cameraRoutePreferences;
     private FloatingCameraControls floatingCameraControls;
+    private final ExecutorService bridgeExecutor = Executors.newCachedThreadPool();
+    private final ConcurrentHashMap<String, String> bridgeResults = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Future<?>> bridgeRequests = new ConcurrentHashMap<>();
+    private final Set<String> bridgePending = ConcurrentHashMap.newKeySet();
+    private final SourceBridge sourceBridge = new SourceBridge();
     private final Handler diagnosticsHandler = new Handler(Looper.getMainLooper());
     private final Runnable diagnosticsTask = new Runnable() {
         @Override
@@ -116,6 +129,10 @@ public class BrowserActivity extends Activity {
         if (isFinishing() && !isChangingConfigurations()) {
             AppLog.clear(this);
         }
+        bridgeExecutor.shutdownNow();
+        bridgeResults.clear();
+        bridgeRequests.clear();
+        bridgePending.clear();
         super.onDestroy();
     }
 
@@ -301,7 +318,7 @@ public class BrowserActivity extends Activity {
         settings.setUseWideViewPort(true);
         settings.setUserAgentString(settings.getUserAgentString() + " CamExchBrowser/0.1");
         webView.addJavascriptInterface(new JsLogBridge(), "CamExchLog");
-        webView.addJavascriptInterface(new SourceBridge(), "CamExchBridge");
+        webView.addJavascriptInterface(sourceBridge, "CamExchBridge");
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(
                     webView,
@@ -636,6 +653,11 @@ public class BrowserActivity extends Activity {
         }
 
         @JavascriptInterface
+        public String getCamPlayerRouteAddress() {
+            return callString("route", null);
+        }
+
+        @JavascriptInterface
         public String answerOffer(String offer) {
             AppLog.info(BrowserActivity.this, "IPC offer length=" + (offer == null ? 0 : offer.length()));
             return callString("offer", offer);
@@ -648,6 +670,67 @@ public class BrowserActivity extends Activity {
             Bundle extras = new Bundle();
             extras.putString("config", config == null ? "" : config);
             return callString("offer", offer, extras);
+        }
+
+        @JavascriptInterface
+        public String beginAnswerOffer(String offer, String config) {
+            final String requestId = UUID.randomUUID().toString();
+            AppLog.info(BrowserActivity.this, "IPC async offer started requestId=" + requestId
+                    + " offerLength=" + (offer == null ? 0 : offer.length())
+                    + " configLength=" + (config == null ? 0 : config.length()));
+            bridgePending.add(requestId);
+            Future<?> request = bridgeExecutor.submit(() -> {
+                Bundle extras = new Bundle();
+                extras.putString("config", config == null ? "" : config);
+                String result = callString("offer", offer, extras);
+                if (bridgePending.contains(requestId)) {
+                    bridgeResults.put(requestId, result);
+                }
+                AppLog.info(BrowserActivity.this, "IPC async offer completed requestId="
+                        + requestId + " resultLength=" + result.length());
+            });
+            bridgeRequests.put(requestId, request);
+            return requestId;
+        }
+
+        @JavascriptInterface
+        public String pollAnswerOffer(String requestId) {
+            if (requestId == null || requestId.isEmpty()) {
+                return "ERROR:Invalid async offer request";
+            }
+            String result = bridgeResults.remove(requestId);
+            if (result != null) {
+                bridgePending.remove(requestId);
+                bridgeRequests.remove(requestId);
+                return result;
+            }
+            return bridgePending.contains(requestId)
+                    ? "PENDING" : "ERROR:Unknown async offer request";
+        }
+
+        @JavascriptInterface
+        public String cancelAnswerOffer(String requestId) {
+            Future<?> request = bridgeRequests.remove(requestId);
+            bridgeResults.remove(requestId);
+            bridgePending.remove(requestId);
+            if (request != null) {
+                request.cancel(true);
+            }
+            AppLog.info(BrowserActivity.this, "IPC async offer canceled requestId=" + requestId);
+            return "OK";
+        }
+
+        @JavascriptInterface
+        public String closeCamPlayerSession(String sessionId, String reason) {
+            try {
+                JSONObject payload = new JSONObject();
+                payload.put("sessionId", sessionId == null ? "" : sessionId);
+                payload.put("reason", reason == null ? "" : reason);
+                bridgeExecutor.execute(() -> callString("close", payload.toString()));
+                return "QUEUED";
+            } catch (Throwable throwable) {
+                return "ERROR:" + throwable;
+            }
         }
 
         @JavascriptInterface

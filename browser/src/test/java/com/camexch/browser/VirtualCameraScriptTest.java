@@ -34,5 +34,37 @@ public class VirtualCameraScriptTest {
                 "stalledReports="));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "freezes="));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "avgDecodeMs="));
+    }
+
+    @Test
+    public void sourceNegotiationIsAsynchronousAndRouteAware() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "beginAnswerOffer"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "pollAnswerOffer"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "closeCamPlayerSession"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "preferIceRoute"));
+    }
+
+    @Test
+    public void rearProxyTransfersVideoFramesBeforeFallingBackToCanvas() {
+        int generator = VirtualCameraScript.SCRIPT.indexOf(
+                "return createGeneratorProxy(initialStream)");
+        int canvas = VirtualCameraScript.SCRIPT.indexOf(
+                "return createCanvasProxy(initialStream)");
+        assertTrue(generator >= 0);
+        assertTrue(canvas > generator);
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "Camera source produced no VideoFrame within 1200ms"));
+    }
+
+    @Test
+    public void sourceTrackRejectsImplausibleWebViewFrameRates() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "nativeFps>=1&&nativeFps<=60"));
     }
 }

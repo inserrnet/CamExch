@@ -9,6 +9,8 @@ import android.os.Binder;
 import android.os.Bundle;
 import android.os.Process;
 
+import org.json.JSONObject;
+
 public class SourceBridgeProvider extends ContentProvider {
     static final String AUTHORITY = "com.camexch.source.bridge";
 
@@ -31,11 +33,26 @@ public class SourceBridgeProvider extends ContentProvider {
         try {
             if ("mode".equals(method)) {
                 result.putString("value", service.getBridgeMode());
+            } else if ("route".equals(method)) {
+                result.putString("value", service.getCamPlayerRouteAddress());
             } else if ("offer".equals(method)) {
                 String config = extras == null ? "" : extras.getString("config", "");
+                JSONObject parsed = config.isEmpty() ? new JSONObject() : new JSONObject(config);
+                AppLog.info(getContext(), "Bridge offer requestId="
+                        + parsed.optString("requestId", "none")
+                        + " sessionId=" + parsed.optString("sessionId", "none")
+                        + " orientation=" + parsed.optString("orientation", "unknown"));
                 result.putString("value", service.answerBridgeOffer(arg, config));
             } else if ("configure".equals(method)) {
                 service.configureCamPlayer(arg);
+                result.putString("value", "OK");
+            } else if ("close".equals(method)) {
+                JSONObject request = arg == null || arg.trim().isEmpty()
+                        ? new JSONObject() : new JSONObject(arg);
+                service.closeCamPlayerSession(
+                        request.optString("sessionId", ""),
+                        request.optString("reason", "Browser released source")
+                );
                 result.putString("value", "OK");
             } else if ("photo".equals(method)) {
                 result.putByteArray("value", FrameStore.getJpeg());

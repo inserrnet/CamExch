@@ -15,8 +15,10 @@ app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
 const PORT = 8791;
-const VERSION = "0.2.8";
+const VERSION = app.getVersion();
+const APP_SESSION_ID = crypto.randomUUID();
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_LOG_BYTES = 10 * 1024 * 1024;
 let mainWindow;
 let server;
 let bonjour;
@@ -32,6 +34,8 @@ let state = {
 };
 const pendingOffers = new Map();
 const interfaceDescriptions = new Map();
+let pendingLogLines = [];
+let logFlushTimer = null;
 
 function userFile(name) {
   return path.join(app.getPath("userData"), name);
@@ -51,13 +55,33 @@ function writeJson(name, value) {
 }
 
 function log(message) {
-  const line = `${new Date().toISOString()} ${message}`;
-  try {
-    fs.appendFileSync(userFile("cam-player.log"), `${line}\n`);
-  } catch (_) {
-  }
+  const line = `${new Date().toISOString()} session=${APP_SESSION_ID} ${message}`;
+  pendingLogLines.push(`${line}\n`);
+  if (!logFlushTimer) logFlushTimer = setTimeout(flushLog, 100);
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("app-log", line);
+  }
+}
+
+function flushLog(sync = false) {
+  clearTimeout(logFlushTimer);
+  logFlushTimer = null;
+  if (!pendingLogLines.length) return;
+  const payload = pendingLogLines.join("");
+  pendingLogLines = [];
+  const logPath = userFile("cam-player.log");
+  try {
+    fs.mkdirSync(app.getPath("userData"), { recursive: true });
+    if (fs.existsSync(logPath) && fs.statSync(logPath).size > MAX_LOG_BYTES) {
+      fs.rmSync(`${logPath}.1`, { force: true });
+      fs.renameSync(logPath, `${logPath}.1`);
+    }
+    if (sync) {
+      fs.appendFileSync(logPath, payload);
+    } else {
+      fs.appendFile(logPath, payload, () => {});
+    }
+  } catch (_) {
   }
 }
 
@@ -248,6 +272,15 @@ async function forwardOffer(payload) {
     throw new Error("Cam Player window is unavailable");
   }
   const id = crypto.randomUUID();
+  for (const [pendingId, pending] of pendingOffers.entries()) {
+    clearTimeout(pending.timeout);
+    pending.reject(new Error(`Superseded by offer ${id}`));
+    pendingOffers.delete(pendingId);
+    mainWindow.webContents.send("webrtc-cancel", {
+      id: pendingId,
+      reason: `superseded by offer ${id}`,
+    });
+  }
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pendingOffers.delete(id);
@@ -300,9 +333,22 @@ async function handleRequest(request, response) {
         sendJson(response, 400, { error: "WebRTC offer is missing" });
         return;
       }
-      log(`Offer received bytes=${body.sdp.length} orientation=${body.orientation || "unknown"}`);
+      log(`Offer received requestId=${body.requestId || "none"} `
+        + `sessionId=${body.sessionId || "none"} bytes=${body.sdp.length} `
+        + `orientation=${body.orientation || "unknown"}`);
       const answer = await forwardOffer(body);
       sendJson(response, 200, { sdp: answer });
+      return;
+    }
+    if (request.method === "POST" && requestUrl.pathname === "/close") {
+      const body = await readBody(request);
+      mainWindow?.webContents.send("source-close", {
+        sessionId: String(body.sessionId || ""),
+        reason: String(body.reason || "Source requested close"),
+      });
+      log(`Close received sessionId=${body.sessionId || "all"} `
+        + `reason=${body.reason || "unspecified"}`);
+      sendJson(response, 200, { ok: true });
       return;
     }
     if (request.method === "POST" && requestUrl.pathname === "/configure") {
@@ -429,13 +475,26 @@ ipcMain.handle("write-preferences", (_event, value) => {
   return true;
 });
 ipcMain.handle("read-log", () => {
+  flushLog(true);
   try {
     return fs.readFileSync(userFile("cam-player.log"), "utf8");
   } catch (_) {
     return "";
   }
 });
+ipcMain.handle("read-log-tail", () => {
+  flushLog(true);
+  try {
+    const content = fs.readFileSync(userFile("cam-player.log"), "utf8");
+    return content.slice(-512 * 1024).split(/\r?\n/).slice(-250).join("\n");
+  } catch (_) {
+    return "";
+  }
+});
 ipcMain.handle("clear-log", () => {
+  pendingLogLines = [];
+  clearTimeout(logFlushTimer);
+  logFlushTimer = null;
   try {
     fs.writeFileSync(userFile("cam-player.log"), "");
   } catch (_) {
@@ -462,6 +521,8 @@ ipcMain.on("webrtc-answer", (_event, { id, sdp, error }) => {
 app.whenReady().then(() => {
   createWindow();
   createServer();
+  log(`Application started version=${VERSION} pid=${process.pid} `
+    + `electron=${process.versions.electron} chromium=${process.versions.chrome}`);
 });
 
 app.on("window-all-closed", () => {
@@ -474,6 +535,7 @@ app.on("before-quit", () => {
     pending.reject(new Error("Cam Player is closing"));
   }
   pendingOffers.clear();
+  flushLog(true);
   try {
     publication?.stop();
     bonjour?.destroy();

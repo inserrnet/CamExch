@@ -1,6 +1,6 @@
 {
   "name": "cam-player",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "description": "Low-latency LAN media source for CamExch",
   "main": "main.js",
   "packageManager": "pnpm@11.9.0",

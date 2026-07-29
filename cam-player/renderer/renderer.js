@@ -24,6 +24,8 @@ const gl = canvas.getContext("webgl2", {
   preserveDrawingBuffer: false,
 });
 if (!gl) throw new Error("WebGL 2 is required");
+if ("drawingBufferColorSpace" in gl) gl.drawingBufferColorSpace = "srgb";
+if ("unpackColorSpace" in gl) gl.unpackColorSpace = "srgb";
 
 const vertexSource = `#version 300 es
 in vec2 a_position;
@@ -171,7 +173,7 @@ function createDetailTexture() {
 }
 
 const texture = createDetailTexture();
-const backgroundSourceTexture = createLinearTexture();
+const backgroundSnapshotTexture = createLinearTexture();
 const backgroundPassTexture = createLinearTexture();
 const backgroundTexture = createLinearTexture();
 const backgroundFramebuffer = gl.createFramebuffer();
@@ -227,6 +229,12 @@ let lastRenderedMediaTime = null;
 let uploadedTextureWidth = 0;
 let uploadedTextureHeight = 0;
 let detailMinificationEnabled = null;
+let sourceTextureDirty = true;
+let sourceMipmapsValid = false;
+let sourceUploadCount = 0;
+let backgroundSnapshotWidth = 0;
+let backgroundSnapshotHeight = 0;
+let backgroundSnapshotRotation = 0;
 let videoFrameCallbackId = null;
 let pausedFrameTimer = null;
 let timelineTimer = null;
@@ -239,6 +247,7 @@ let cadenceMaxRenderTimeMs = 0;
 let backgroundSnapshotReady = false;
 let backgroundBlurTimer = null;
 let senderQualityRefreshTimer = null;
+let keyFrameTimer = null;
 let siteConfigurationTimer = null;
 let pendingSiteConfiguration = null;
 let mediaGeneration = 0;
@@ -308,23 +317,58 @@ function ensureFramebufferComplete(label) {
 function captureBackgroundSnapshot(reason = "first frame") {
   if (!sourceElement || !sourceWidth || !sourceHeight) return;
   try {
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, backgroundSourceTexture);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      sourceElement,
+    sourceTextureDirty = true;
+    if (!uploadSource()) throw new Error("Source texture is unavailable");
+    const oriented = sourceDimensions();
+    const maximumSnapshotDimension = 768;
+    const snapshotScale = Math.min(
+      1,
+      maximumSnapshotDimension / Math.max(oriented.width, oriented.height),
     );
+    backgroundSnapshotWidth = Math.max(2, Math.round(oriented.width * snapshotScale));
+    backgroundSnapshotHeight = Math.max(2, Math.round(oriented.height * snapshotScale));
+    backgroundSnapshotRotation = sourceRotation;
+    allocateRenderTexture(
+      backgroundSnapshotTexture,
+      backgroundSnapshotWidth,
+      backgroundSnapshotHeight,
+    );
+    gl.bindFramebuffer(gl.FRAMEBUFFER, backgroundFramebuffer);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      backgroundSnapshotTexture,
+      0,
+    );
+    ensureFramebufferComplete("background snapshot");
+    gl.viewport(0, 0, backgroundSnapshotWidth, backgroundSnapshotHeight);
+    gl.useProgram(blurProgram);
+    bindQuad(blurProgram);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(blurUniforms.texture, 0);
+    gl.uniform1f(blurUniforms.radius, 0);
+    gl.uniform2f(
+      blurUniforms.output,
+      backgroundSnapshotWidth,
+      backgroundSnapshotHeight,
+    );
+    gl.uniform2f(blurUniforms.source, sourceWidth, sourceHeight);
+    gl.uniform2f(blurUniforms.direction, 0, 0);
+    gl.uniform1i(blurUniforms.sourcePass, 1);
+    gl.uniform1i(blurUniforms.rotation, sourceRotation);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
     backgroundSnapshotReady = true;
     regenerateBackground(reason);
-    log(`Background snapshot captured size=${sourceWidth}x${sourceHeight}`);
+    log(`Background snapshot captured source=${sourceWidth}x${sourceHeight} `
+      + `cache=${backgroundSnapshotWidth}x${backgroundSnapshotHeight}`);
   } catch (error) {
     backgroundSnapshotReady = false;
     log(`Background snapshot failed ${error.stack || error}`);
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
   }
 }
 
@@ -339,6 +383,7 @@ function regenerateBackground(reason) {
   const cacheHeight = Math.max(2, Math.round(canvas.height * cacheScale));
   const strength = Math.max(0, Math.min(100, Number(blurInput.value) || 0));
   const radius = (strength / 100) * 96;
+  const snapshotRotation = (sourceRotation - backgroundSnapshotRotation + 4) % 4;
 
   try {
     allocateRenderTexture(backgroundPassTexture, cacheWidth, cacheHeight);
@@ -350,7 +395,11 @@ function regenerateBackground(reason) {
     gl.uniform1i(blurUniforms.texture, 0);
     gl.uniform1f(blurUniforms.radius, radius);
     gl.uniform2f(blurUniforms.output, cacheWidth, cacheHeight);
-    gl.uniform2f(blurUniforms.source, sourceWidth, sourceHeight);
+    gl.uniform2f(
+      blurUniforms.source,
+      backgroundSnapshotWidth,
+      backgroundSnapshotHeight,
+    );
 
     gl.framebufferTexture2D(
       gl.FRAMEBUFFER,
@@ -361,10 +410,10 @@ function regenerateBackground(reason) {
     );
     ensureFramebufferComplete("horizontal blur");
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, backgroundSourceTexture);
+    gl.bindTexture(gl.TEXTURE_2D, backgroundSnapshotTexture);
     gl.uniform2f(blurUniforms.direction, 1 / cacheWidth, 0);
     gl.uniform1i(blurUniforms.sourcePass, 1);
-    gl.uniform1i(blurUniforms.rotation, sourceRotation);
+    gl.uniform1i(blurUniforms.rotation, snapshotRotation);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     gl.framebufferTexture2D(
@@ -432,16 +481,26 @@ function showFullFrame() {
 function applyOutputSize(width, height, reason) {
   const w = CamGeometry.positiveInteger(width, "Width");
   const h = CamGeometry.positiveInteger(height, "Height");
+  const previousOutput = { width: canvas.width, height: canvas.height };
+  const previousOrientation = orientationForSize(previousOutput.width, previousOutput.height);
+  const nextOrientation = orientationForSize(w, h);
   const maximum = maxTextureSize();
   if (w > maximum || h > maximum) {
     throw new Error(`Requested ${w}\u00d7${h} exceeds GPU texture limit ${maximum}`);
   }
   canvas.width = w;
   canvas.height = h;
+  if (previousOrientation === nextOrientation) {
+    transforms[nextOrientation] = CamGeometry.rescaleOutputTransform(
+      transforms[nextOrientation],
+      previousOutput,
+      { width: w, height: h },
+    );
+  }
   widthInput.value = String(w);
   heightInput.value = String(h);
   gl.viewport(0, 0, w, h);
-  showFullFrame();
+  applyPreviewTransform();
   updateOutputLabel();
   log(`Output size=${w}x${h} reason=${reason}`);
   if (backgroundSnapshotReady) {
@@ -450,6 +509,7 @@ function applyOutputSize(width, height, reason) {
     renderFrame(true);
   }
   scheduleSenderQualityRefresh(`output ${reason}`);
+  scheduleKeyFrame(`output ${reason}`, 0);
   savePreferences();
 }
 
@@ -473,17 +533,23 @@ function uploadSource() {
       );
       uploadedTextureWidth = sourceWidth;
       uploadedTextureHeight = sourceHeight;
+      sourceTextureDirty = true;
       log(`Source texture allocated size=${sourceWidth}x${sourceHeight}`);
     }
-    gl.texSubImage2D(
-      gl.TEXTURE_2D,
-      0,
-      0,
-      0,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      sourceElement,
-    );
+    if (sourceTextureDirty) {
+      gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0,
+        0,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        sourceElement,
+      );
+      sourceTextureDirty = false;
+      sourceMipmapsValid = false;
+      sourceUploadCount += 1;
+    }
     const oriented = sourceDimensions();
     const fit = Math.min(canvas.width / oriented.width, canvas.height / oriented.height);
     const sourceToOutputScale = fit * transform().scale;
@@ -493,10 +559,13 @@ function uploadSource() {
       gl.TEXTURE_MIN_FILTER,
       needsMipmaps ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR,
     );
-    if (needsMipmaps) gl.generateMipmap(gl.TEXTURE_2D);
+    if (needsMipmaps && !sourceMipmapsValid) {
+      gl.generateMipmap(gl.TEXTURE_2D);
+      sourceMipmapsValid = true;
+    }
     if (detailMinificationEnabled !== needsMipmaps) {
       detailMinificationEnabled = needsMipmaps;
-      log(`Detail minification mode=${needsMipmaps ? "detail-biased-trilinear" : "linear-native"} `
+      log(`Detail minification mode=${needsMipmaps ? "stable-trilinear" : "linear-native"} `
         + `sourceToOutputScale=${sourceToOutputScale.toFixed(3)} `
         + `source=${oriented.width}x${oriented.height} output=${canvas.width}x${canvas.height}`);
     }
@@ -539,7 +608,7 @@ function renderFrame(force, frameMetadata = null) {
   gl.uniform2f(uniforms.output, canvas.width, canvas.height);
   gl.uniform2f(uniforms.source, size.width, size.height);
   gl.uniform1f(uniforms.scale, t.scale);
-  gl.uniform1f(uniforms.lodBias, detailMinificationEnabled ? -0.55 : 0);
+  gl.uniform1f(uniforms.lodBias, 0);
   gl.uniform2f(uniforms.pan, t.panX, t.panY);
   gl.uniform1i(uniforms.rotation, sourceRotation);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -554,6 +623,14 @@ function renderFrame(force, frameMetadata = null) {
     lastRenderedMediaTime = mediaTime;
   }
   return true;
+}
+
+function emitCurrentFrame() {
+  if (canvasTrack && typeof canvasTrack.requestFrame === "function") {
+    canvasTrack.requestFrame();
+    return true;
+  }
+  return false;
 }
 
 function resetPlaybackCadence() {
@@ -601,6 +678,7 @@ function scheduleVideoFrame() {
     videoFrameCallbackId = null;
     if (!playing) return;
     cadenceDecodedFrames += 1;
+    sourceTextureDirty = true;
     if (renderFrame(false, metadata)) {
       cadenceRenderedFrames += 1;
     } else {
@@ -626,15 +704,80 @@ function updatePausedFrameHeartbeat() {
   stopPausedFrameHeartbeat();
   if (playing || !sourceElement || peers.size === 0) return;
   renderFrame(true);
-  pausedFrameTimer = setInterval(() => renderFrame(true), 100);
+  pausedFrameTimer = setInterval(emitCurrentFrame, 250);
 }
 
 function ensureStream() {
   if (stream) return stream;
   stream = canvas.captureStream(0);
   canvasTrack = stream.getVideoTracks()[0];
-  canvasTrack.contentHint = "detail";
+  updateTrackContentHint("stream created");
   return stream;
+}
+
+function desiredContentHint() {
+  return sourceKind === "video" && playing ? "motion" : "detail";
+}
+
+function updateTrackContentHint(reason) {
+  if (!canvasTrack) return;
+  const desired = desiredContentHint();
+  if (canvasTrack.contentHint === desired) return;
+  try {
+    canvasTrack.contentHint = desired;
+    log(`Canvas contentHint=${canvasTrack.contentHint || "default"} reason=${reason}`);
+  } catch (error) {
+    log(`Canvas contentHint unavailable reason=${reason} ${error}`);
+  }
+}
+
+function requestKeyFrames(reason) {
+  let requested = 0;
+  let unsupported = 0;
+  const fallbackSenders = [];
+  for (const maintenance of peerMaintenance.values()) {
+    const sender = maintenance?.sender;
+    if (!sender) continue;
+    if (typeof sender.generateKeyFrame === "function") {
+      requested += 1;
+      Promise.resolve(sender.generateKeyFrame()).catch((error) => {
+        log(`Keyframe request failed reason=${reason} ${error}`);
+      });
+    } else {
+      unsupported += 1;
+      fallbackSenders.push(sender);
+    }
+  }
+  if (!requested && fallbackSenders.length && canvasTrack && stream) {
+    const previousTrack = canvasTrack;
+    const replacementStream = canvas.captureStream(0);
+    const replacementTrack = replacementStream.getVideoTracks()[0];
+    try {
+      replacementTrack.contentHint = desiredContentHint();
+    } catch (_) {
+    }
+    Promise.all(fallbackSenders.map((sender) => sender.replaceTrack(replacementTrack)))
+      .then(() => {
+        stream.removeTrack(previousTrack);
+        stream.addTrack(replacementTrack);
+        canvasTrack = replacementTrack;
+        previousTrack.stop();
+        emitCurrentFrame();
+        log(`Keyframe fallback replaced canvas track reason=${reason}`);
+      })
+      .catch((error) => {
+        replacementTrack.stop();
+        log(`Keyframe fallback failed reason=${reason} ${error}`);
+      });
+  }
+  if (requested || unsupported) {
+    log(`Keyframe request reason=${reason} requested=${requested} unsupported=${unsupported}`);
+  }
+}
+
+function scheduleKeyFrame(reason, delayMs = 180) {
+  clearTimeout(keyFrameTimer);
+  keyFrameTimer = setTimeout(() => requestKeyFrames(reason), delayMs);
 }
 
 function selectedCandidatePair(report) {
@@ -702,7 +845,7 @@ async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs) {
         codec: lastCodec,
       };
     }
-    renderFrame(true);
+    emitCurrentFrame();
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error(`encoder did not produce exact ${expected.width}x${expected.height} `
@@ -758,7 +901,13 @@ async function loadMedia(file) {
     uploadedTextureWidth = 0;
     uploadedTextureHeight = 0;
     detailMinificationEnabled = null;
+    sourceTextureDirty = true;
+    sourceMipmapsValid = false;
+    sourceUploadCount = 0;
     backgroundSnapshotReady = false;
+    backgroundSnapshotWidth = 0;
+    backgroundSnapshotHeight = 0;
+    backgroundSnapshotRotation = 0;
     currentFile = file;
     let firstFramePresented = true;
     if (isImagePath(file.path)) {
@@ -821,8 +970,13 @@ async function loadMedia(file) {
       }
       log("Background snapshot deferred until a decoded frame is presented");
     }
+    updateTrackContentHint("media loaded");
+    scheduleSenderQualityRefresh("media loaded");
+    scheduleKeyFrame("media loaded", 0);
     updatePausedFrameHeartbeat();
-    log(`Media loaded kind=${sourceKind} size=${sourceWidth}x${sourceHeight} path=${file.path}`);
+    const decodedMiB = sourceWidth * sourceHeight * 4 / (1024 * 1024);
+    log(`Media loaded kind=${sourceKind} size=${sourceWidth}x${sourceHeight} `
+      + `decodedRgbaMiB=${decodedMiB.toFixed(1)} path=${file.path}`);
   } catch (error) {
     log(`Media load failed ${error.stack || error}`);
     alert(error.message || String(error));
@@ -838,6 +992,9 @@ async function play() {
     lastRenderedMediaTime = null;
     resetPlaybackCadence();
     stopPausedFrameHeartbeat();
+    updateTrackContentHint("playback started");
+    scheduleSenderQualityRefresh("playback started");
+    scheduleKeyFrame("playback started", 0);
     scheduleVideoFrame();
     updateOutputLabel();
     log("Playback started");
@@ -852,7 +1009,11 @@ function pause() {
   playing = false;
   stopVideoFrameLoop();
   updateOutputLabel();
+  sourceTextureDirty = true;
   renderFrame(true);
+  updateTrackContentHint("playback paused");
+  scheduleSenderQualityRefresh("playback paused");
+  scheduleKeyFrame("playback paused", 0);
   updatePausedFrameHeartbeat();
   log(`Playback paused positionMs=${Math.round(video.currentTime * 1000)}`);
 }
@@ -873,7 +1034,10 @@ function savePreferences() {
 }
 
 async function lockSenderQuality(sender, width, height) {
-  const maximumFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+  const configuredFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+  const maximumFps = sourceKind === "video" && playing
+    ? configuredFps
+    : Math.min(4, configuredFps);
   const bitrateProfile = CamGeometry.videoBitrateProfile(width, height, maximumFps);
   try {
     const parameters = sender.getParameters();
@@ -936,6 +1100,10 @@ function describeTransceivers(pc) {
   }).join(" ");
 }
 
+function ensureOfferActive(id) {
+  if (!peers.has(id)) throw new Error("Offer was canceled or superseded");
+}
+
 function closePeer(id, reason) {
   const pc = peers.get(id);
   const maintenance = peerMaintenance.get(id);
@@ -946,6 +1114,11 @@ function closePeer(id, reason) {
   readyPeers.delete(id);
   if (pc) {
     pc.onconnectionstatechange = null;
+    for (const sender of pc.getSenders()) {
+      if (sender.track) {
+        Promise.resolve(sender.replaceTrack(null)).catch(() => {});
+      }
+    }
     try {
       pc.close();
     } catch (_) {
@@ -957,22 +1130,24 @@ function closePeer(id, reason) {
 }
 
 async function handleOffer(payload) {
-  const { id, sdp, constraints, orientation } = payload;
+  const { id, sdp, constraints, orientation, sessionId = "" } = payload;
   const outputBeforeOffer = { ...lastWorkingOutput };
   const activeOutputBeforeOffer = { width: canvas.width, height: canvas.height };
   try {
     applySiteConfiguration({ constraints, orientation }, "offer");
     const expectedOutput = { width: canvas.width, height: canvas.height };
-    if (activeOutputBeforeOffer.width !== expectedOutput.width
-        || activeOutputBeforeOffer.height !== expectedOutput.height) {
-      const existingPeerIds = Array.from(peers.keys());
+    const existingPeerIds = Array.from(peers.keys());
+    if (existingPeerIds.length) {
+      const geometryChanged = activeOutputBeforeOffer.width !== expectedOutput.width
+        || activeOutputBeforeOffer.height !== expectedOutput.height;
       log(`Output geometry changed ${activeOutputBeforeOffer.width}x`
         + `${activeOutputBeforeOffer.height} -> ${expectedOutput.width}x`
-        + `${expectedOutput.height}; superseding peers=${existingPeerIds.length}`);
+        + `${expectedOutput.height}; superseding peers=${existingPeerIds.length} `
+        + `geometryChanged=${geometryChanged}`);
       for (const existingId of existingPeerIds) {
         closePeer(
           existingId,
-          `superseded by output ${expectedOutput.width}x${expectedOutput.height}`,
+          `superseded by offer ${id}`,
         );
       }
     }
@@ -984,6 +1159,9 @@ async function handleOffer(payload) {
       lastOutboundBytes: 0,
       lastOutboundTimestamp: 0,
       sender: null,
+      sessionId,
+      preferredCodec: "",
+      actualCodec: "",
       outputWidth: expectedOutput.width,
       outputHeight: expectedOutput.height,
     });
@@ -1024,6 +1202,8 @@ async function handleOffer(payload) {
       canvas.width,
       canvas.height,
     );
+    const codecMaintenance = peerMaintenance.get(id);
+    if (codecMaintenance) codecMaintenance.preferredCodec = codecChoice.name;
     const bitrateProfile = CamGeometry.videoBitrateProfile(
       expectedOutput.width,
       expectedOutput.height,
@@ -1043,6 +1223,7 @@ async function handleOffer(payload) {
       + `${CamGeometry.negotiatedVideoCodec(sdp)} effectiveFirst=`
       + `${CamGeometry.negotiatedVideoCodec(effectiveOfferSdp)} selected=${codecChoice.name}`);
     await pc.setRemoteDescription({ type: "offer", sdp: effectiveOfferSdp });
+    ensureOfferActive(id);
     log(`Remote offer applied id=${id} transceivers=${describeTransceivers(pc)}`);
     const localStream = ensureStream();
     const sender = pc.addTrack(localStream.getVideoTracks()[0], localStream);
@@ -1061,6 +1242,7 @@ async function handleOffer(payload) {
       + `vp9=${codecChoice.vp9Available} remoteH264=${remoteOffersH264} `
       + `remoteHevc=${remoteOffersHevc} remoteVp9=${remoteOffersVp9}`);
     const answer = await pc.createAnswer();
+    ensureOfferActive(id);
     const prioritizedAnswerSdp = codecChoice.name === "default"
       ? answer.sdp
       : CamGeometry.prioritizeVideoCodec(answer.sdp, codecChoice.name);
@@ -1072,12 +1254,14 @@ async function handleOffer(payload) {
         bitrateProfile,
       );
     await pc.setLocalDescription({ type: "answer", sdp: orderedSdp });
+    ensureOfferActive(id);
     const appliedBitrateProfile = await lockSenderQuality(
       sender,
       expectedOutput.width,
       expectedOutput.height,
     );
     await waitForIce(pc, 3500);
+    ensureOfferActive(id);
     const answerFirstCodec = CamGeometry.negotiatedVideoCodec(pc.localDescription.sdp);
     log(`Answer ready id=${id} bytes=${pc.localDescription.sdp.length} `
       + `preferredCodec=${codecChoice.name} answerFirstCodec=${answerFirstCodec} `
@@ -1085,8 +1269,8 @@ async function handleOffer(payload) {
     if (codecChoice.name !== "default"
         && codecChoice.name !== answerFirstCodec
         && !(codecChoice.name === "HEVC" && ["H265", "HEVC"].includes(answerFirstCodec))) {
-      throw new Error(`Codec negotiation mismatch preferred=${codecChoice.name} `
-        + `answerFirst=${answerFirstCodec}`);
+      log(`Codec preference fallback preferred=${codecChoice.name} `
+        + `answerFirst=${answerFirstCodec}; actual codec will be verified by stats`);
     }
     window.camPlayer.answerOffer({ id, sdp: pc.localDescription.sdp });
     renderFrame(true);
@@ -1135,6 +1319,13 @@ async function handleOffer(payload) {
           if (entry.framesEncoded == null) return;
           const codec = entry.codecId ? report.get(entry.codecId) : null;
           const maintenance = peerMaintenance.get(id);
+          const actualCodec = String(codec?.mimeType || "unknown");
+          if (maintenance && actualCodec !== "unknown"
+              && maintenance.actualCodec !== actualCodec) {
+            maintenance.actualCodec = actualCodec;
+            log(`Actual encoder codec id=${id} preferred=${maintenance.preferredCodec} `
+              + `actual=${actualCodec}`);
+          }
           const bytes = Number(entry.bytesSent) || 0;
           const timestamp = Number(entry.timestamp) || performance.now();
           let bitrateMbps = 0;
@@ -1157,14 +1348,15 @@ async function handleOffer(payload) {
               && Number.isFinite(Number(entry.totalEncodeTime))
             ? (Number(entry.totalEncodeTime) * 1000) / encodedFrames
             : 0;
-          log(`WebRTC outbound id=${id} codec=${codec?.mimeType || "unknown"} `
+          log(`WebRTC outbound id=${id} codec=${actualCodec} `
             + `size=${entry.frameWidth || 0}x${entry.frameHeight || 0} `
             + `fps=${entry.framesPerSecond || 0} encoded=${entry.framesEncoded || 0} `
             + `bytes=${bytes} bitrateMbps=${bitrateMbps.toFixed(2)} `
             + `minMbps=${(appliedBitrateProfile.minimum / 1_000_000).toFixed(2)} `
             + `targetMbps=${(appliedBitrateProfile.maximum / 1_000_000).toFixed(2)} `
             + `avgQp=${averageQp.toFixed(1)} avgEncodeMs=${averageEncodeMs.toFixed(2)} `
-            + `quality=${entry.qualityLimitationReason || "none"}`);
+            + `quality=${entry.qualityLimitationReason || "none"} `
+            + `sourceUploads=${sourceUploadCount} peers=${peers.size}`);
         });
       } catch (error) {
         log(`WebRTC stats failed id=${id} ${error}`);
@@ -1268,6 +1460,7 @@ preview.addEventListener("wheel", (event) => {
     nextScale,
   ));
   renderFrame(true);
+  scheduleKeyFrame("source zoom");
   savePreferences();
 }, { passive: false });
 
@@ -1303,6 +1496,7 @@ preview.addEventListener("pointermove", (event) => {
 
 preview.addEventListener("pointerup", () => {
   dragMode = "";
+  scheduleKeyFrame("source drag complete");
   savePreferences();
 });
 preview.addEventListener("pointercancel", () => {
@@ -1343,6 +1537,7 @@ document.getElementById("applySizeButton").addEventListener("click", () => {
 document.getElementById("resetSourceButton").addEventListener("click", () => {
   transforms[orientationForSize()] = { scale: 1, panX: 0, panY: 0 };
   renderFrame(true);
+  scheduleKeyFrame("source reset", 0);
   savePreferences();
 });
 document.getElementById("fitPreviewButton").addEventListener("click", (event) => {
@@ -1352,6 +1547,7 @@ document.getElementById("fitPreviewButton").addEventListener("click", (event) =>
 document.getElementById("rotateButton").addEventListener("click", () => {
   sourceRotation = (sourceRotation + 1) % 4;
   regenerateBackground("source rotation");
+  scheduleKeyFrame("source rotation", 0);
   savePreferences();
 });
 document.getElementById("loopToggle").addEventListener("change", (event) => {
@@ -1363,7 +1559,11 @@ timeline.addEventListener("input", () => {
     video.currentTime = (Number(timeline.value) / 1000) * video.duration;
   }
 });
-video.addEventListener("seeked", () => renderFrame(true));
+video.addEventListener("seeked", () => {
+  sourceTextureDirty = true;
+  renderFrame(true);
+  scheduleKeyFrame("video seek", 0);
+});
 recentFiles.addEventListener("change", () => {
   const selected = recent.find((item) => item.path === recentFiles.value);
   if (selected) {
@@ -1411,6 +1611,16 @@ document.getElementById("clearLogButton").addEventListener("click", async () => 
 });
 
 window.camPlayer.onOffer(handleOffer);
+window.camPlayer.onOfferCancel(({ id, reason }) => {
+  closePeer(id, reason || "offer canceled");
+});
+window.camPlayer.onSourceClose(({ sessionId, reason }) => {
+  const matches = Array.from(peerMaintenance.entries())
+    .filter(([, maintenance]) => !sessionId || maintenance?.sessionId === sessionId)
+    .map(([id]) => id);
+  for (const id of matches) closePeer(id, reason || "Source requested close");
+  log(`Source close applied sessionId=${sessionId || "all"} peers=${matches.length}`);
+});
 window.camPlayer.onConfig((config) => scheduleSiteConfiguration(config, "live configuration"));
 function applyServerInfo(info) {
   currentServerInfo = info;
@@ -1449,7 +1659,7 @@ async function initialize() {
   clearInterval(timelineTimer);
   timelineTimer = setInterval(updateTimeline, 200);
   applyPreviewTransform();
-  logOutput.textContent = await window.camPlayer.readLog();
+  logOutput.textContent = await window.camPlayer.readLogTail();
   updateConnectionState();
 }
 
@@ -1459,6 +1669,7 @@ window.addEventListener("beforeunload", () => {
   clearInterval(timelineTimer);
   clearTimeout(backgroundBlurTimer);
   clearTimeout(senderQualityRefreshTimer);
+  clearTimeout(keyFrameTimer);
   clearTimeout(siteConfigurationTimer);
   for (const id of Array.from(peers.keys())) closePeer(id, "renderer unload");
   stream?.getTracks().forEach((track) => track.stop());

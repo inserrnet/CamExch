@@ -75,6 +75,17 @@ test("moves the source down when the pointer moves down", () => {
   assert.deepEqual(next, { scale: 1, panX: 50, panY: -60 });
 });
 
+test("preserves relative source position when output resolution changes", () => {
+  assert.deepEqual(
+    geometry.rescaleOutputTransform(
+      { scale: 1.5, panX: 72, panY: -128 },
+      { width: 720, height: 1280 },
+      { width: 1440, height: 2560 },
+    ),
+    { scale: 1.5, panX: 144, panY: -256 },
+  );
+});
+
 test("uses half the former source wheel sensitivity", () => {
   const oldFactor = geometry.wheelFactor(-120, 0.0015);
   const nextFactor = geometry.wheelFactor(-120, 0.00075);
@@ -132,25 +143,25 @@ test("keeps a quality floor below the WebRTC bitrate ceiling", () => {
   );
 });
 
-test("prefers H264 normally, HEVC for high resolution, and VP9 above UHD", () => {
+test("prefers interoperable H264 at every resolution when available", () => {
   const codecs = [
     { mimeType: "video/H264" },
     { mimeType: "video/H265" },
     { mimeType: "video/VP9" },
   ];
   assert.equal(geometry.preferredVideoCodecs(codecs, 1080, 1920).name, "H264");
-  assert.equal(geometry.preferredVideoCodecs(codecs, 2400, 3200).name, "HEVC");
-  assert.equal(geometry.preferredVideoCodecs(codecs, 3072, 4080).name, "VP9");
+  assert.equal(geometry.preferredVideoCodecs(codecs, 2400, 3200).name, "H264");
+  assert.equal(geometry.preferredVideoCodecs(codecs, 3072, 4080).name, "H264");
 });
 
-test("high resolution falls back to H264 when HEVC is unavailable", () => {
+test("falls back to HEVC only when H264 is unavailable", () => {
   const result = geometry.preferredVideoCodecs(
-    [{ mimeType: "video/H264" }],
+    [{ mimeType: "video/H265" }, { mimeType: "video/VP9" }],
     3072,
     4080,
   );
-  assert.equal(result.name, "H264");
-  assert.equal(result.hevcAvailable, false);
+  assert.equal(result.name, "HEVC");
+  assert.equal(result.h264Available, false);
 });
 
 test("reports the actually negotiated primary video codec", () => {

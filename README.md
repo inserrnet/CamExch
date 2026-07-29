@@ -1,6 +1,6 @@
 # CamExch
 
-CamExch is an Android MVP made of two apps:
+CamExch is a camera-routing suite made of two Android apps and one portable Windows app:
 
 - **CamExch Source** chooses the `Front Camera 4` source: RTSP URL, video file, or photo file.
 - **CamExch Browser** is a small WebView browser with tabs. It leaves the rear camera untouched and replaces front-camera `getUserMedia()` requests with the Source app frame stream.
@@ -15,7 +15,7 @@ The project is designed to build on GitHub Actions, so no Android Studio, Gradle
 3. Enter any even output width and height supported by the GPU.
 4. Use the mouse wheel to scale the source and drag to position it.
 5. Hold Space while scrolling or dragging to inspect the preview without changing output.
-6. In Source, select `Cam Player`, tap `Find`, enter the pairing code shown by Cam Player, and tap `Pair`.
+6. In Source, select `Cam Player`, enter the USB or LAN address, enter the pairing code shown by Cam Player, and tap `Pair`. Use `Search for Player` only for automatic discovery.
 7. Tap `Start` in Source.
 8. Select `F` in Browser before the website requests the camera.
 
@@ -77,7 +77,9 @@ flowchart LR
 
 The browser installs its camera hook at document start, before site scripts can capture the original `getUserMedia()` function. H.264 RTSP access units pass directly into WebRTC without decoding or re-encoding. Other RTSP codecs automatically use the decoded Surface/WebRTC fallback. Video-file frames remain on the hardware-accelerated Surface/WebRTC path and are not converted to JPEG. Playback belongs to the foreground service, so switching from Source to Browser does not destroy the media pipeline. The selected source is restored if Android restarts the service.
 
-Cam Player renders its arbitrary-resolution output with WebGL. Its background is a cached, strongly blurred copy of the first media frame, so playback does not render a second moving video. Rendering follows decoded video-frame callbacks instead of a permanent 60 Hz timer. The WebRTC sender keeps the source resolution, uses H.264 normally, and selects HEVC for high-resolution output only when both peers expose it. A requested size is restored to the last confirmed working size only after the encoder explicitly fails to produce a frame. Cam Player and Source pair with a six-digit one-time code; signaling requires the resulting token. Media flows directly from Windows to Browser, avoiding an Android decode/encode hop.
+Cam Player renders its arbitrary-resolution output with WebGL. Its background is a bounded, strongly blurred cache of the first media frame, so a large photo is not duplicated at full resolution and playback does not render a second moving video. Static and paused frames remain cached and are re-sent without repeatedly uploading the source or rebuilding mipmaps. Rendering follows decoded video-frame callbacks instead of a permanent 60 Hz timer. The sender uses the actually interoperable H.264 codec, keeps the selected resolution, applies separate motion/detail profiles, and requests a keyframe after material output changes.
+
+Browser, Source, and Cam Player use asynchronous signaling with session/request IDs. A newer offer cancels the previous pending offer and releases its encoder. The selected USB route is preferred at ICE candidate level while the full candidate set remains an automatic fallback when the requested interface is unavailable. Managed rear-camera switching transfers native `VideoFrame` objects through `MediaStreamTrackProcessor/Generator`; the Canvas path is only a compatibility fallback. Cam Player and Source pair with a six-digit one-time code, and signaling requires the resulting token. Media flows directly from Windows to Browser, avoiding an Android decode/encode hop.
 
 ## Browser Features
 
@@ -120,7 +122,7 @@ pnpm dist
 Windows output:
 
 ```text
-cam-player/dist/Cam-Player-0.2.8-Windows-x64.exe
+cam-player/dist/Cam-Player-0.3.0-Windows-x64.exe
 ```
 
 ## Notes

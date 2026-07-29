@@ -102,6 +102,19 @@
     };
   }
 
+  function rescaleOutputTransform(transform, before, after) {
+    const source = transform || { scale: 1, panX: 0, panY: 0 };
+    const beforeWidth = Math.max(1, Number(before && before.width) || 1);
+    const beforeHeight = Math.max(1, Number(before && before.height) || 1);
+    const afterWidth = Math.max(1, Number(after && after.width) || 1);
+    const afterHeight = Math.max(1, Number(after && after.height) || 1);
+    return {
+      scale: Number(source.scale) || 1,
+      panX: (Number(source.panX) || 0) * afterWidth / beforeWidth,
+      panY: (Number(source.panY) || 0) * afterHeight / beforeHeight,
+    };
+  }
+
   function wheelFactor(deltaY, sensitivity) {
     return Math.exp(-Number(deltaY) * Number(sensitivity));
   }
@@ -159,11 +172,14 @@
     const vp9 = available.filter(
       (codec) => String(codec.mimeType).toLowerCase() === "video/vp9",
     );
-    const selected = isUltraHighResolution(width, height) && vp9.length
-      ? vp9
-      : isHighResolution(width, height) && hevc.length
+    // Android WebView currently advertises HEVC in some offers but completes the
+    // connection with H264. Prefer the codec that is actually interoperable and
+    // hardware accelerated on both ends; retain the others as fallbacks.
+    const selected = h264.length
+      ? h264
+      : hevc.length
         ? hevc
-        : h264;
+        : vp9;
     return {
       codecs: selected,
       name: selected === vp9 && vp9.length
@@ -329,6 +345,7 @@
     fitTransform,
     zoomAroundPoint,
     dragInOutputCoordinates,
+    rescaleOutputTransform,
     wheelFactor,
     shouldRenderMediaFrame,
     targetVideoBitrate,

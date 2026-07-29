@@ -81,6 +81,16 @@ final class CamPlayerClient {
         post("/configure", request, true, CONNECT_TIMEOUT_MS);
     }
 
+    void closeSession(String sessionId, String reason) throws Exception {
+        if (token.isEmpty()) {
+            throw new IllegalStateException("Cam Player is not paired");
+        }
+        JSONObject request = new JSONObject();
+        request.put("sessionId", sessionId == null ? "" : sessionId);
+        request.put("reason", reason == null ? "" : reason);
+        post("/close", request, true, CONNECT_TIMEOUT_MS);
+    }
+
     private static void mergeConfig(JSONObject target, String configJson) throws Exception {
         if (configJson == null || configJson.trim().isEmpty()) {
             return;

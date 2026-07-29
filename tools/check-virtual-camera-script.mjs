@@ -19,7 +19,7 @@ const script = pieces.join("");
 new Function(script);
 
 for (const marker of [
-  "WebRTC offered codecs HEVC=",
+  "WebRTC offered codecs H264=",
   "WebRTC track settings size=",
   "WebRTC inbound codec=",
   "WebRTC selected route=",
@@ -141,12 +141,15 @@ class FakeMediaStreamTrackGenerator extends FakeTrack {
 }
 
 class FakeMediaStreamTrackProcessor {
-  constructor() {
+  constructor({ track } = {}) {
     let delivered = false;
     let finish;
     this.readable = {
       getReader: () => ({
         read: () => {
+          if (track?.deviceId === "no-frame") {
+            return new Promise((resolve) => { finish = resolve; });
+          }
           if (!delivered) {
             delivered = true;
             return Promise.resolve({ done: false, value: { close: () => {} } });
@@ -749,9 +752,8 @@ if (!constraintSourceFailure || constraintSourceFailure.name !== "NotReadableErr
   throw new Error("Failed applyConstraints route switch did not preserve the active rear camera");
 }
 await new Promise((resolve) => setTimeout(resolve, 0));
-if (initialManagedEntry.controller.kind !== "canvas-direct"
-    || canvasDrawCount < 1 || canvasRequestFrameCount < 1) {
-  throw new Error("Production canvas proxy did not publish an output frame");
+if (initialManagedEntry.controller.kind !== "generator") {
+  throw new Error("Production rear proxy did not use direct VideoFrame transfer");
 }
 const sourceBeforeTimeout = initialManagedEntry.controller.sourceTrack;
 const noFrameTrack = new FakeTrack("no-frame");
@@ -1301,7 +1303,7 @@ for (let cycle = 0; cycle < 4; cycle += 1) {
   const sourceCycleSettings = sourceTrack?.getSettings?.() || {};
   if (sourceSwitch.failed !== 0 || sourceSwitch.switched < 1
       || nativeEntry.stream !== nativeStream
-      || nativeEntry.controller.kind !== (cycle === 0 ? "source-direct" : "canvas-direct")
+      || nativeEntry.controller.kind !== (cycle === 0 ? "source-direct" : "generator")
       || nativeEntry.controller.route !== "SOURCE"
       || sourceCycleSettings.width !== TEST_SOURCE_WIDTH
       || sourceCycleSettings.height !== TEST_SOURCE_HEIGHT) {

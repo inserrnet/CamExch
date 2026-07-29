@@ -53,9 +53,9 @@ public class SourceForegroundService extends Service {
     private WebRtcSessionPublisher publisher;
     private H264FrameBridge directBridge;
     private ExoPlayer player;
-    private String mode = "Idle";
+    private volatile String mode = "Idle";
     private String error = "";
-    private String currentUri = "";
+    private volatile String currentUri = "";
     private boolean directH264;
     private boolean fallbackScheduled;
     private boolean forceRtspTcp;
@@ -65,8 +65,9 @@ public class SourceForegroundService extends Service {
     private Handler metricsHandler;
     private FloatingPlaybackControls playbackControls;
     private boolean videoPausePending;
-    private CamPlayerClient camPlayerClient;
+    private volatile CamPlayerClient camPlayerClient;
     private final ExecutorService camPlayerExecutor = Executors.newSingleThreadExecutor();
+    private final Object localPublisherOfferLock = new Object();
     private long rtspPipelineStartedRealtimeMs;
     private long rtspRecoveryNotBeforeRealtimeMs;
     private int rtspWatchdogRecoveries;
@@ -172,11 +173,15 @@ public class SourceForegroundService extends Service {
         return mode;
     }
 
-    synchronized String answerBridgeOffer(String offer) throws Exception {
+    String getCamPlayerRouteAddress() {
+        return "Cam Player".equals(mode) ? currentUri : "";
+    }
+
+    String answerBridgeOffer(String offer) throws Exception {
         return answerBridgeOffer(offer, "");
     }
 
-    synchronized String answerBridgeOffer(String offer, String configJson) throws Exception {
+    String answerBridgeOffer(String offer, String configJson) throws Exception {
         if ("Cam Player".equals(mode)) {
             if (camPlayerClient == null) {
                 throw new IllegalStateException("Cam Player connection is not active");
@@ -190,30 +195,40 @@ public class SourceForegroundService extends Service {
                     + " answerLength=" + answer.length());
             return answer;
         }
-        if (publisher == null && directH264) {
-            if (directBridge == null || !directBridge.isReady()) {
-                throw new IllegalStateException("Direct H264 source is not ready");
+        synchronized (localPublisherOfferLock) {
+            if (publisher == null && directH264) {
+                if (directBridge == null || !directBridge.isReady()) {
+                    throw new IllegalStateException("Direct H264 source is not ready");
+                }
+                publisher = new H264PassthroughPublisher(this, directBridge);
             }
-            publisher = new H264PassthroughPublisher(this, directBridge);
+            if (publisher == null) {
+                throw new IllegalStateException("WebRTC source is not active; mode=" + mode);
+            }
+            AppLog.info(this, "Answering offer through Android IPC");
+            String answer = publisher.answerOffer(offer);
+            if (directH264) {
+                scheduleDirectRtspRefresh();
+            }
+            return answer;
         }
-        if (publisher == null) {
-            throw new IllegalStateException("WebRTC source is not active; mode=" + mode);
-        }
-        AppLog.info(this, "Answering offer through Android IPC");
-        String answer = publisher.answerOffer(offer);
-        if (directH264) {
-            scheduleDirectRtspRefresh();
-        }
-        return answer;
     }
 
-    synchronized void configureCamPlayer(String configJson) throws Exception {
+    void configureCamPlayer(String configJson) throws Exception {
         if (!"Cam Player".equals(mode) || camPlayerClient == null) {
             return;
         }
         AppLog.info(this, "Forwarding live configuration to Cam Player length="
                 + (configJson == null ? 0 : configJson.length()));
         camPlayerClient.configure(configJson);
+    }
+
+    void closeCamPlayerSession(String sessionId, String reason) throws Exception {
+        if (camPlayerClient == null) {
+            return;
+        }
+        AppLog.info(this, "Closing Cam Player session id=" + sessionId + " reason=" + reason);
+        camPlayerClient.closeSession(sessionId, reason);
     }
 
     @Override
