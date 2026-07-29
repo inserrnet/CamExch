@@ -113,8 +113,11 @@ test("keeps manual, active, and last working output states separate", () => {
 
 test("recovers a stalled encoder at the same resolution before fallback", () => {
   assert.match(renderer, /restartCaptureTrackAtCurrentResolution/);
+  assert.match(renderer, /Encoder restart superseded after replacement/);
+  assert.match(renderer, /restartCaptureTrackAtCurrentResolution\(`offer \$\{id\}`, id\)/);
   assert.match(renderer, /Encoder same-resolution restart/);
   assert.match(renderer, /encoderFailures\.set/);
+  assert.match(renderer, /for \(const \[failedOutput, failure\] of encoderFailures\.entries\(\)\)/);
   assert.match(renderer, /Encoder codec retry/);
   assert.match(renderer, /fallbackResolutionToggle\.checked/);
 });

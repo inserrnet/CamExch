@@ -55,6 +55,16 @@ public class VirtualCameraScriptTest {
     }
 
     @Test
+    public void sourceSessionIsClosedOnRemoteEndAndPageHide() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "resetSharedRtc('remote track ended',pc)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "resetSharedRtc('pagehide')"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "activeBridgeRequestId||sharedRtcSessionId"));
+    }
+
+    @Test
     public void rearProxyTransfersVideoFramesBeforeFallingBackToCanvas() {
         int generator = VirtualCameraScript.SCRIPT.indexOf(
                 "return createGeneratorProxy(initialStream)");

@@ -53,7 +53,11 @@ final class CamPlayerClient {
 
     JSONObject status() throws Exception {
         HttpURLConnection connection = open("/status", "GET", CONNECT_TIMEOUT_MS);
-        return readResponse(connection);
+        try {
+            return readResponse(connection);
+        } finally {
+            connection.disconnect();
+        }
     }
 
     String answerOffer(String offer, String configJson) throws Exception {
@@ -106,17 +110,21 @@ final class CamPlayerClient {
     private JSONObject post(String path, JSONObject body, boolean authenticated, int timeoutMs)
             throws Exception {
         HttpURLConnection connection = open(path, "POST", timeoutMs);
-        connection.setRequestProperty("Content-Type", "application/json");
-        if (authenticated) {
-            connection.setRequestProperty("Authorization", "Bearer " + token);
+        try {
+            connection.setRequestProperty("Content-Type", "application/json");
+            if (authenticated) {
+                connection.setRequestProperty("Authorization", "Bearer " + token);
+            }
+            connection.setDoOutput(true);
+            byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(payload.length);
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(payload);
+            }
+            return readResponse(connection);
+        } finally {
+            connection.disconnect();
         }
-        connection.setDoOutput(true);
-        byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
-        connection.setFixedLengthStreamingMode(payload.length);
-        try (OutputStream output = connection.getOutputStream()) {
-            output.write(payload);
-        }
-        return readResponse(connection);
     }
 
     private HttpURLConnection open(String path, String method, int timeoutMs) throws Exception {
@@ -137,7 +145,6 @@ final class CamPlayerClient {
                 ? connection.getInputStream()
                 : connection.getErrorStream();
         String body = readText(input);
-        connection.disconnect();
         JSONObject json = body.isEmpty() ? new JSONObject() : new JSONObject(body);
         if (status < 200 || status >= 300) {
             String detail = json.optString("error", "HTTP " + status);

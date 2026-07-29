@@ -6,6 +6,7 @@ import org.webrtc.VideoEncoderFactory;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 final class H264PassthroughEncoderFactory implements VideoEncoderFactory {
@@ -46,7 +47,7 @@ final class H264PassthroughEncoderFactory implements VideoEncoderFactory {
 
     private static String normalizedProfile(String codecs) {
         if (codecs != null) {
-            String lower = codecs.toLowerCase();
+            String lower = codecs.toLowerCase(Locale.ROOT);
             if (lower.contains("640c") || lower.contains("avc1.64")) {
                 return VideoCodecInfo.H264_CONSTRAINED_HIGH_3_1;
             }

@@ -26,6 +26,20 @@ test("rotates landscape site constraints into portrait output", () => {
   });
 });
 
+test("normalizes odd site dimensions for H264 without rejecting the camera", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: {
+      width: { ideal: 853 },
+      height: { ideal: 479 },
+    },
+  }, "landscape", { width: 720, height: 1280 });
+  assert.deepEqual(
+    { width: resolved.width, height: resolved.height },
+    { width: 854, height: 480 },
+  );
+  assert.match(resolved.reason, /H264-even/);
+});
+
 test("returns landscape dimensions after phone rotation", () => {
   const resolved = geometry.resolveRequestedSize({
     video: {

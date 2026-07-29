@@ -1065,21 +1065,31 @@ function savePreferences() {
   });
 }
 
-async function restartCaptureTrackAtCurrentResolution(reason) {
+async function restartCaptureTrackAtCurrentResolution(reason, expectedPeerId) {
   const previousStream = stream;
   const previousTrack = canvasTrack;
+  const expectedMaintenance = peerMaintenance.get(expectedPeerId);
+  const expectedSender = expectedMaintenance?.sender;
+  if (!expectedSender || !peers.has(expectedPeerId)) {
+    throw new Error(`Encoder restart superseded before replacement id=${expectedPeerId}`);
+  }
   const replacementStream = canvas.captureStream(0);
   const replacementTrack = replacementStream.getVideoTracks()[0];
   try {
     replacementTrack.contentHint = desiredContentHint();
   } catch (_) {
   }
-  const replacements = [];
-  for (const [id, maintenance] of peerMaintenance.entries()) {
-    if (!maintenance?.sender || !peers.has(id)) continue;
-    replacements.push(maintenance.sender.replaceTrack(replacementTrack));
+  try {
+    await expectedSender.replaceTrack(replacementTrack);
+  } catch (error) {
+    replacementTrack.stop();
+    throw error;
   }
-  await Promise.all(replacements);
+  if (!peers.has(expectedPeerId)
+      || peerMaintenance.get(expectedPeerId)?.sender !== expectedSender) {
+    replacementTrack.stop();
+    throw new Error(`Encoder restart superseded after replacement id=${expectedPeerId}`);
+  }
   stream = replacementStream;
   canvasTrack = replacementTrack;
   previousStream?.getTracks().forEach((track) => {
@@ -1094,7 +1104,7 @@ async function restartCaptureTrackAtCurrentResolution(reason) {
   emitBootstrapFrames(`same-resolution restart ${reason}`, 6, 100);
   updatePausedFrameHeartbeat();
   log(`Encoder same-resolution restart output=${canvas.width}x${canvas.height} `
-    + `senders=${replacements.length} previousTrack=${previousTrack?.id || "none"} `
+    + `peer=${expectedPeerId} previousTrack=${previousTrack?.id || "none"} `
     + `nextTrack=${replacementTrack.id}`);
 }
 
@@ -1260,6 +1270,10 @@ async function handleOffer(payload) {
       return false;
     });
     const outputKey = `${expectedOutput.width}x${expectedOutput.height}`;
+    const failureNow = performance.now();
+    for (const [failedOutput, failure] of encoderFailures.entries()) {
+      if (failureNow - failure.at >= 60_000) encoderFailures.delete(failedOutput);
+    }
     const recentFailure = encoderFailures.get(outputKey);
     const eligibleCodecs = recentFailure
         && performance.now() - recentFailure.at < 60_000
@@ -1355,7 +1369,7 @@ async function handleOffer(payload) {
         ensureOfferActive(id);
         log(`Encoder first attempt stalled id=${id}; retrying same resolution reason=`
           + `${firstError.message}`);
-        await restartCaptureTrackAtCurrentResolution(`offer ${id}`);
+        await restartCaptureTrackAtCurrentResolution(`offer ${id}`, id);
         ensureOfferActive(id);
         return waitForFirstEncodedFrame(pc, id, expectedOutput, 4500);
       }

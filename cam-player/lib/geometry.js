@@ -61,16 +61,21 @@
         reason: "site did not request both dimensions",
       };
     }
+    const requestedWidth = Math.max(2, Math.round(widthConstraint.value / 2) * 2);
+    const requestedHeight = Math.max(2, Math.round(heightConstraint.value / 2) * 2);
     const oriented = orientSize(
-      Math.round(widthConstraint.value),
-      Math.round(heightConstraint.value),
+      requestedWidth,
+      requestedHeight,
       orientation,
     );
+    const normalized = requestedWidth !== Math.round(widthConstraint.value)
+      || requestedHeight !== Math.round(heightConstraint.value);
     return {
       width: oriented.width,
       height: oriented.height,
       applied: true,
-      reason: `${widthConstraint.strength}/${heightConstraint.strength} ${orientation}`,
+      reason: `${widthConstraint.strength}/${heightConstraint.strength} ${orientation}`
+        + (normalized ? " H264-even" : ""),
     };
   }
 
