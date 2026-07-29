@@ -16,11 +16,19 @@ public class CamExchApplication extends Application {
                 previous.uncaughtException(thread, throwable);
             }
         });
-        AppLog.info(this, "Application started; version=" + BuildConfig.VERSION_NAME
+        AppLog.info(this, "Application started; version=" + appVersion()
                 + " sessionId=" + UUID.randomUUID()
                 + " Android=" + Build.VERSION.RELEASE
                 + " sdk=" + Build.VERSION.SDK_INT
                 + " device=" + Build.MANUFACTURER + " " + Build.MODEL
                 + " abis=" + java.util.Arrays.toString(Build.SUPPORTED_ABIS));
+    }
+
+    private String appVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {
+            return "unknown";
+        }
     }
 }
