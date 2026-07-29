@@ -1,0 +1,153 @@
+<!doctype html>
+<meta charset="utf-8">
+<canvas id="source"></canvas>
+<video id="remote" muted autoplay playsinline></video>
+<script>
+  "use strict";
+
+  const { ipcRenderer } = require("electron");
+  const canvas = document.getElementById("source");
+  const video = document.getElementById("remote");
+  const context = canvas.getContext("2d", { alpha: false });
+  const progress = (message) => ipcRenderer.send("smoke-progress", message);
+
+  const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+  async function waitForIce(peer) {
+    if (peer.iceGatheringState === "complete") return;
+    await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 3000);
+      peer.addEventListener("icegatheringstatechange", () => {
+        if (peer.iceGatheringState === "complete") {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+    });
+  }
+
+  async function outboundStats(peer) {
+    const report = await peer.getStats();
+    let result = { frames: 0, width: 0, height: 0 };
+    report.forEach((entry) => {
+      if (entry.type !== "outbound-rtp"
+          || (entry.kind || entry.mediaType) !== "video") return;
+      result = {
+        frames: Number(entry.framesEncoded) || 0,
+        width: Number(entry.frameWidth) || 0,
+        height: Number(entry.frameHeight) || 0,
+      };
+    });
+    return result;
+  }
+
+  async function runCycle(width, height, cycle) {
+    progress(`cycle=${cycle} begin size=${width}x${height}`);
+    canvas.width = width;
+    canvas.height = height;
+    context.fillStyle = cycle % 2 ? "#f2f2f2" : "#202020";
+    context.fillRect(0, 0, width, height);
+    context.fillStyle = cycle % 2 ? "#202020" : "#f2f2f2";
+    context.font = `${Math.max(24, Math.round(height / 12))}px sans-serif`;
+    context.fillText(`static-${cycle}`, 24, Math.round(height / 2));
+
+    const stream = canvas.captureStream(0);
+    const track = stream.getVideoTracks()[0];
+    const present = () => {
+      context.fillRect(0, 0, 1, 1);
+      track.requestFrame();
+    };
+    progress(`cycle=${cycle} capture track state=${track.readyState}`);
+    track.contentHint = "detail";
+    const senderPeer = new RTCPeerConnection({ iceServers: [] });
+    const receiverPeer = new RTCPeerConnection({ iceServers: [] });
+    senderPeer.addTrack(track, stream);
+
+    const remoteTrackPromise = new Promise((resolve) => {
+      receiverPeer.ontrack = (event) => resolve(event.track);
+    });
+    await senderPeer.setLocalDescription(await senderPeer.createOffer());
+    progress(`cycle=${cycle} offer created`);
+    await waitForIce(senderPeer);
+    await receiverPeer.setRemoteDescription(senderPeer.localDescription);
+    await receiverPeer.setLocalDescription(await receiverPeer.createAnswer());
+    await waitForIce(receiverPeer);
+    await senderPeer.setRemoteDescription(receiverPeer.localDescription);
+    progress(`cycle=${cycle} answer applied`);
+    for (let attempt = 0; attempt < 50
+        && senderPeer.connectionState !== "connected"; attempt += 1) {
+      await wait(100);
+    }
+    progress(
+      `cycle=${cycle} connection sender=${senderPeer.connectionState} `
+        + `receiver=${receiverPeer.connectionState}`,
+    );
+    if (senderPeer.connectionState !== "connected") {
+      throw new Error(
+        `cycle ${cycle} peer connection failed sender=${senderPeer.connectionState} `
+          + `receiver=${receiverPeer.connectionState}`,
+      );
+    }
+
+    const remoteTrack = await Promise.race([
+      remoteTrackPromise,
+      wait(5000).then(() => { throw new Error(`cycle ${cycle} remote track timeout`); }),
+    ]);
+    progress(`cycle=${cycle} remote track state=${remoteTrack.readyState} muted=${remoteTrack.muted}`);
+    const clone = remoteTrack.clone();
+    video.srcObject = new MediaStream([clone]);
+    const bootstrapTimer = setInterval(present, 50);
+    const playReady = await Promise.race([
+      video.play().then(() => true, () => false),
+      wait(1500).then(() => false),
+    ]);
+    progress(`cycle=${cycle} clone attached playReady=${playReady}`);
+
+    let stats = { frames: 0, width: 0, height: 0 };
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      present();
+      await wait(100);
+      stats = await outboundStats(senderPeer);
+      if (stats.frames > 0 && video.videoWidth === width && video.videoHeight === height) break;
+    }
+    clearInterval(bootstrapTimer);
+    if (stats.frames <= 0) throw new Error(`cycle ${cycle} encoded no static frame`);
+    if (stats.width !== width || stats.height !== height) {
+      throw new Error(
+        `cycle ${cycle} encoded ${stats.width}x${stats.height}, expected ${width}x${height}`,
+      );
+    }
+    if (video.videoWidth !== width || video.videoHeight !== height) {
+      throw new Error(
+        `cycle ${cycle} clone decoded ${video.videoWidth}x${video.videoHeight}, `
+          + `expected ${width}x${height}`,
+      );
+    }
+    progress(`cycle=${cycle} encoded frames=${stats.frames}`);
+
+    video.srcObject = null;
+    clone.stop();
+    remoteTrack.stop();
+    senderPeer.close();
+    receiverPeer.close();
+    stream.getTracks().forEach((candidate) => candidate.stop());
+    return { cycle, width, height, frames: stats.frames };
+  }
+
+  (async () => {
+    try {
+      progress("renderer started");
+      const cycles = [];
+      cycles.push(await runCycle(640, 480, 1));
+      cycles.push(await runCycle(640, 480, 2));
+      cycles.push(await runCycle(480, 640, 3));
+      cycles.push(await runCycle(1500, 2000, 4));
+      ipcRenderer.send("smoke-result", { ok: true, cycles });
+    } catch (error) {
+      ipcRenderer.send("smoke-result", {
+        ok: false,
+        error: String(error?.stack || error),
+      });
+    }
+  })();
+</script>

@@ -83,6 +83,9 @@ jobs:
       - name: Test Cam Player
         run: pnpm test
 
+      - name: Test Electron WebRTC lifecycle
+        run: pnpm test:electron
+
       - name: Build portable Cam Player
         run: pnpm dist
 

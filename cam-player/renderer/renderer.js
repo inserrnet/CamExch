@@ -91,14 +91,16 @@ vec2 rotateUv(vec2 uv) {
 
 vec4 sampleInput(vec2 uv) {
   vec2 bounded = clamp(uv, vec2(0.0), vec2(1.0));
-  if (u_source_pass == 1) {
+  if (u_source_pass != 0) {
     vec2 orientedSource = (u_rotation == 1 || u_rotation == 3)
       ? u_source.yx
       : u_source;
     float cover = max(u_output.x / orientedSource.x, u_output.y / orientedSource.y);
     vec2 displayed = orientedSource * cover;
     bounded = (bounded * u_output - (u_output - displayed) * 0.5) / displayed;
-    bounded = rotateUv(vec2(bounded.x, 1.0 - bounded.y));
+    bounded = u_source_pass == 1
+      ? rotateUv(vec2(bounded.x, 1.0 - bounded.y))
+      : rotateUv(bounded);
   }
   return texture(u_texture, bounded);
 }
@@ -232,6 +234,7 @@ let detailMinificationEnabled = null;
 let sourceTextureDirty = true;
 let sourceMipmapsValid = false;
 let sourceUploadCount = 0;
+let photoCpuReleased = false;
 let backgroundSnapshotWidth = 0;
 let backgroundSnapshotHeight = 0;
 let backgroundSnapshotRotation = 0;
@@ -249,6 +252,8 @@ let backgroundBlurTimer = null;
 let senderQualityRefreshTimer = null;
 let keyFrameTimer = null;
 let siteConfigurationTimer = null;
+let preferencesSaveTimer = null;
+let interactiveRenderFrameId = null;
 let pendingSiteConfiguration = null;
 let mediaGeneration = 0;
 let stream = null;
@@ -256,6 +261,7 @@ let canvasTrack = null;
 let peers = new Map();
 let readyPeers = new Set();
 const peerMaintenance = new Map();
+const MAX_HANDOFF_PEERS = 2;
 let lastWorkingOutput = { width: canvas.width, height: canvas.height };
 let recent = [];
 let currentServerInfo = null;
@@ -412,7 +418,7 @@ function regenerateBackground(reason) {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, backgroundSnapshotTexture);
     gl.uniform2f(blurUniforms.direction, 1 / cacheWidth, 0);
-    gl.uniform1i(blurUniforms.sourcePass, 1);
+    gl.uniform1i(blurUniforms.sourcePass, 2);
     gl.uniform1i(blurUniforms.rotation, snapshotRotation);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
@@ -537,6 +543,9 @@ function uploadSource() {
       log(`Source texture allocated size=${sourceWidth}x${sourceHeight}`);
     }
     if (sourceTextureDirty) {
+      if (sourceKind === "photo" && photoCpuReleased) {
+        throw new Error("Decoded photo was released after its GPU upload");
+      }
       gl.texSubImage2D(
         gl.TEXTURE_2D,
         0,
@@ -633,6 +642,19 @@ function emitCurrentFrame() {
   return false;
 }
 
+function emitBootstrapFrames(reason, count = 4, intervalMs = 80) {
+  let remaining = Math.max(1, count);
+  const emit = () => {
+    if (!canvasTrack || peers.size === 0) return;
+    emitCurrentFrame();
+    remaining -= 1;
+    if (remaining > 0) setTimeout(emit, intervalMs);
+  };
+  renderFrame(true);
+  emit();
+  log(`Canvas bootstrap frames scheduled count=${count} reason=${reason}`);
+}
+
 function resetPlaybackCadence() {
   cadenceStartedAt = performance.now();
   cadenceDecodedFrames = 0;
@@ -702,12 +724,27 @@ function stopPausedFrameHeartbeat() {
 
 function updatePausedFrameHeartbeat() {
   stopPausedFrameHeartbeat();
-  if (playing || !sourceElement || peers.size === 0) return;
+  if (playing || !sourceElement || !canvasTrack || peers.size === 0) return;
   renderFrame(true);
+  emitCurrentFrame();
   pausedFrameTimer = setInterval(emitCurrentFrame, 250);
 }
 
-function ensureStream() {
+function discardCaptureStream(reason) {
+  if (!stream) return;
+  stream.getTracks().forEach((track) => {
+    try {
+      track.stop();
+    } catch (_) {
+    }
+  });
+  stream = null;
+  canvasTrack = null;
+  log(`Canvas capture stream discarded reason=${reason}`);
+}
+
+function ensureStream({ freshWhenIdle = false } = {}) {
+  if (freshWhenIdle && stream) discardCaptureStream("new idle WebRTC session");
   if (stream) return stream;
   stream = canvas.captureStream(0);
   canvasTrack = stream.getVideoTracks()[0];
@@ -734,7 +771,6 @@ function updateTrackContentHint(reason) {
 function requestKeyFrames(reason) {
   let requested = 0;
   let unsupported = 0;
-  const fallbackSenders = [];
   for (const maintenance of peerMaintenance.values()) {
     const sender = maintenance?.sender;
     if (!sender) continue;
@@ -745,30 +781,10 @@ function requestKeyFrames(reason) {
       });
     } else {
       unsupported += 1;
-      fallbackSenders.push(sender);
     }
   }
-  if (!requested && fallbackSenders.length && canvasTrack && stream) {
-    const previousTrack = canvasTrack;
-    const replacementStream = canvas.captureStream(0);
-    const replacementTrack = replacementStream.getVideoTracks()[0];
-    try {
-      replacementTrack.contentHint = desiredContentHint();
-    } catch (_) {
-    }
-    Promise.all(fallbackSenders.map((sender) => sender.replaceTrack(replacementTrack)))
-      .then(() => {
-        stream.removeTrack(previousTrack);
-        stream.addTrack(replacementTrack);
-        canvasTrack = replacementTrack;
-        previousTrack.stop();
-        emitCurrentFrame();
-        log(`Keyframe fallback replaced canvas track reason=${reason}`);
-      })
-      .catch((error) => {
-        replacementTrack.stop();
-        log(`Keyframe fallback failed reason=${reason} ${error}`);
-      });
+  if (unsupported) {
+    emitBootstrapFrames(`keyframe fallback ${reason}`, 3, 90);
   }
   if (requested || unsupported) {
     log(`Keyframe request reason=${reason} requested=${requested} unsupported=${unsupported}`);
@@ -904,6 +920,7 @@ async function loadMedia(file) {
     sourceTextureDirty = true;
     sourceMipmapsValid = false;
     sourceUploadCount = 0;
+    photoCpuReleased = false;
     backgroundSnapshotReady = false;
     backgroundSnapshotWidth = 0;
     backgroundSnapshotHeight = 0;
@@ -969,6 +986,13 @@ async function loadMedia(file) {
         });
       }
       log("Background snapshot deferred until a decoded frame is presented");
+    }
+    if (sourceKind === "photo" && !sourceTextureDirty) {
+      image.onload = null;
+      image.onerror = null;
+      image.removeAttribute("src");
+      photoCpuReleased = true;
+      log(`Decoded photo CPU buffer released after GPU upload size=${sourceWidth}x${sourceHeight}`);
     }
     updateTrackContentHint("media loaded");
     scheduleSenderQualityRefresh("media loaded");
@@ -1140,17 +1164,17 @@ async function handleOffer(payload) {
     if (existingPeerIds.length) {
       const geometryChanged = activeOutputBeforeOffer.width !== expectedOutput.width
         || activeOutputBeforeOffer.height !== expectedOutput.height;
-      log(`Output geometry changed ${activeOutputBeforeOffer.width}x`
+      log(`Preparing peer handoff ${activeOutputBeforeOffer.width}x`
         + `${activeOutputBeforeOffer.height} -> ${expectedOutput.width}x`
-        + `${expectedOutput.height}; superseding peers=${existingPeerIds.length} `
+        + `${expectedOutput.height}; existingPeers=${existingPeerIds.length} `
         + `geometryChanged=${geometryChanged}`);
-      for (const existingId of existingPeerIds) {
-        closePeer(
-          existingId,
-          `superseded by offer ${id}`,
-        );
+      while (existingPeerIds.length >= MAX_HANDOFF_PEERS) {
+        const oldestId = existingPeerIds.shift();
+        closePeer(oldestId, `handoff capacity for offer ${id}`);
       }
     }
+    const handoffPeerIds = existingPeerIds.slice();
+    const localStream = ensureStream({ freshWhenIdle: handoffPeerIds.length === 0 });
     const pc = new RTCPeerConnection({ iceServers: [] });
     peers.set(id, pc);
     peerMaintenance.set(id, {
@@ -1164,6 +1188,8 @@ async function handleOffer(payload) {
       actualCodec: "",
       outputWidth: expectedOutput.width,
       outputHeight: expectedOutput.height,
+      createdAt: performance.now(),
+      handoffPeerIds,
     });
     updateConnectionState();
     updatePausedFrameHeartbeat();
@@ -1225,10 +1251,10 @@ async function handleOffer(payload) {
     await pc.setRemoteDescription({ type: "offer", sdp: effectiveOfferSdp });
     ensureOfferActive(id);
     log(`Remote offer applied id=${id} transceivers=${describeTransceivers(pc)}`);
-    const localStream = ensureStream();
     const sender = pc.addTrack(localStream.getVideoTracks()[0], localStream);
     const senderMaintenance = peerMaintenance.get(id);
     if (senderMaintenance) senderMaintenance.sender = sender;
+    updatePausedFrameHeartbeat();
     const transceiver = pc.getTransceivers().find((item) => item.sender === sender);
     if (!transceiver) throw new Error("Video sender is not attached to an offered transceiver");
     log(`Video sender attached id=${id} transceivers=${describeTransceivers(pc)}`);
@@ -1273,7 +1299,7 @@ async function handleOffer(payload) {
         + `answerFirst=${answerFirstCodec}; actual codec will be verified by stats`);
     }
     window.camPlayer.answerOffer({ id, sdp: pc.localDescription.sdp });
-    renderFrame(true);
+    emitBootstrapFrames(`offer ${id} answered`, 5, 100);
     waitForFirstEncodedFrame(pc, id, expectedOutput, 8000).then((result) => {
       if (!peers.has(id)) return;
       readyPeers.add(id);
@@ -1283,6 +1309,11 @@ async function handleOffer(payload) {
         + `output=${result.width}x${result.height} actualCodec=${result.codec} `
         + `route=${result.route || "pending"}`);
       updateConnectionState();
+      for (const previousId of handoffPeerIds) {
+        if (peers.has(previousId)) {
+          closePeer(previousId, `handoff completed by offer ${id}`);
+        }
+      }
     }).catch((error) => {
       log(`Encoder readiness failed id=${id} output=${canvas.width}x${canvas.height} `
         + `preferredCodec=${codecChoice.name} reason=${error.message}`);
@@ -1440,6 +1471,30 @@ function clientToOutput(event) {
   };
 }
 
+function scheduleInteractiveRender() {
+  if (interactiveRenderFrameId != null) return;
+  interactiveRenderFrameId = requestAnimationFrame(() => {
+    interactiveRenderFrameId = null;
+    renderFrame(true);
+  });
+}
+
+function flushInteractiveRender() {
+  if (interactiveRenderFrameId != null) {
+    cancelAnimationFrame(interactiveRenderFrameId);
+    interactiveRenderFrameId = null;
+  }
+  renderFrame(true);
+}
+
+function schedulePreferencesSave(delayMs = 180) {
+  clearTimeout(preferencesSaveTimer);
+  preferencesSaveTimer = setTimeout(() => {
+    preferencesSaveTimer = null;
+    savePreferences();
+  }, delayMs);
+}
+
 preview.addEventListener("wheel", (event) => {
   event.preventDefault();
   if (spacePressed) {
@@ -1459,9 +1514,9 @@ preview.addEventListener("wheel", (event) => {
     { width: canvas.width, height: canvas.height },
     nextScale,
   ));
-  renderFrame(true);
+  scheduleInteractiveRender();
   scheduleKeyFrame("source zoom");
-  savePreferences();
+  schedulePreferencesSave();
 }, { passive: false });
 
 preview.addEventListener("pointerdown", (event) => {
@@ -1490,16 +1545,21 @@ preview.addEventListener("pointermove", (event) => {
       { width: rect.width, height: rect.height },
       { width: canvas.width, height: canvas.height },
     ));
-    renderFrame(true);
+    scheduleInteractiveRender();
   }
 });
 
 preview.addEventListener("pointerup", () => {
+  const completedMode = dragMode;
   dragMode = "";
-  scheduleKeyFrame("source drag complete");
-  savePreferences();
+  if (completedMode === "source") {
+    flushInteractiveRender();
+    scheduleKeyFrame("source drag complete");
+    savePreferences();
+  }
 });
 preview.addEventListener("pointercancel", () => {
+  if (dragMode === "source") flushInteractiveRender();
   dragMode = "";
 });
 
@@ -1671,6 +1731,8 @@ window.addEventListener("beforeunload", () => {
   clearTimeout(senderQualityRefreshTimer);
   clearTimeout(keyFrameTimer);
   clearTimeout(siteConfigurationTimer);
+  clearTimeout(preferencesSaveTimer);
+  if (interactiveRenderFrameId != null) cancelAnimationFrame(interactiveRenderFrameId);
   for (const id of Array.from(peers.keys())) closePeer(id, "renderer unload");
   stream?.getTracks().forEach((track) => track.stop());
 });

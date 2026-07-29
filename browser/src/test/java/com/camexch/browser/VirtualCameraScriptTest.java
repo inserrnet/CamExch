@@ -67,4 +67,14 @@ public class VirtualCameraScriptTest {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "nativeFps>=1&&nativeFps<=60"));
     }
+
+    @Test
+    public void staticSourceCloneKeepsTheHealthySharedConnection() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "waitForLiveSourceTrack(track,2000,true)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "Source clone geometry still pending; retaining healthy shared track"));
+        assertFalse(VirtualCameraScript.SCRIPT.contains(
+                "resetSharedRtc('cloned track geometry failed"));
+    }
 }
