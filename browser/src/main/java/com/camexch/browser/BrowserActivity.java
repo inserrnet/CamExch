@@ -336,15 +336,16 @@ public class BrowserActivity extends Activity {
                     AppLog.info(BrowserActivity.this, "Page console "
                             + consoleMessage.messageLevel()
                             + " line=" + consoleMessage.lineNumber()
-                            + " source=" + consoleMessage.sourceId()
-                            + " message=" + consoleMessage.message());
+                            + " source=" + LogSanitizer.sanitize(consoleMessage.sourceId())
+                            + " message=" + LogSanitizer.sanitize(consoleMessage.message()));
                 }
                 return super.onConsoleMessage(consoleMessage);
             }
 
             @Override
             public void onPermissionRequest(PermissionRequest request) {
-                AppLog.info(BrowserActivity.this, "Permission request origin=" + request.getOrigin()
+                AppLog.info(BrowserActivity.this, "Permission request origin="
+                        + LogSanitizer.sanitize(String.valueOf(request.getOrigin()))
                         + " resources=" + Arrays.toString(request.getResources()));
                 runOnUiThread(() -> handlePermissionRequest(request));
             }
@@ -361,7 +362,7 @@ public class BrowserActivity extends Activity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
-                AppLog.info(BrowserActivity.this, "Page started: " + url);
+                AppLog.info(BrowserActivity.this, "Page started: " + LogSanitizer.sanitize(url));
                 addressBar.setText(url);
                 updateNavButtons();
                 injectVirtualCamera(view);
@@ -369,7 +370,7 @@ public class BrowserActivity extends Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                AppLog.info(BrowserActivity.this, "Page finished: " + url);
+                AppLog.info(BrowserActivity.this, "Page finished: " + LogSanitizer.sanitize(url));
                 addressBar.setText(url);
                 updateNavButtons();
                 injectVirtualCamera(view);

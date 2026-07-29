@@ -157,6 +157,14 @@ test("keeps a quality floor below the WebRTC bitrate ceiling", () => {
   );
 });
 
+test("uses adaptive frame rates without reducing source resolution", () => {
+  assert.equal(geometry.adaptiveFrameRate(2400, 3200, 60, "idle"), 1);
+  assert.equal(geometry.adaptiveFrameRate(2400, 3200, 60, "interaction"), 10);
+  assert.equal(geometry.adaptiveFrameRate(1500, 2000, 60, "interaction"), 15);
+  assert.equal(geometry.adaptiveFrameRate(720, 1280, 60, "interaction"), 20);
+  assert.equal(geometry.adaptiveFrameRate(2400, 3200, 24, "motion"), 24);
+});
+
 test("prefers interoperable H264 at every resolution when available", () => {
   const codecs = [
     { mimeType: "video/H264" },

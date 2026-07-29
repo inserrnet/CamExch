@@ -99,10 +99,36 @@ public class VirtualCameraScriptTest {
     @Test
     public void sourceSessionUsesAnIdleGracePeriod() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "SOURCE_IDLE_GRACE_MS"));
+                "SOURCE_IDLE_GRACE_MS=6000"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "shared source release scheduled"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "cancelSharedRtcRelease"));
+    }
+
+    @Test
+    public void reusedSourceSessionWaitsForRequestedGeometry() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "waitForSourceGeometry"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "Source geometry confirmed"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "Source geometry retained"));
+    }
+
+    @Test
+    public void cameraPauseDiagnosticsIncludeTheCallSite() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "camera media pause called visibility="));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "new Error().stack"));
+    }
+
+    @Test
+    public void javascriptLogsRedactUrlQueries() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "function sanitizeLogText"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "?<redacted>"));
     }
 }

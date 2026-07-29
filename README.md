@@ -77,9 +77,9 @@ flowchart LR
 
 The browser installs its camera hook at document start, before site scripts can capture the original `getUserMedia()` function. H.264 RTSP access units pass directly into WebRTC without decoding or re-encoding. Other RTSP codecs automatically use the decoded Surface/WebRTC fallback. Video-file frames remain on the hardware-accelerated Surface/WebRTC path and are not converted to JPEG. Playback belongs to the foreground service, so switching from Source to Browser does not destroy the media pipeline. The selected source is restored if Android restarts the service.
 
-Cam Player renders its arbitrary-resolution output with WebGL. Its background is a bounded, strongly blurred cache of the first media frame, so a large photo is not duplicated at full resolution and playback does not render a second moving video. Static and paused frames remain cached and are re-sent without repeatedly uploading the source or rebuilding mipmaps. A fresh Canvas capture track and bootstrap frames start each idle Browser session, while a short heartbeat keeps paused output available. Rendering follows decoded video-frame callbacks instead of a permanent 60 Hz timer. The sender uses the actually interoperable H.264 codec, keeps the selected resolution, applies separate motion/detail profiles, and requests a keyframe after material output changes.
+Cam Player renders its arbitrary-resolution output with WebGL. Its background is a bounded, strongly blurred cache of the first media frame, so a large photo is not duplicated at full resolution and playback does not render a second moving video. Static and paused frames remain cached and use a one-frame-per-second heartbeat; zooming and dragging temporarily raise the frame rate according to output size without reducing resolution. Rendering follows decoded video-frame callbacks instead of a permanent 60 Hz timer. The sender uses the actually interoperable H.264 codec, keeps the selected resolution, applies separate motion/detail profiles, and limits keyframe fallback to material output changes.
 
-Browser, Source, and Cam Player use asynchronous signaling with session/request IDs. A newer pending offer cancels unfinished negotiation; an established peer remains available until its replacement has encoded a valid first frame. At most two encoders coexist during that brief handoff. The selected USB route is preferred at ICE candidate level while the full candidate set remains an automatic fallback when the requested interface is unavailable. Managed rear-camera switching transfers native `VideoFrame` objects through `MediaStreamTrackProcessor/Generator`; the Canvas path is only a compatibility fallback. Cam Player and Source pair with a six-digit one-time code, and signaling requires the resulting token. Media flows directly from Windows to Browser, avoiding an Android decode/encode hop.
+Browser, Source, and Cam Player use asynchronous signaling with session/request IDs. Browser retains a healthy source session through short site probe/reopen cycles and applies changed geometry to that session before returning the next track. A newer pending offer cancels unfinished negotiation, and Cam Player keeps one active encoder. The selected USB route is preferred at ICE candidate level while the full candidate set remains an automatic fallback when the requested interface is unavailable. Managed rear-camera switching transfers native `VideoFrame` objects through `MediaStreamTrackProcessor/Generator`; the Canvas path is only a compatibility fallback. Cam Player and Source pair with a six-digit one-time code, and signaling requires the resulting token. Media flows directly from Windows to Browser, avoiding an Android decode/encode hop.
 
 ## Browser Features
 
@@ -123,7 +123,7 @@ pnpm dist
 Windows output:
 
 ```text
-cam-player/dist/Cam-Player-0.3.3-Windows-x64.exe
+cam-player/dist/Cam-Player-0.3.4-Windows-x64.exe
 ```
 
 ## Notes

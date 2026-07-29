@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("camPlayer", {
   prepareMedia: (filePath) => ipcRenderer.invoke("prepare-media", filePath),
   readPreferences: () => ipcRenderer.invoke("read-preferences"),
   getServerInfo: () => ipcRenderer.invoke("get-server-info"),
+  getMemoryInfo: () => ipcRenderer.invoke("get-memory-info"),
   writePreferences: (value) => ipcRenderer.invoke("write-preferences", value),
   readLog: () => ipcRenderer.invoke("read-log"),
   readLogTail: () => ipcRenderer.invoke("read-log-tail"),

@@ -153,6 +153,16 @@
     };
   }
 
+  function adaptiveFrameRate(width, height, configuredFps, state) {
+    const configured = Math.max(1, Math.min(60, Number(configuredFps) || 30));
+    if (state === "motion") return configured;
+    if (state !== "interaction") return 1;
+    const pixels = Math.max(1, Number(width) || 0) * Math.max(1, Number(height) || 0);
+    if (pixels >= 7_000_000) return Math.min(configured, 10);
+    if (pixels >= 3_000_000) return Math.min(configured, 15);
+    return Math.min(configured, 20);
+  }
+
   function isHighResolution(width, height) {
     const w = Number(width) || 0;
     const h = Number(height) || 0;
@@ -355,6 +365,7 @@
     shouldRenderMediaFrame,
     targetVideoBitrate,
     videoBitrateProfile,
+    adaptiveFrameRate,
     isHighResolution,
     isUltraHighResolution,
     preferredVideoCodecs,

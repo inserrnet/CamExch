@@ -18,10 +18,10 @@ test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("re-renders the paused frame so a late encoder always receives pixels", () => {
+test("keeps a low-cost paused heartbeat so a late encoder receives pixels", () => {
   assert.match(
     renderer,
-    /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 250\)/,
+    /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000\)/,
   );
   assert.match(renderer, /!canvasTrack \|\| peers\.size === 0/);
   assert.match(
@@ -56,11 +56,15 @@ test("keeps the rendering color space explicit and avoids sharpening bias", () =
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("uses content-aware sender profiles and requests keyframes", () => {
+test("uses content-aware adaptive sender profiles and bounded keyframes", () => {
   assert.match(renderer, /sourceKind === "video" && playing \? "motion" : "detail"/);
-  assert.match(renderer, /Math\.min\(4, configuredFps\)/);
+  assert.match(renderer, /CamGeometry\.adaptiveFrameRate/);
+  assert.match(renderer, /sourceInteractionActive/);
   assert.match(renderer, /sender\.generateKeyFrame/);
-  assert.match(renderer, /emitBootstrapFrames\(`keyframe fallback \$\{reason\}`/);
+  assert.match(renderer, /fallbackAllowed/);
+  assert.match(renderer, /keyframe fallback \$\{reason\}`, 1/);
+  assert.doesNotMatch(renderer, /scheduleKeyFrame\("source zoom"\)/);
+  assert.doesNotMatch(renderer, /scheduleKeyFrame\("source drag complete"\)/);
   assert.match(renderer, /replacementStream = canvas\.captureStream\(0\)/);
 });
 
@@ -88,6 +92,9 @@ test("coalesces source interaction rendering and preference writes", () => {
   assert.match(renderer, /interactiveRenderFrameId = requestAnimationFrame/);
   assert.match(renderer, /function schedulePreferencesSave\(delayMs = 180\)/);
   assert.match(renderer, /scheduleInteractiveRender\(\);[\s\S]*schedulePreferencesSave\(\)/);
+  assert.match(renderer, /Source interaction started sequence=/);
+  assert.match(renderer, /Source interaction completed sequence=/);
+  assert.match(renderer, /finishWheelInteraction/);
 });
 
 test("refreshes active WebRTC sender parameters after live output changes", () => {

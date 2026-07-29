@@ -218,6 +218,7 @@ let sourceHeight = 0;
 let sourceKind = "";
 let sourceRotation = 0;
 let currentFile = null;
+let memoryTimer = null;
 let playing = false;
 let previewZoom = 1;
 let previewPanX = 0;
@@ -254,6 +255,11 @@ let keyFrameTimer = null;
 let siteConfigurationTimer = null;
 let preferencesSaveTimer = null;
 let interactiveRenderFrameId = null;
+let interactionIdleTimer = null;
+let sourceInteractionActive = false;
+let interactionStartedAt = 0;
+let interactionRenderedFrames = 0;
+let interactionSequence = 0;
 let pendingSiteConfiguration = null;
 let mediaGeneration = 0;
 let stream = null;
@@ -275,6 +281,17 @@ let transforms = {
 
 function log(message) {
   window.camPlayer.log(message);
+}
+
+async function logRuntimeMetrics() {
+  try {
+    const memory = await window.camPlayer.getMemoryInfo();
+    log(`Runtime memory workingSetMb=${memory.workingSetMb} privateMb=${memory.privateMb} `
+      + `processes=${memory.processes} peers=${peers.size} media=${currentFile?.kind || "none"} `
+      + `output=${canvas.width}x${canvas.height} interaction=${sourceInteractionActive}`);
+  } catch (error) {
+    log(`Runtime memory unavailable ${error}`);
+  }
 }
 
 function appendLog(line) {
@@ -736,7 +753,7 @@ function updatePausedFrameHeartbeat() {
   stopPausedFrameHeartbeat();
   if (playing || !sourceElement || !canvasTrack || peers.size === 0) return;
   renderFrame(true);
-  pausedFrameTimer = setInterval(() => renderFrame(true), 250);
+  pausedFrameTimer = setInterval(() => renderFrame(true), 1000);
 }
 
 function discardCaptureStream(reason) {
@@ -791,8 +808,9 @@ function requestKeyFrames(reason) {
       unsupported += 1;
     }
   }
-  if (unsupported) {
-    emitBootstrapFrames(`keyframe fallback ${reason}`, 3, 90);
+  const fallbackAllowed = /^(output|media loaded|playback started|playback paused|video seek|source reset|source rotation)/.test(reason);
+  if (unsupported && fallbackAllowed) {
+    emitBootstrapFrames(`keyframe fallback ${reason}`, 1, 90);
   }
   if (requested || unsupported) {
     log(`Keyframe request reason=${reason} requested=${requested} unsupported=${unsupported}`);
@@ -1110,9 +1128,17 @@ async function restartCaptureTrackAtCurrentResolution(reason, expectedPeerId) {
 
 async function lockSenderQuality(sender, width, height) {
   const configuredFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
-  const maximumFps = sourceKind === "video" && playing
-    ? configuredFps
-    : Math.min(4, configuredFps);
+  const senderState = sourceKind === "video" && playing
+    ? "motion"
+    : sourceInteractionActive
+      ? "interaction"
+      : "idle";
+  const maximumFps = CamGeometry.adaptiveFrameRate(
+    width,
+    height,
+    configuredFps,
+    senderState,
+  );
   const bitrateProfile = CamGeometry.videoBitrateProfile(width, height, maximumFps);
   try {
     const parameters = sender.getParameters();
@@ -1132,6 +1158,7 @@ async function lockSenderQuality(sender, width, height) {
     const active = applied.encodings?.[0] || {};
     log(`Sender quality lock applied scale=${active.scaleResolutionDownBy || 1} `
       + `maxFps=${active.maxFramerate || "default"} `
+      + `state=${senderState} `
       + `minMbps=${(bitrateProfile.minimum / 1_000_000).toFixed(2)} `
       + `startMbps=${(bitrateProfile.start / 1_000_000).toFixed(2)} `
       + `targetMbps=${(bitrateProfile.maximum / 1_000_000).toFixed(2)} `
@@ -1562,7 +1589,7 @@ function scheduleInteractiveRender() {
   if (interactiveRenderFrameId != null) return;
   interactiveRenderFrameId = requestAnimationFrame(() => {
     interactiveRenderFrameId = null;
-    renderFrame(true);
+    if (renderFrame(true)) interactionRenderedFrames += 1;
   });
 }
 
@@ -1571,7 +1598,41 @@ function flushInteractiveRender() {
     cancelAnimationFrame(interactiveRenderFrameId);
     interactiveRenderFrameId = null;
   }
-  renderFrame(true);
+  if (renderFrame(true)) interactionRenderedFrames += 1;
+}
+
+function setSourceInteraction(active, reason) {
+  clearTimeout(interactionIdleTimer);
+  interactionIdleTimer = null;
+  if (active) {
+    if (sourceInteractionActive) return;
+    sourceInteractionActive = true;
+    interactionStartedAt = performance.now();
+    interactionRenderedFrames = 0;
+    interactionSequence += 1;
+    scheduleSenderQualityRefresh(`interaction ${reason} started`);
+    updatePausedFrameHeartbeat();
+    log(`Source interaction started sequence=${interactionSequence} reason=${reason} `
+      + `output=${canvas.width}x${canvas.height}`);
+    return;
+  }
+  if (!sourceInteractionActive) return;
+  sourceInteractionActive = false;
+  scheduleSenderQualityRefresh(`interaction ${reason} completed`);
+  updatePausedFrameHeartbeat();
+  log(`Source interaction completed sequence=${interactionSequence} reason=${reason} `
+    + `durationMs=${Math.round(performance.now() - interactionStartedAt)} `
+    + `rendered=${interactionRenderedFrames} output=${canvas.width}x${canvas.height}`);
+}
+
+function finishWheelInteraction() {
+  clearTimeout(interactionIdleTimer);
+  interactionIdleTimer = setTimeout(() => {
+    interactionIdleTimer = null;
+    flushInteractiveRender();
+    setSourceInteraction(false, "zoom");
+    schedulePreferencesSave(0);
+  }, 220);
 }
 
 function schedulePreferencesSave(delayMs = 180) {
@@ -1591,6 +1652,7 @@ preview.addEventListener("wheel", (event) => {
     return;
   }
   if (!sourceElement) return;
+  setSourceInteraction(true, "zoom");
   const factor = CamGeometry.wheelFactor(event.deltaY, 0.00075);
   const point = clientToOutput(event);
   const t = transform();
@@ -1602,8 +1664,8 @@ preview.addEventListener("wheel", (event) => {
     nextScale,
   ));
   scheduleInteractiveRender();
-  scheduleKeyFrame("source zoom");
   schedulePreferencesSave();
+  finishWheelInteraction();
 }, { passive: false });
 
 preview.addEventListener("pointerdown", (event) => {
@@ -1611,6 +1673,7 @@ preview.addEventListener("pointerdown", (event) => {
   dragX = event.clientX;
   dragY = event.clientY;
   preview.setPointerCapture(event.pointerId);
+  if (dragMode === "source" && sourceElement) setSourceInteraction(true, "drag");
 });
 
 preview.addEventListener("pointermove", (event) => {
@@ -1641,12 +1704,15 @@ preview.addEventListener("pointerup", () => {
   dragMode = "";
   if (completedMode === "source") {
     flushInteractiveRender();
-    scheduleKeyFrame("source drag complete");
+    setSourceInteraction(false, "drag");
     savePreferences();
   }
 });
 preview.addEventListener("pointercancel", () => {
-  if (dragMode === "source") flushInteractiveRender();
+  if (dragMode === "source") {
+    flushInteractiveRender();
+    setSourceInteraction(false, "drag canceled");
+  }
   dragMode = "";
 });
 
@@ -1664,6 +1730,7 @@ window.addEventListener("keyup", (event) => {
 });
 window.addEventListener("blur", () => {
   spacePressed = false;
+  if (dragMode === "source") setSourceInteraction(false, "window blur");
   dragMode = "";
 });
 window.addEventListener("resize", applyPreviewTransform);
@@ -1816,6 +1883,9 @@ async function initialize() {
   }
   clearInterval(timelineTimer);
   timelineTimer = setInterval(updateTimeline, 200);
+  clearInterval(memoryTimer);
+  memoryTimer = setInterval(logRuntimeMetrics, 30000);
+  setTimeout(logRuntimeMetrics, 5000);
   applyPreviewTransform();
   logOutput.textContent = await window.camPlayer.readLogTail();
   updateConnectionState();
@@ -1842,6 +1912,7 @@ window.addEventListener("beforeunload", () => {
   stopVideoFrameLoop();
   stopPausedFrameHeartbeat();
   clearInterval(timelineTimer);
+  clearInterval(memoryTimer);
   clearTimeout(backgroundBlurTimer);
   clearTimeout(senderQualityRefreshTimer);
   clearTimeout(keyFrameTimer);

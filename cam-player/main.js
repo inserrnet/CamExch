@@ -473,6 +473,20 @@ ipcMain.handle("prepare-media", async (_event, filePath) => {
   };
 });
 ipcMain.handle("get-server-info", () => serverInfo());
+ipcMain.handle("get-memory-info", () => {
+  const metrics = app.getAppMetrics();
+  const totals = metrics.reduce((result, metric) => {
+    const memory = metric.memory || {};
+    result.workingSetKb += Number(memory.workingSetSize) || 0;
+    result.privateKb += Number(memory.privateBytes) || 0;
+    return result;
+  }, { workingSetKb: 0, privateKb: 0 });
+  return {
+    workingSetMb: Math.round(totals.workingSetKb / 1024),
+    privateMb: Math.round(totals.privateKb / 1024),
+    processes: metrics.length,
+  };
+});
 ipcMain.handle("write-preferences", (_event, value) => {
   writeJson("preferences.json", value || {});
   return true;
