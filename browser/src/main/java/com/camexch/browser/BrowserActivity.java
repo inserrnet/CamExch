@@ -316,7 +316,9 @@ public class BrowserActivity extends Activity {
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
-        settings.setUserAgentString(settings.getUserAgentString() + " CamExchBrowser/0.1");
+        // Keep the WebView provider's UA and UA Client Hints coherent. A custom product
+        // token causes some sites to classify this otherwise current engine as unsupported.
+        settings.setUserAgentString(null);
         webView.addJavascriptInterface(new JsLogBridge(), "CamExchLog");
         webView.addJavascriptInterface(sourceBridge, "CamExchBridge");
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {

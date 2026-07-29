@@ -570,9 +570,41 @@ context.CamExchBridge = {
 };
 const testScript = script.replace(
   /\}\)\(\);$/,
-  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,rtc:rtcStream,prepare:prepareSourceStandby,managed:managedStreams,proxy:createRouteProxy,configure:configureManagedController,install:installHooks,installFrame:installFrame};})();",
+  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,rtc:rtcStream,prepare:prepareSourceStandby,managed:managedStreams,proxy:createRouteProxy,configure:configureManagedController,install:installHooks,installFrame:installFrame,ice:preferIceRoute};})();",
 );
 vm.runInNewContext(testScript, context);
+
+const routeSdp = [
+  "v=0",
+  "a=candidate:1 1 udp 2122260223 192.168.4.213 5000 typ host",
+  "a=candidate:2 1 udp 2122260223 10.175.214.213 5001 typ host",
+].join("\r\n");
+const usbOffer = context.__camexchForTest.ice(routeSdp, "10.175.214.58:8791", true);
+if (!usbOffer.strict || usbOffer.kept !== 1
+    || !usbOffer.sdp.includes("10.175.214.213")
+    || usbOffer.sdp.includes("192.168.4.213")) {
+  throw new Error("Strict USB offer filtering retained a Wi-Fi candidate");
+}
+const playerSdp = [
+  "v=0",
+  "a=candidate:1 1 udp 2122260223 192.168.4.132 6000 typ host",
+  "a=candidate:2 1 udp 2122260223 10.175.214.58 6001 typ host",
+].join("\r\n");
+const usbAnswer = context.__camexchForTest.ice(playerSdp, "10.175.214.58:8791", false);
+if (!usbAnswer.strict || usbAnswer.kept !== 1
+    || !usbAnswer.sdp.includes("10.175.214.58")
+    || usbAnswer.sdp.includes("192.168.4.132")) {
+  throw new Error("Strict USB answer filtering retained a Wi-Fi candidate");
+}
+let missingUsbRejected = false;
+try {
+  context.__camexchForTest.ice(routeSdp, "10.99.77.58:8791", true);
+} catch (error) {
+  missingUsbRejected = String(error).includes("no matching ICE candidate");
+}
+if (!missingUsbRejected) {
+  throw new Error("Missing selected USB route silently fell back to another interface");
+}
 
 const canvasBeforeHighResolutionProxy = canvasDrawCount;
 const highResolutionDirect = context.__camexchForTest.proxy(

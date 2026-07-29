@@ -261,7 +261,10 @@ let canvasTrack = null;
 let peers = new Map();
 let readyPeers = new Set();
 const peerMaintenance = new Map();
-const MAX_HANDOFF_PEERS = 2;
+const encoderFailures = new Map();
+const MAX_ACTIVE_PEERS = 1;
+let manualOutput = { width: canvas.width, height: canvas.height };
+let activeOutputOrigin = "manual";
 let lastWorkingOutput = { width: canvas.width, height: canvas.height };
 let recent = [];
 let currentServerInfo = null;
@@ -484,9 +487,11 @@ function showFullFrame() {
   applyPreviewTransform();
 }
 
-function applyOutputSize(width, height, reason) {
+function applyOutputSize(width, height, reason, options = {}) {
   const w = CamGeometry.positiveInteger(width, "Width");
   const h = CamGeometry.positiveInteger(height, "Height");
+  const origin = options.origin || "manual";
+  const persist = options.persist !== false;
   const previousOutput = { width: canvas.width, height: canvas.height };
   const previousOrientation = orientationForSize(previousOutput.width, previousOutput.height);
   const nextOrientation = orientationForSize(w, h);
@@ -496,6 +501,10 @@ function applyOutputSize(width, height, reason) {
   }
   canvas.width = w;
   canvas.height = h;
+  activeOutputOrigin = origin;
+  if (origin === "manual") {
+    manualOutput = { width: w, height: h };
+  }
   if (previousOrientation === nextOrientation) {
     transforms[nextOrientation] = CamGeometry.rescaleOutputTransform(
       transforms[nextOrientation],
@@ -508,7 +517,8 @@ function applyOutputSize(width, height, reason) {
   gl.viewport(0, 0, w, h);
   applyPreviewTransform();
   updateOutputLabel();
-  log(`Output size=${w}x${h} reason=${reason}`);
+  log(`Output size=${w}x${h} origin=${origin} manual=`
+    + `${manualOutput.width}x${manualOutput.height} reason=${reason}`);
   if (backgroundSnapshotReady) {
     regenerateBackground(`output ${reason}`);
   } else {
@@ -516,7 +526,7 @@ function applyOutputSize(width, height, reason) {
   }
   scheduleSenderQualityRefresh(`output ${reason}`);
   scheduleKeyFrame(`output ${reason}`, 0);
-  savePreferences();
+  if (persist) savePreferences();
 }
 
 function uploadSource() {
@@ -646,7 +656,7 @@ function emitBootstrapFrames(reason, count = 4, intervalMs = 80) {
   let remaining = Math.max(1, count);
   const emit = () => {
     if (!canvasTrack || peers.size === 0) return;
-    emitCurrentFrame();
+    renderFrame(true);
     remaining -= 1;
     if (remaining > 0) setTimeout(emit, intervalMs);
   };
@@ -726,8 +736,7 @@ function updatePausedFrameHeartbeat() {
   stopPausedFrameHeartbeat();
   if (playing || !sourceElement || !canvasTrack || peers.size === 0) return;
   renderFrame(true);
-  emitCurrentFrame();
-  pausedFrameTimer = setInterval(emitCurrentFrame, 250);
+  pausedFrameTimer = setInterval(() => renderFrame(true), 250);
 }
 
 function discardCaptureStream(reason) {
@@ -743,8 +752,7 @@ function discardCaptureStream(reason) {
   log(`Canvas capture stream discarded reason=${reason}`);
 }
 
-function ensureStream({ freshWhenIdle = false } = {}) {
-  if (freshWhenIdle && stream) discardCaptureStream("new idle WebRTC session");
+function ensureStream() {
   if (stream) return stream;
   stream = canvas.captureStream(0);
   canvasTrack = stream.getVideoTracks()[0];
@@ -861,7 +869,7 @@ async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs) {
         codec: lastCodec,
       };
     }
-    emitCurrentFrame();
+    renderFrame(true);
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error(`encoder did not produce exact ${expected.width}x${expected.height} `
@@ -1045,8 +1053,8 @@ function pause() {
 function savePreferences() {
   window.camPlayer.writePreferences({
     preferencesVersion: 2,
-    width: canvas.width,
-    height: canvas.height,
+    width: manualOutput.width,
+    height: manualOutput.height,
     fps: Number(fpsInput.value),
     blur: Number(blurInput.value),
     followSite: followSiteToggle.checked,
@@ -1055,6 +1063,39 @@ function savePreferences() {
     lastWorkingOutput,
     recent,
   });
+}
+
+async function restartCaptureTrackAtCurrentResolution(reason) {
+  const previousStream = stream;
+  const previousTrack = canvasTrack;
+  const replacementStream = canvas.captureStream(0);
+  const replacementTrack = replacementStream.getVideoTracks()[0];
+  try {
+    replacementTrack.contentHint = desiredContentHint();
+  } catch (_) {
+  }
+  const replacements = [];
+  for (const [id, maintenance] of peerMaintenance.entries()) {
+    if (!maintenance?.sender || !peers.has(id)) continue;
+    replacements.push(maintenance.sender.replaceTrack(replacementTrack));
+  }
+  await Promise.all(replacements);
+  stream = replacementStream;
+  canvasTrack = replacementTrack;
+  previousStream?.getTracks().forEach((track) => {
+    if (track !== replacementTrack) {
+      try {
+        track.stop();
+      } catch (_) {
+      }
+    }
+  });
+  renderFrame(true);
+  emitBootstrapFrames(`same-resolution restart ${reason}`, 6, 100);
+  updatePausedFrameHeartbeat();
+  log(`Encoder same-resolution restart output=${canvas.width}x${canvas.height} `
+    + `senders=${replacements.length} previousTrack=${previousTrack?.id || "none"} `
+    + `nextTrack=${replacementTrack.id}`);
 }
 
 async function lockSenderQuality(sender, width, height) {
@@ -1161,20 +1202,16 @@ async function handleOffer(payload) {
     applySiteConfiguration({ constraints, orientation }, "offer");
     const expectedOutput = { width: canvas.width, height: canvas.height };
     const existingPeerIds = Array.from(peers.keys());
-    if (existingPeerIds.length) {
-      const geometryChanged = activeOutputBeforeOffer.width !== expectedOutput.width
-        || activeOutputBeforeOffer.height !== expectedOutput.height;
-      log(`Preparing peer handoff ${activeOutputBeforeOffer.width}x`
-        + `${activeOutputBeforeOffer.height} -> ${expectedOutput.width}x`
-        + `${expectedOutput.height}; existingPeers=${existingPeerIds.length} `
-        + `geometryChanged=${geometryChanged}`);
-      while (existingPeerIds.length >= MAX_HANDOFF_PEERS) {
-        const oldestId = existingPeerIds.shift();
-        closePeer(oldestId, `handoff capacity for offer ${id}`);
-      }
+    for (const existingId of existingPeerIds) {
+      closePeer(existingId, `superseded by offer ${id}`);
     }
-    const handoffPeerIds = existingPeerIds.slice();
-    const localStream = ensureStream({ freshWhenIdle: handoffPeerIds.length === 0 });
+    if (peers.size >= MAX_ACTIVE_PEERS) {
+      throw new Error(`Active encoder limit exceeded (${MAX_ACTIVE_PEERS})`);
+    }
+    log(`Preparing single encoder ${activeOutputBeforeOffer.width}x`
+      + `${activeOutputBeforeOffer.height} -> ${expectedOutput.width}x`
+      + `${expectedOutput.height}; replacedPeers=${existingPeerIds.length}`);
+    const localStream = ensureStream();
     const pc = new RTCPeerConnection({ iceServers: [] });
     peers.set(id, pc);
     peerMaintenance.set(id, {
@@ -1189,7 +1226,6 @@ async function handleOffer(payload) {
       outputWidth: expectedOutput.width,
       outputHeight: expectedOutput.height,
       createdAt: performance.now(),
-      handoffPeerIds,
     });
     updateConnectionState();
     updatePausedFrameHeartbeat();
@@ -1223,8 +1259,20 @@ async function handleOffer(payload) {
       if (mime === "video/vp9") return remoteOffersVp9;
       return false;
     });
+    const outputKey = `${expectedOutput.width}x${expectedOutput.height}`;
+    const recentFailure = encoderFailures.get(outputKey);
+    const eligibleCodecs = recentFailure
+        && performance.now() - recentFailure.at < 60_000
+      ? mutuallyAvailableCodecs.filter(
+        (codec) => String(codec.mimeType).toLowerCase() !== recentFailure.mime,
+      )
+      : mutuallyAvailableCodecs;
+    if (recentFailure && eligibleCodecs.length !== mutuallyAvailableCodecs.length) {
+      log(`Encoder codec retry output=${outputKey} excluded=${recentFailure.mime} `
+        + `remaining=${eligibleCodecs.map((codec) => codec.mimeType).join(",")}`);
+    }
     const codecChoice = CamGeometry.preferredVideoCodecs(
-      mutuallyAvailableCodecs,
+      eligibleCodecs.length ? eligibleCodecs : mutuallyAvailableCodecs,
       canvas.width,
       canvas.height,
     );
@@ -1300,24 +1348,42 @@ async function handleOffer(payload) {
     }
     window.camPlayer.answerOffer({ id, sdp: pc.localDescription.sdp });
     emitBootstrapFrames(`offer ${id} answered`, 5, 100);
-    waitForFirstEncodedFrame(pc, id, expectedOutput, 8000).then((result) => {
+    (async () => {
+      try {
+        return await waitForFirstEncodedFrame(pc, id, expectedOutput, 3500);
+      } catch (firstError) {
+        ensureOfferActive(id);
+        log(`Encoder first attempt stalled id=${id}; retrying same resolution reason=`
+          + `${firstError.message}`);
+        await restartCaptureTrackAtCurrentResolution(`offer ${id}`);
+        ensureOfferActive(id);
+        return waitForFirstEncodedFrame(pc, id, expectedOutput, 4500);
+      }
+    })().then((result) => {
       if (!peers.has(id)) return;
       readyPeers.add(id);
+      encoderFailures.delete(outputKey);
       lastWorkingOutput = { ...expectedOutput };
       savePreferences();
       log(`First encoded frame id=${id} frames=${result.encoded} `
         + `output=${result.width}x${result.height} actualCodec=${result.codec} `
         + `route=${result.route || "pending"}`);
       updateConnectionState();
-      for (const previousId of handoffPeerIds) {
-        if (peers.has(previousId)) {
-          closePeer(previousId, `handoff completed by offer ${id}`);
-        }
-      }
     }).catch((error) => {
+      const actualCodec = String(peerMaintenance.get(id)?.actualCodec || "");
+      const failedMime = actualCodec && actualCodec !== "unknown"
+        ? actualCodec.toLowerCase()
+        : codecChoice.codecs.length
+          ? String(codecChoice.codecs[0].mimeType).toLowerCase()
+          : "";
+      if (failedMime) {
+        encoderFailures.set(outputKey, { mime: failedMime, at: performance.now() });
+        log(`Encoder codec marked failed output=${outputKey} codec=${failedMime}`);
+      }
       log(`Encoder readiness failed id=${id} output=${canvas.width}x${canvas.height} `
         + `preferredCodec=${codecChoice.name} reason=${error.message}`);
       if (fallbackResolutionToggle.checked
+          && activeOutputOrigin === "site"
           && (canvas.width !== outputBeforeOffer.width
               || canvas.height !== outputBeforeOffer.height)) {
         log(`Restoring last working output=${outputBeforeOffer.width}x${outputBeforeOffer.height} `
@@ -1326,9 +1392,11 @@ async function handleOffer(payload) {
           outputBeforeOffer.width,
           outputBeforeOffer.height,
           "last working fallback after encoder failure",
+          { origin: "fallback", persist: false },
         );
       } else {
-        log(`Output preserved=${canvas.width}x${canvas.height} fallbackEnabled=false`);
+        log(`Output preserved=${canvas.width}x${canvas.height} origin=${activeOutputOrigin} `
+          + `fallbackEnabled=${fallbackResolutionToggle.checked}`);
       }
       closePeer(id, `encoder readiness failed: ${error.message}`);
     });
@@ -1435,7 +1503,12 @@ function applySiteConfiguration(config, reason) {
       + `reason=${reason} ${resolved.reason}`);
     return;
   }
-  applyOutputSize(resolved.width, resolved.height, `site ${reason} ${resolved.reason}`);
+  applyOutputSize(
+    resolved.width,
+    resolved.height,
+    `site ${reason} ${resolved.reason}`,
+    { origin: "site" },
+  );
 }
 
 function scheduleSiteConfiguration(config, reason) {
@@ -1589,7 +1662,7 @@ document.getElementById("playButton").addEventListener("click", play);
 document.getElementById("pauseButton").addEventListener("click", pause);
 document.getElementById("applySizeButton").addEventListener("click", () => {
   try {
-    applyOutputSize(widthInput.value, heightInput.value, "manual");
+    applyOutputSize(widthInput.value, heightInput.value, "manual", { origin: "manual" });
   } catch (error) {
     alert(error.message || String(error));
   }
@@ -1694,6 +1767,8 @@ window.camPlayer.onLog(appendLog);
 
 async function initialize() {
   const preferences = await window.camPlayer.readPreferences();
+  const restoreAfterContextLoss = sessionStorage.getItem("camexchRestoreMedia") || "";
+  sessionStorage.removeItem("camexchRestoreMedia");
   applyServerInfo(await window.camPlayer.getServerInfo());
   recent = Array.isArray(preferences.recent) ? preferences.recent : [];
   renderRecent();
@@ -1711,9 +1786,18 @@ async function initialize() {
     };
   }
   try {
-    applyOutputSize(preferences.width || 720, preferences.height || 1280, "startup");
+    manualOutput = {
+      width: Number(preferences.width) || 720,
+      height: Number(preferences.height) || 1280,
+    };
+    applyOutputSize(
+      manualOutput.width,
+      manualOutput.height,
+      "startup",
+      { origin: "manual" },
+    );
   } catch (error) {
-    applyOutputSize(720, 1280, "startup fallback");
+    applyOutputSize(720, 1280, "startup fallback", { origin: "manual" });
     log(`Stored output size rejected ${error}`);
   }
   clearInterval(timelineTimer);
@@ -1721,7 +1805,24 @@ async function initialize() {
   applyPreviewTransform();
   logOutput.textContent = await window.camPlayer.readLogTail();
   updateConnectionState();
+  if (restoreAfterContextLoss) {
+    try {
+      const selected = await window.camPlayer.prepareMedia(restoreAfterContextLoss);
+      await loadMedia(selected);
+      log(`Restored selected media after WebGL recovery path=${restoreAfterContextLoss}`);
+    } catch (error) {
+      log(`WebGL recovery media unavailable ${error}`);
+    }
+  }
 }
+
+canvas.addEventListener("webglcontextlost", (event) => {
+  event.preventDefault();
+  log(`WebGL context lost output=${canvas.width}x${canvas.height}; reloading renderer`);
+  if (currentFile?.path) sessionStorage.setItem("camexchRestoreMedia", currentFile.path);
+  savePreferences();
+  setTimeout(() => location.reload(), 250);
+});
 
 window.addEventListener("beforeunload", () => {
   stopVideoFrameLoop();

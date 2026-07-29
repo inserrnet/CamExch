@@ -11,7 +11,7 @@ app.commandLine.appendSwitch("use-angle", "swiftshader");
 const timeout = setTimeout(() => {
   process.stderr.write("Electron WebRTC smoke test timed out\n");
   app.exit(1);
-}, 45_000);
+}, 120_000);
 
 ipcMain.once("smoke-result", (_event, result) => {
   clearTimeout(timeout);

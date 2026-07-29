@@ -186,8 +186,26 @@ public class SourceForegroundService extends Service {
             if (camPlayerClient == null) {
                 throw new IllegalStateException("Cam Player connection is not active");
             }
-            AppLog.info(this, "Forwarding WebRTC offer to Cam Player configLength="
-                    + (configJson == null ? 0 : configJson.length()));
+            String route = getCamPlayerRouteAddress();
+            String session = "";
+            String orientation = "";
+            String constraints = "";
+            try {
+                org.json.JSONObject config = configJson == null || configJson.trim().isEmpty()
+                        ? new org.json.JSONObject()
+                        : new org.json.JSONObject(configJson);
+                session = config.optString("sessionId", "");
+                orientation = config.optString("orientation", "");
+                constraints = String.valueOf(config.optJSONObject("constraints"));
+            } catch (Throwable ignored) {
+            }
+            AppLog.info(this, "Forwarding WebRTC offer to Cam Player"
+                    + " sessionId=" + session
+                    + " preferredRoute=" + route
+                    + " strictRoute=" + !route.isEmpty()
+                    + " orientation=" + orientation
+                    + " constraints=" + constraints
+                    + " configLength=" + (configJson == null ? 0 : configJson.length()));
             long started = android.os.SystemClock.elapsedRealtime();
             String answer = camPlayerClient.answerOffer(offer, configJson);
             AppLog.info(this, "Cam Player WebRTC answer received elapsedMs="

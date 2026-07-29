@@ -335,7 +335,9 @@ async function handleRequest(request, response) {
       }
       log(`Offer received requestId=${body.requestId || "none"} `
         + `sessionId=${body.sessionId || "none"} bytes=${body.sdp.length} `
-        + `orientation=${body.orientation || "unknown"}`);
+        + `orientation=${body.orientation || "unknown"} `
+        + `preferredRoute=${body.preferredRoute || "automatic"} `
+        + `strictRoute=${Boolean(body.preferredRoute)}`);
       const answer = await forwardOffer(body);
       sendJson(response, 200, { sdp: answer });
       return;
@@ -354,7 +356,8 @@ async function handleRequest(request, response) {
     if (request.method === "POST" && requestUrl.pathname === "/configure") {
       const body = await readBody(request);
       mainWindow?.webContents.send("source-config", body);
-      log(`Configuration received orientation=${body.orientation || "unknown"}`);
+      log(`Configuration received orientation=${body.orientation || "unknown"} `
+        + `preferredRoute=${body.preferredRoute || "unchanged"}`);
       sendJson(response, 200, { ok: true });
       return;
     }

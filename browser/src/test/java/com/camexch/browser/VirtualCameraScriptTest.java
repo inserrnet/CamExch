@@ -48,6 +48,10 @@ public class VirtualCameraScriptTest {
                 "closeCamPlayerSession"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "preferIceRoute"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "Selected Cam Player route has no matching ICE candidate"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "strictRoute=true"));
     }
 
     @Test
@@ -76,5 +80,15 @@ public class VirtualCameraScriptTest {
                 "Source clone geometry still pending; retaining healthy shared track"));
         assertFalse(VirtualCameraScript.SCRIPT.contains(
                 "resetSharedRtc('cloned track geometry failed"));
+    }
+
+    @Test
+    public void sourceSessionUsesAnIdleGracePeriod() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "SOURCE_IDLE_GRACE_MS"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "shared source release scheduled"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "cancelSharedRtcRelease"));
     }
 }
