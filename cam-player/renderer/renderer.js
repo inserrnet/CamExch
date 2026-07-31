@@ -45,6 +45,7 @@ uniform float u_scale;
 uniform float u_lod_bias;
 uniform vec2 u_pan;
 uniform int u_rotation;
+uniform int u_mirrored;
 in vec2 v_uv;
 out vec4 outColor;
 
@@ -55,8 +56,14 @@ vec2 rotateUv(vec2 uv) {
   return uv;
 }
 
+vec2 orientUv(vec2 uv) {
+  vec2 oriented = rotateUv(uv);
+  if (u_mirrored != 0) oriented.x = 1.0 - oriented.x;
+  return oriented;
+}
+
 vec4 sampleSource(vec2 uv) {
-  return texture(u_texture, rotateUv(vec2(uv.x, 1.0 - uv.y)), u_lod_bias);
+  return texture(u_texture, orientUv(vec2(uv.x, 1.0 - uv.y)), u_lod_bias);
 }
 
 void main() {
@@ -79,6 +86,7 @@ uniform vec2 u_source;
 uniform float u_radius;
 uniform int u_source_pass;
 uniform int u_rotation;
+uniform int u_mirrored;
 in vec2 v_uv;
 out vec4 outColor;
 
@@ -87,6 +95,12 @@ vec2 rotateUv(vec2 uv) {
   if (u_rotation == 2) return vec2(1.0 - uv.x, 1.0 - uv.y);
   if (u_rotation == 3) return vec2(1.0 - uv.y, uv.x);
   return uv;
+}
+
+vec2 orientUv(vec2 uv) {
+  vec2 oriented = rotateUv(uv);
+  if (u_mirrored != 0) oriented.x = 1.0 - oriented.x;
+  return oriented;
 }
 
 vec4 sampleInput(vec2 uv) {
@@ -99,8 +113,8 @@ vec4 sampleInput(vec2 uv) {
     vec2 displayed = orientedSource * cover;
     bounded = (bounded * u_output - (u_output - displayed) * 0.5) / displayed;
     bounded = u_source_pass == 1
-      ? rotateUv(vec2(bounded.x, 1.0 - bounded.y))
-      : rotateUv(bounded);
+      ? orientUv(vec2(bounded.x, 1.0 - bounded.y))
+      : orientUv(bounded);
   }
   return texture(u_texture, bounded);
 }
@@ -201,6 +215,7 @@ const uniforms = {
   lodBias: gl.getUniformLocation(program, "u_lod_bias"),
   pan: gl.getUniformLocation(program, "u_pan"),
   rotation: gl.getUniformLocation(program, "u_rotation"),
+  mirrored: gl.getUniformLocation(program, "u_mirrored"),
 };
 const blurUniforms = {
   texture: gl.getUniformLocation(blurProgram, "u_texture"),
@@ -210,6 +225,7 @@ const blurUniforms = {
   radius: gl.getUniformLocation(blurProgram, "u_radius"),
   sourcePass: gl.getUniformLocation(blurProgram, "u_source_pass"),
   rotation: gl.getUniformLocation(blurProgram, "u_rotation"),
+  mirrored: gl.getUniformLocation(blurProgram, "u_mirrored"),
 };
 
 let sourceElement = null;
@@ -217,6 +233,7 @@ let sourceWidth = 0;
 let sourceHeight = 0;
 let sourceKind = "";
 let sourceRotation = 0;
+let sourceMirrored = false;
 let currentFile = null;
 let memoryTimer = null;
 let playing = false;
@@ -239,6 +256,7 @@ let photoCpuReleased = false;
 let backgroundSnapshotWidth = 0;
 let backgroundSnapshotHeight = 0;
 let backgroundSnapshotRotation = 0;
+let backgroundSnapshotMirrored = false;
 let videoFrameCallbackId = null;
 let pausedFrameTimer = null;
 let timelineTimer = null;
@@ -354,6 +372,7 @@ function captureBackgroundSnapshot(reason = "first frame") {
     backgroundSnapshotWidth = Math.max(2, Math.round(oriented.width * snapshotScale));
     backgroundSnapshotHeight = Math.max(2, Math.round(oriented.height * snapshotScale));
     backgroundSnapshotRotation = sourceRotation;
+    backgroundSnapshotMirrored = sourceMirrored;
     allocateRenderTexture(
       backgroundSnapshotTexture,
       backgroundSnapshotWidth,
@@ -384,6 +403,7 @@ function captureBackgroundSnapshot(reason = "first frame") {
     gl.uniform2f(blurUniforms.direction, 0, 0);
     gl.uniform1i(blurUniforms.sourcePass, 1);
     gl.uniform1i(blurUniforms.rotation, sourceRotation);
+    gl.uniform1i(blurUniforms.mirrored, sourceMirrored ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     backgroundSnapshotReady = true;
     regenerateBackground(reason);
@@ -410,6 +430,7 @@ function regenerateBackground(reason) {
   const strength = Math.max(0, Math.min(100, Number(blurInput.value) || 0));
   const radius = (strength / 100) * 96;
   const snapshotRotation = (sourceRotation - backgroundSnapshotRotation + 4) % 4;
+  const snapshotMirrored = sourceMirrored !== backgroundSnapshotMirrored;
 
   try {
     allocateRenderTexture(backgroundPassTexture, cacheWidth, cacheHeight);
@@ -440,6 +461,7 @@ function regenerateBackground(reason) {
     gl.uniform2f(blurUniforms.direction, 1 / cacheWidth, 0);
     gl.uniform1i(blurUniforms.sourcePass, 2);
     gl.uniform1i(blurUniforms.rotation, snapshotRotation);
+    gl.uniform1i(blurUniforms.mirrored, snapshotMirrored ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     gl.framebufferTexture2D(
@@ -454,6 +476,7 @@ function regenerateBackground(reason) {
     gl.uniform2f(blurUniforms.direction, 0, 1 / cacheHeight);
     gl.uniform1i(blurUniforms.sourcePass, 0);
     gl.uniform1i(blurUniforms.rotation, 0);
+    gl.uniform1i(blurUniforms.mirrored, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     const error = gl.getError();
     if (error !== gl.NO_ERROR) {
@@ -647,6 +670,7 @@ function renderFrame(force, frameMetadata = null) {
   gl.uniform1f(uniforms.lodBias, 0);
   gl.uniform2f(uniforms.pan, t.panX, t.panY);
   gl.uniform1i(uniforms.rotation, sourceRotation);
+  gl.uniform1i(uniforms.mirrored, sourceMirrored ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
   if (canvasTrack && typeof canvasTrack.requestFrame === "function") {
     canvasTrack.requestFrame();
@@ -752,8 +776,15 @@ function stopPausedFrameHeartbeat() {
 function updatePausedFrameHeartbeat() {
   stopPausedFrameHeartbeat();
   if (playing || !sourceElement || !canvasTrack || peers.size === 0) return;
+  const idleFps = CamGeometry.adaptiveFrameRate(
+    canvas.width,
+    canvas.height,
+    Number(fpsInput.value) || 30,
+    "idle",
+  );
   renderFrame(true);
-  pausedFrameTimer = setInterval(() => renderFrame(true), 1000);
+  pausedFrameTimer = setInterval(() => renderFrame(true), 1000 / idleFps);
+  log(`Paused/photo camera heartbeat fps=${idleFps} output=${canvas.width}x${canvas.height}`);
 }
 
 function discardCaptureStream(reason) {
@@ -951,6 +982,7 @@ async function loadMedia(file) {
     backgroundSnapshotWidth = 0;
     backgroundSnapshotHeight = 0;
     backgroundSnapshotRotation = 0;
+    backgroundSnapshotMirrored = false;
     currentFile = file;
     let firstFramePresented = true;
     if (isImagePath(file.path)) {
@@ -1078,6 +1110,7 @@ function savePreferences() {
     followSite: followSiteToggle.checked,
     fallbackResolution: fallbackResolutionToggle.checked,
     loop: document.getElementById("loopToggle").checked,
+    mirrored: sourceMirrored,
     lastWorkingOutput,
     recent,
   });
@@ -1764,6 +1797,16 @@ document.getElementById("rotateButton").addEventListener("click", () => {
   scheduleKeyFrame("source rotation", 0);
   savePreferences();
 });
+document.getElementById("mirrorButton").addEventListener("click", (event) => {
+  sourceMirrored = !sourceMirrored;
+  event.currentTarget.setAttribute("aria-pressed", String(sourceMirrored));
+  if (backgroundSnapshotReady) regenerateBackground("source mirror");
+  else renderFrame(true);
+  scheduleKeyFrame("source mirror", 0);
+  savePreferences();
+  log(`Source horizontal mirror=${sourceMirrored}`);
+  event.currentTarget.blur();
+});
 document.getElementById("loopToggle").addEventListener("change", (event) => {
   video.loop = event.target.checked;
   savePreferences();
@@ -1860,6 +1903,9 @@ async function initialize() {
   followSiteToggle.checked = !!preferences.followSite;
   fallbackResolutionToggle.checked = preferences.fallbackResolution === true;
   document.getElementById("loopToggle").checked = preferences.loop !== false;
+  sourceMirrored = preferences.mirrored === true;
+  document.getElementById("mirrorButton")
+    .setAttribute("aria-pressed", String(sourceMirrored));
   if (preferences.lastWorkingOutput?.width && preferences.lastWorkingOutput?.height) {
     lastWorkingOutput = {
       width: Number(preferences.lastWorkingOutput.width),

@@ -177,8 +177,12 @@
   function adaptiveFrameRate(width, height, configuredFps, state) {
     const configured = Math.max(1, Math.min(60, Number(configuredFps) || 30));
     if (state === "motion") return configured;
-    if (state !== "interaction") return 1;
     const pixels = Math.max(1, Number(width) || 0) * Math.max(1, Number(height) || 0);
+    if (state !== "interaction") {
+      if (pixels >= 7_000_000) return Math.min(configured, 5);
+      if (pixels >= 3_000_000) return Math.min(configured, 8);
+      return Math.min(configured, 15);
+    }
     if (pixels >= 7_000_000) return Math.min(configured, 10);
     if (pixels >= 3_000_000) return Math.min(configured, 15);
     return Math.min(configured, 20);

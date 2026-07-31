@@ -18,11 +18,12 @@ test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("keeps a low-cost paused heartbeat so a late encoder receives pixels", () => {
+test("keeps an adaptive paused heartbeat so sites see a live camera", () => {
   assert.match(
     renderer,
-    /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000\)/,
+    /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000 \/ idleFps\)/,
   );
+  assert.match(renderer, /CamGeometry\.adaptiveFrameRate\([\s\S]*"idle"/);
   assert.match(renderer, /!canvasTrack \|\| peers\.size === 0/);
   assert.match(
     renderer,
@@ -35,6 +36,14 @@ test("keeps a low-cost paused heartbeat so a late encoder receives pixels", () =
   );
 });
 
+test("mirrors the transmitted source and cached background on the GPU", () => {
+  assert.match(renderer, /uniform int u_mirrored/);
+  assert.match(renderer, /oriented\.x = 1\.0 - oriented\.x/);
+  assert.match(renderer, /gl\.uniform1i\(uniforms\.mirrored, sourceMirrored \? 1 : 0\)/);
+  assert.match(renderer, /snapshotMirrored = sourceMirrored !== backgroundSnapshotMirrored/);
+  assert.match(renderer, /Source horizontal mirror=/);
+});
+
 test("uploads an unchanged source only when its texture is dirty", () => {
   assert.match(renderer, /if \(sourceTextureDirty\) \{/);
   assert.match(renderer, /sourceTextureDirty = false/);
@@ -45,7 +54,7 @@ test("uploads an unchanged source only when its texture is dirty", () => {
 test("stores the background snapshot in a bounded texture", () => {
   assert.match(renderer, /const maximumSnapshotDimension = 768/);
   assert.match(renderer, /backgroundSnapshotTexture/);
-  assert.match(renderer, /u_source_pass == 1[\s\S]*rotateUv\(vec2\(bounded\.x, 1\.0 - bounded\.y\)\)/);
+  assert.match(renderer, /u_source_pass == 1[\s\S]*orientUv\(vec2\(bounded\.x, 1\.0 - bounded\.y\)\)/);
   assert.match(renderer, /gl\.uniform1i\(blurUniforms\.sourcePass, 2\)/);
   assert.doesNotMatch(renderer, /backgroundSourceTexture/);
 });

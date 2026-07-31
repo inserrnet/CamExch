@@ -53,6 +53,11 @@ button:hover {
   border-color: #707880;
 }
 
+button[aria-pressed="true"] {
+  background: #246b48;
+  border-color: #45b97c;
+}
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
