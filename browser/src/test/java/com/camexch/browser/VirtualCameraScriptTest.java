@@ -159,4 +159,42 @@ public class VirtualCameraScriptTest {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "?<redacted>"));
     }
+
+    @Test
+    public void discardedSessionsCannotBeResolvedFromStaleWeakMaps() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "mapped&&managedStreams.has(mapped)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "direct&&managedStreams.has(direct)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "managedTrackEntries.delete(track)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "managedStreamEntries.delete(entry.stream)"));
+    }
+
+    @Test
+    public void detachedConsumersOnlySurviveBriefDomRemounts() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "DETACHED_CONSUMER_GRACE_MS=1500"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "function managedEntryUsage(entry)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "detachedRecent"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "detachedStale"));
+        assertFalse(VirtualCameraScript.SCRIPT.contains(
+                "detachedRetained"));
+    }
+
+    @Test
+    public void sourceModeWaitsForANewRequestInsteadOfRevivingStaleConsumers() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "inactive before route switch"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "usageByEntry.get(entry).retainable>0"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "state:'waiting-for-getUserMedia'"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "camera route switch completed"));
+    }
 }

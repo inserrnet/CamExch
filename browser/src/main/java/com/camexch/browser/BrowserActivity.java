@@ -277,8 +277,10 @@ public class BrowserActivity extends Activity {
         AppLog.info(this, "Camera route overlay selected mode=" + mode);
         WebView webView = currentWebView();
         if (webView != null) {
-            String script = "window.__camexchSwitchCamera&&window.__camexchSwitchCamera('"
-                    + mode.name() + "')";
+            String script = "(function(){if(!window.__camexchSwitchCamera)return 'unavailable';"
+                    + "Promise.resolve(window.__camexchSwitchCamera('" + mode.name() + "'))"
+                    + ".catch(function(e){console.error('Camera route switch rejected',e);});"
+                    + "return 'dispatched';})()";
             webView.evaluateJavascript(script, result -> AppLog.info(
                     this, "Camera route switch result=" + result));
         }

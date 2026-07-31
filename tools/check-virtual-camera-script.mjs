@@ -37,7 +37,10 @@ for (const marker of [
   "managed WebRTC senders replaced=",
   "managed MediaStream clone registered",
   "live camera track reattached to existing MediaStream",
-  "detachedRetained=",
+  "detachedRecent=",
+  "detachedStale=",
+  "camera route switch completed",
+  "inactive before route switch",
   "RTCPeerConnection.removeTrack",
   "managed camera session discarded reason=",
   "page unhandledrejection",
@@ -1187,6 +1190,27 @@ const expiredSwitch = await context.__camexchSwitchCamera("REAR");
 if (expiredSwitch.switched !== 0 || expiredSwitch.revived !== 0
     || context.__camexchForTest.managed.size !== 0) {
   throw new Error("Expired stopped camera session was retained or revived");
+}
+
+await context.__camexchSwitchCamera("SOURCE");
+const staleDetachedStream = await context.navigator.mediaDevices.getUserMedia({
+  video: true,
+  audio: false,
+});
+const staleDetachedVideo = new FakeVideo();
+staleDetachedVideo.isConnected = false;
+staleDetachedVideo.srcObject = staleDetachedStream;
+staleDetachedStream.getVideoTracks()[0].stop();
+await new Promise((resolve) => setTimeout(resolve, 1600));
+const cleanRetrySwitch = await context.__camexchSwitchCamera("SOURCE");
+if (cleanRetrySwitch.switched !== 0 || cleanRetrySwitch.revived !== 0
+    || cleanRetrySwitch.discarded !== 1
+    || !["waiting-for-getUserMedia", "mode-stored"].includes(cleanRetrySwitch.state)
+    || context.__camexchForTest.managed.size !== 0) {
+  throw new Error(`A stale detached session survived into the next Source attempt: ${JSON.stringify({
+    cleanRetrySwitch,
+    managed: context.__camexchForTest.managed.size,
+  })}`);
 }
 
 let deviceChangeStreamPromise;
