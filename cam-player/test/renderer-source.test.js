@@ -9,6 +9,14 @@ const renderer = fs.readFileSync(
   path.join(__dirname, "..", "renderer", "renderer.js"),
   "utf8",
 );
+const indexHtml = fs.readFileSync(
+  path.join(__dirname, "..", "renderer", "index.html"),
+  "utf8",
+);
+const preload = fs.readFileSync(
+  path.join(__dirname, "..", "preload.js"),
+  "utf8",
+);
 
 test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.LINEAR_MIPMAP_LINEAR/);
@@ -42,6 +50,19 @@ test("mirrors the transmitted source and cached background on the GPU", () => {
   assert.match(renderer, /gl\.uniform1i\(uniforms\.mirrored, sourceMirrored \? 1 : 0\)/);
   assert.match(renderer, /snapshotMirrored = sourceMirrored !== backgroundSnapshotMirrored/);
   assert.match(renderer, /Source horizontal mirror=/);
+});
+
+test("opens dropped media through the same preparation pipeline", () => {
+  assert.match(preload, /webUtils\.getPathForFile\(file\)/);
+  assert.match(renderer, /prepareAndLoadMediaPath\(filePath, "drop"\)/);
+  assert.match(renderer, /window\.camPlayer\.prepareMedia\(filePath\)/);
+  assert.match(renderer, /event\.dataTransfer\.dropEffect = "copy"/);
+});
+
+test("clears only the recent file history", () => {
+  assert.match(indexHtml, /id="clearRecentButton"/);
+  assert.match(renderer, /recent = \[\];[\s\S]*renderRecent\(\);[\s\S]*savePreferences\(\)/);
+  assert.match(renderer, /clearRecentButton\.disabled = recent\.length === 0/);
 });
 
 test("uploads an unchanged source only when its texture is dirty", () => {

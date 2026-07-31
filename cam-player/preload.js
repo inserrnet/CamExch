@@ -1,10 +1,11 @@
 "use strict";
 
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("camPlayer", {
   openMedia: () => ipcRenderer.invoke("open-media"),
   prepareMedia: (filePath) => ipcRenderer.invoke("prepare-media", filePath),
+  pathForDroppedFile: (file) => webUtils.getPathForFile(file),
   readPreferences: () => ipcRenderer.invoke("read-preferences"),
   getServerInfo: () => ipcRenderer.invoke("get-server-info"),
   getMemoryInfo: () => ipcRenderer.invoke("get-memory-info"),

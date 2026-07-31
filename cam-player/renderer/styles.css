@@ -120,6 +120,24 @@ main {
   touch-action: none;
 }
 
+.preview.drag-over {
+  box-shadow: inset 0 0 0 3px #45b97c;
+}
+
+.preview.drag-over::after {
+  content: "Drop media to open";
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 9px 12px;
+  border-radius: 4px;
+  background: #202328;
+  color: #f4f5f6;
+  pointer-events: none;
+}
+
 #outputCanvas {
   position: absolute;
   top: 50%;

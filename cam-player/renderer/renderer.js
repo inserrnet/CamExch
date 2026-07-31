@@ -14,6 +14,7 @@ const fallbackResolutionToggle = document.getElementById("fallbackResolutionTogg
 const timeline = document.getElementById("timeline");
 const timeLabel = document.getElementById("timeLabel");
 const recentFiles = document.getElementById("recentFiles");
+const clearRecentButton = document.getElementById("clearRecentButton");
 const logOutput = document.getElementById("logOutput");
 const connectionStatus = document.getElementById("connectionStatus");
 
@@ -280,6 +281,8 @@ let interactionRenderedFrames = 0;
 let interactionSequence = 0;
 let pendingSiteConfiguration = null;
 let mediaGeneration = 0;
+let fileDragDepth = 0;
+let droppedFileLoading = false;
 let stream = null;
 let canvasTrack = null;
 let peers = new Map();
@@ -955,6 +958,22 @@ function renderRecent() {
   recentFiles.replaceChildren(new Option("Recent files", ""));
   for (const item of recent) {
     recentFiles.add(new Option(item.path.split(/[\\/]/).pop(), item.path));
+  }
+  clearRecentButton.disabled = recent.length === 0;
+}
+
+async function prepareAndLoadMediaPath(filePath, origin) {
+  if (!filePath || droppedFileLoading) return;
+  droppedFileLoading = true;
+  try {
+    const selected = await window.camPlayer.prepareMedia(filePath);
+    await loadMedia(selected);
+    log(`Media opened origin=${origin} path=${filePath}`);
+  } catch (error) {
+    log(`Media open failed origin=${origin} ${error.stack || error}`);
+    alert(error.message || String(error));
+  } finally {
+    droppedFileLoading = false;
   }
 }
 
@@ -1824,14 +1843,57 @@ video.addEventListener("seeked", () => {
 recentFiles.addEventListener("change", () => {
   const selected = recent.find((item) => item.path === recentFiles.value);
   if (selected) {
-    window.camPlayer.prepareMedia(selected.path)
-      .then(loadMedia)
-      .catch((error) => {
-        log(`Recent media unavailable ${error}`);
-        alert(error.message || String(error));
-      });
+    prepareAndLoadMediaPath(selected.path, "recent");
   }
   recentFiles.value = "";
+});
+clearRecentButton.addEventListener("click", (event) => {
+  const count = recent.length;
+  recent = [];
+  renderRecent();
+  savePreferences();
+  log(`Recent files cleared count=${count}`);
+  event.currentTarget.blur();
+});
+
+function hasDraggedFiles(event) {
+  return Array.from(event.dataTransfer?.types || []).includes("Files");
+}
+
+document.addEventListener("dragenter", (event) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  fileDragDepth += 1;
+  preview.classList.add("drag-over");
+});
+document.addEventListener("dragover", (event) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+});
+document.addEventListener("dragleave", (event) => {
+  if (fileDragDepth === 0) return;
+  event.preventDefault();
+  fileDragDepth = Math.max(0, fileDragDepth - 1);
+  if (fileDragDepth === 0) preview.classList.remove("drag-over");
+});
+document.addEventListener("drop", (event) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  fileDragDepth = 0;
+  preview.classList.remove("drag-over");
+  const files = Array.from(event.dataTransfer?.files || []);
+  if (!files.length) return;
+  let filePath = "";
+  try {
+    filePath = window.camPlayer.pathForDroppedFile(files[0]);
+  } catch (error) {
+    log(`Dropped file path unavailable ${error}`);
+    alert("Unable to open the dropped file");
+    return;
+  }
+  if (files.length > 1) log(`Media drop received files=${files.length}; opening first only`);
+  prepareAndLoadMediaPath(filePath, "drop");
 });
 for (const input of [fpsInput, followSiteToggle]) {
   input.addEventListener("change", () => {
