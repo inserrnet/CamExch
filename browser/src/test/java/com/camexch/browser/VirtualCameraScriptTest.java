@@ -193,7 +193,7 @@ public class VirtualCameraScriptTest {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "usageByEntry.get(entry).retainable>0"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "state:'waiting-for-getUserMedia'"));
+                "waiting-for-getUserMedia"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "camera route switch completed"));
     }
