@@ -62,6 +62,50 @@ test("keeps manual size when site omits dimensions", () => {
   assert.equal(resolved.height, 3200);
 });
 
+test("uses the first complete advanced resolution in site order", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: {
+      advanced: [
+        { frameRate: { ideal: 30 } },
+        { width: { exact: 1920 }, height: { exact: 1080 } },
+        { width: { exact: 1280 }, height: { exact: 720 } },
+      ],
+    },
+  }, "portrait", { width: 1400, height: 1400 });
+  assert.deepEqual(resolved, {
+    width: 1080,
+    height: 1920,
+    applied: true,
+    reason: "advanced[1] exact/exact portrait",
+  });
+});
+
+test("prefers a complete direct resolution over advanced alternatives", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: {
+      width: { ideal: 1200 },
+      height: { ideal: 1600 },
+      advanced: [
+        { width: { exact: 640 }, height: { exact: 480 } },
+      ],
+    },
+  }, "portrait", { width: 720, height: 1280 });
+  assert.equal(resolved.width, 1200);
+  assert.equal(resolved.height, 1600);
+  assert.equal(resolved.reason, "ideal/ideal portrait");
+});
+
+test("ignores incomplete advanced entries and keeps the manual size", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: {
+      advanced: [{ width: { exact: 1920 } }, { height: { exact: 1080 } }],
+    },
+  }, "portrait", { width: 1400, height: 1400 });
+  assert.equal(resolved.applied, false);
+  assert.equal(resolved.width, 1400);
+  assert.equal(resolved.height, 1400);
+});
+
 test("keeps the output point under the cursor while zooming", () => {
   const before = { scale: 1.25, panX: 110, panY: -75 };
   const point = { x: 620, y: 900 };

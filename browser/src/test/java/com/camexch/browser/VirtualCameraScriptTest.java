@@ -117,6 +117,34 @@ public class VirtualCameraScriptTest {
     }
 
     @Test
+    public void lateCameraRequestsCannotCrossRouteGenerations() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "stale camera operation discarded"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "actualRoute="));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "camera request id='+requestId+' retry="));
+    }
+
+    @Test
+    public void invalidConstraintsKeepNativeErrorSemantics() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "invalid getUserMedia constraints delegated to native semantics"));
+        assertFalse(VirtualCameraScript.SCRIPT.contains(
+                "mode=SOURCE constraints=undefined route=physical"));
+    }
+
+    @Test
+    public void sourceConfigurationRemovesPhysicalIdentityAndReadsAdvancedGeometry() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "removed physical deviceId from Cam Player configuration"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "sourceRequestedPair"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "Source switch preserved requested geometry="));
+    }
+
+    @Test
     public void cameraPauseDiagnosticsIncludeTheCallSite() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "camera media pause called visibility="));

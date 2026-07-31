@@ -47,13 +47,31 @@
     return { width, height };
   }
 
+  function requestedConstraintPair(video) {
+    const directWidth = constraintValue(video.width);
+    const directHeight = constraintValue(video.height);
+    if (directWidth && directHeight) {
+      return { width: directWidth, height: directHeight, source: "direct" };
+    }
+    const advanced = Array.isArray(video.advanced) ? video.advanced : [];
+    for (let index = 0; index < advanced.length; index += 1) {
+      const candidate = advanced[index];
+      if (!candidate || typeof candidate !== "object") continue;
+      const width = constraintValue(candidate.width);
+      const height = constraintValue(candidate.height);
+      if (width && height) {
+        return { width, height, source: `advanced[${index}]` };
+      }
+    }
+    return null;
+  }
+
   function resolveRequestedSize(constraints, orientation, fallback) {
     const video = constraints && constraints.video && constraints.video !== true
       ? constraints.video
       : {};
-    const widthConstraint = constraintValue(video.width);
-    const heightConstraint = constraintValue(video.height);
-    if (!widthConstraint || !heightConstraint) {
+    const pair = requestedConstraintPair(video);
+    if (!pair) {
       return {
         width: fallback.width,
         height: fallback.height,
@@ -61,6 +79,8 @@
         reason: "site did not request both dimensions",
       };
     }
+    const widthConstraint = pair.width;
+    const heightConstraint = pair.height;
     const requestedWidth = Math.max(2, Math.round(widthConstraint.value / 2) * 2);
     const requestedHeight = Math.max(2, Math.round(heightConstraint.value / 2) * 2);
     const oriented = orientSize(
@@ -74,7 +94,8 @@
       width: oriented.width,
       height: oriented.height,
       applied: true,
-      reason: `${widthConstraint.strength}/${heightConstraint.strength} ${orientation}`
+      reason: `${pair.source === "direct" ? "" : `${pair.source} `}`
+        + `${widthConstraint.strength}/${heightConstraint.strength} ${orientation}`
         + (normalized ? " H264-even" : ""),
     };
   }

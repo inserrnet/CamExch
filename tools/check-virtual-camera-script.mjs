@@ -78,6 +78,7 @@ const nativeDevices = [
 let nativeGetCount = 0;
 let lastNativeConstraints = null;
 let nativeGetDelayGate = null;
+let lastNativeTrack = null;
 const TEST_SOURCE_WIDTH = 944;
 const TEST_SOURCE_HEIGHT = 960;
 let continuousFocusCount = 0;
@@ -403,13 +404,17 @@ class FakeMediaDevices {
   }
 
   async getUserMedia(constraints) {
+    if (!constraints || (!constraints.audio && !constraints.video)) {
+      throw new TypeError("At least one of audio and video must be requested");
+    }
     nativeGetCount += 1;
     lastNativeConstraints = constraints;
     const delayGate = nativeGetDelayGate;
     nativeGetDelayGate = null;
     if (delayGate) await delayGate;
     const requestedId = constraints?.video?.deviceId?.exact;
-    return new FakeStream(constraints?.video ? [new FakeTrack(requestedId || "rear-id")] : []);
+    lastNativeTrack = constraints?.video ? new FakeTrack(requestedId || "rear-id") : null;
+    return new FakeStream(lastNativeTrack ? [lastNativeTrack] : []);
   }
 
   async enumerateDevices() {
@@ -570,7 +575,7 @@ context.CamExchBridge = {
 };
 const testScript = script.replace(
   /\}\)\(\);$/,
-  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,routedGet:routeGet,rtc:rtcStream,prepare:prepareSourceStandby,managed:managedStreams,proxy:createRouteProxy,configure:configureManagedController,install:installHooks,installFrame:installFrame,ice:preferIceRoute};})();",
+  "globalThis.__camexchForTest={route:isVirtualRequest,native:constraintsForNative,sourceConfig:sourceConfig,inheritSource:constraintsWithTrackGeometry,routedGet:routeGet,rtc:rtcStream,prepare:prepareSourceStandby,managed:managedStreams,proxy:createRouteProxy,configure:configureManagedController,install:installHooks,installFrame:installFrame,ice:preferIceRoute};})();",
 );
 vm.runInNewContext(testScript, context);
 
@@ -722,6 +727,28 @@ for (const [constraints, expected, name] of cases) {
   if (actual !== expected) {
     throw new Error(`Camera route ${name}: expected ${expected}, got ${actual}`);
   }
+}
+
+const advancedSourceConstraints = {
+  video: {
+    deviceId: { exact: "front-id" },
+    advanced: [
+      { width: { exact: 1920 }, height: { exact: 1080 } },
+      { width: { exact: 1280 }, height: { exact: 720 } },
+    ],
+  },
+  audio: false,
+};
+const sanitizedSourceConfig = context.__camexchForTest.sourceConfig(advancedSourceConstraints);
+const inheritedAdvancedSource = context.__camexchForTest.inheritSource(
+  advancedSourceConstraints,
+  new FakeTrack("front-id"),
+);
+if (sanitizedSourceConfig.constraints.video.deviceId !== undefined
+    || sanitizedSourceConfig.constraints.video.advanced.length !== 2
+    || inheritedAdvancedSource.video.width !== undefined
+    || inheritedAdvancedSource.video.height !== undefined) {
+  throw new Error("Source constraints lost advanced geometry or retained a physical deviceId");
 }
 
 const environmentWithVirtualId = context.__camexchForTest.native({
@@ -1063,7 +1090,8 @@ if (onlineSourceSwitch.switched !== 1 || onlineSourceSwitch.failed !== 0
     || deviceChangeCount !== deviceChangesBeforeOnlineSwitch + 1
     || stableTrackBeforeOnlineSwitch.label !== "Front Camera 4"
     || inheritedSwitchVideo?.width?.ideal !== 1280
-    || inheritedSwitchVideo?.height?.ideal !== 720) {
+    || inheritedSwitchVideo?.height?.ideal !== 720
+    || inheritedSwitchVideo?.deviceId !== undefined) {
   throw new Error("Online Source switch did not preserve and relabel the page track");
 }
 const sourceSettings = stableTrackBeforeOnlineSwitch.getSettings();
@@ -1369,5 +1397,43 @@ if (continuousFocusCount !== focusBeforeNativeRear + 1
   throw new Error("Native rear passthrough did not explicitly start continuous autofocus");
 }
 nativeRearStream.getTracks().forEach((track) => track.stop());
+
+const invalidNativeCount = nativeGetCount;
+const invalidOfferCount = sourceOfferCount;
+await context.__camexchSwitchCamera("SOURCE");
+let invalidConstraintsFailure;
+try {
+  await context.navigator.mediaDevices.getUserMedia(undefined);
+} catch (error) {
+  invalidConstraintsFailure = error;
+}
+if (!(invalidConstraintsFailure instanceof TypeError)
+    || nativeGetCount !== invalidNativeCount
+    || sourceOfferCount !== invalidOfferCount) {
+  throw new Error("Invalid Source-mode getUserMedia opened a physical or virtual camera");
+}
+
+await context.__camexchSwitchCamera("NATIVE");
+let releaseDelayedNativeRequest;
+nativeGetDelayGate = new Promise((resolve) => {
+  releaseDelayedNativeRequest = resolve;
+});
+const delayedNativeRequest = context.navigator.mediaDevices.getUserMedia({
+  video: { facingMode: "user", deviceId: { exact: "front-id" } },
+  audio: false,
+});
+await Promise.resolve();
+const sourceWinsRace = context.__camexchSwitchCamera("SOURCE");
+releaseDelayedNativeRequest();
+const racedStream = await delayedNativeRequest;
+const racedSwitch = await sourceWinsRace;
+const racedTrack = racedStream.getVideoTracks()[0];
+if (racedSwitch.failed !== 0
+    || racedTrack?.label !== "Front Camera 4"
+    || racedTrack?.getSettings?.().facingMode !== "user"
+    || lastNativeTrack?.readyState !== "ended") {
+  throw new Error("Late native getUserMedia result survived the N to F race");
+}
+racedStream.getTracks().forEach((track) => track.stop());
 
 console.log(`Virtual camera hook syntax and routing OK (${script.length} chars)`);
