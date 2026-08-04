@@ -6,6 +6,8 @@ const {
   normalizedSelection,
   cropForNormalized,
   bgraToRgba,
+  adaptiveThresholds,
+  thresholdRgba,
 } = require("../lib/qr-selection");
 
 test("normalizes a selection drawn in either direction", () => {
@@ -46,4 +48,20 @@ test("converts Electron BGRA bitmap bytes for jsQR", () => {
     Array.from(bgraToRgba(Buffer.from([10, 20, 30, 255, 1, 2, 3, 4]))),
     [30, 20, 10, 255, 3, 2, 1, 4],
   );
+});
+
+test("creates lower-biased thresholds for colored JPEG QR modules", () => {
+  const rgba = new Uint8ClampedArray(100 * 4);
+  for (let pixel = 0; pixel < 100; pixel += 1) {
+    const offset = pixel * 4;
+    const value = pixel < 50 ? [0, 76, 46] : [250, 249, 245];
+    rgba.set([...value, 255], offset);
+  }
+  const thresholds = adaptiveThresholds(rgba);
+  assert.equal(thresholds.length, 3);
+  assert.ok(thresholds[0] < thresholds[1]);
+  assert.ok(thresholds[1] < thresholds[2]);
+  const binary = thresholdRgba(rgba, thresholds[1]);
+  assert.deepEqual(Array.from(binary.slice(0, 4)), [0, 0, 0, 255]);
+  assert.deepEqual(Array.from(binary.slice(-4)), [255, 255, 255, 255]);
 });

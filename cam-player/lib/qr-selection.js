@@ -48,8 +48,53 @@ function bgraToRgba(bitmap) {
   return result;
 }
 
+function adaptiveThresholds(rgba) {
+  const histogram = new Uint32Array(256);
+  let pixels = 0;
+  for (let offset = 0; offset + 3 < rgba.length; offset += 4) {
+    const luminance = Math.max(0, Math.min(255, Math.round(
+      rgba[offset] * 0.299 + rgba[offset + 1] * 0.587 + rgba[offset + 2] * 0.114,
+    )));
+    histogram[luminance] += 1;
+    pixels += 1;
+  }
+  if (!pixels) return [];
+  function percentile(fraction) {
+    const target = pixels * fraction;
+    let count = 0;
+    for (let value = 0; value < histogram.length; value += 1) {
+      count += histogram[value];
+      if (count >= target) return value;
+    }
+    return 255;
+  }
+  const dark = percentile(0.1);
+  const light = percentile(0.9);
+  if (light - dark < 24) return [];
+  return [0.2, 0.32, 0.45]
+    .map((fraction) => Math.round(dark + (light - dark) * fraction))
+    .filter((value, index, values) => values.indexOf(value) === index);
+}
+
+function thresholdRgba(rgba, threshold) {
+  const result = new Uint8ClampedArray(rgba.length);
+  for (let offset = 0; offset + 3 < rgba.length; offset += 4) {
+    const luminance = rgba[offset] * 0.299
+      + rgba[offset + 1] * 0.587
+      + rgba[offset + 2] * 0.114;
+    const value = luminance < threshold ? 0 : 255;
+    result[offset] = value;
+    result[offset + 1] = value;
+    result[offset + 2] = value;
+    result[offset + 3] = 255;
+  }
+  return result;
+}
+
 module.exports = {
   normalizedSelection,
   cropForNormalized,
   bgraToRgba,
+  adaptiveThresholds,
+  thresholdRgba,
 };

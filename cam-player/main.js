@@ -18,8 +18,8 @@ const { pathToFileURL } = require("url");
 const { Bonjour } = require("bonjour-service");
 const { execFile, spawn } = require("child_process");
 const ffmpegStaticPath = require("ffmpeg-static");
-const jsQR = require("jsqr");
-const { bgraToRgba, cropForNormalized } = require("./lib/qr-selection");
+const { decodeQrImage } = require("./lib/qr-decoder");
+const { cropForNormalized } = require("./lib/qr-selection");
 
 app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -450,33 +450,6 @@ function createWindow() {
   });
 }
 
-function decodeQrImage(image) {
-  const attempts = [image];
-  const originalSize = image.getSize();
-  if (Math.min(originalSize.width, originalSize.height) < 900) {
-    const scale = Math.min(3, Math.max(2, Math.ceil(900 / Math.min(
-      originalSize.width,
-      originalSize.height,
-    ))));
-    attempts.push(image.resize({
-      width: originalSize.width * scale,
-      height: originalSize.height * scale,
-      quality: "best",
-    }));
-  }
-  for (const candidate of attempts) {
-    const size = candidate.getSize();
-    const decoded = jsQR(
-      bgraToRgba(candidate.toBitmap()),
-      size.width,
-      size.height,
-      { inversionAttempts: "attemptBoth" },
-    );
-    if (decoded?.data) return decoded.data;
-  }
-  return null;
-}
-
 function settleQrScan(result) {
   const active = activeQrScan;
   if (!active) return;
@@ -647,7 +620,7 @@ ipcMain.on("qr-selection-complete", (event, selection) => {
       return;
     }
     clipboard.writeText(result);
-    log(`QR copied characters=${result.length} type=${/^https?:\/\//i.test(result) ? "url" : "text"}`);
+    log(`QR copied characters=${result.length} type=${/^https?:\/\//i.test(result) ? "url" : "text"} preprocessing=adaptive`);
     settleQrScan({ status: "copied" });
   } catch (error) {
     log(`QR decode failed ${error.stack || error}`);
