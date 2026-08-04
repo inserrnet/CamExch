@@ -11,6 +11,13 @@ const fpsInput = document.getElementById("fpsInput");
 const blurInput = document.getElementById("blurInput");
 const followSiteToggle = document.getElementById("followSiteToggle");
 const fallbackResolutionToggle = document.getElementById("fallbackResolutionToggle");
+const handheldToggle = document.getElementById("handheldToggle");
+const motionInput = document.getElementById("motionInput");
+const stabilizationInput = document.getElementById("stabilizationInput");
+const motionValue = document.getElementById("motionValue");
+const stabilizationValue = document.getElementById("stabilizationValue");
+const recenterButton = document.getElementById("recenterButton");
+const handheldStatus = document.getElementById("handheldStatus");
 const timeline = document.getElementById("timeline");
 const timeLabel = document.getElementById("timeLabel");
 const recentFiles = document.getElementById("recentFiles");
@@ -59,6 +66,8 @@ uniform float u_lod_bias;
 uniform vec2 u_pan;
 uniform int u_rotation;
 uniform int u_mirrored;
+uniform float u_handheld_roll;
+uniform vec2 u_handheld_perspective;
 in vec2 v_uv;
 out vec4 outColor;
 
@@ -79,6 +88,15 @@ vec4 sampleSource(vec2 uv) {
   return texture(u_texture, orientUv(vec2(uv.x, 1.0 - uv.y)), u_lod_bias);
 }
 
+vec2 applyHandheld(vec2 uv) {
+  vec2 centered = uv - 0.5;
+  float cosine = cos(u_handheld_roll);
+  float sine = sin(u_handheld_roll);
+  vec2 rotated = mat2(cosine, -sine, sine, cosine) * centered;
+  float depth = max(0.72, 1.0 + dot(u_handheld_perspective, rotated));
+  return rotated / depth + 0.5;
+}
+
 void main() {
   vec2 pixel = v_uv * u_output;
   vec4 background = texture(u_background, v_uv);
@@ -86,8 +104,10 @@ void main() {
   vec2 displayed = u_source * fit * u_scale;
   vec2 center = u_output * 0.5 + u_pan;
   vec2 fgUv = (pixel - (center - displayed * 0.5)) / displayed;
-  bool inside = fgUv.x >= 0.0 && fgUv.x <= 1.0 && fgUv.y >= 0.0 && fgUv.y <= 1.0;
-  outColor = inside ? sampleSource(fgUv) : background;
+  vec2 handheldUv = applyHandheld(fgUv);
+  bool inside = handheldUv.x >= 0.0 && handheldUv.x <= 1.0
+    && handheldUv.y >= 0.0 && handheldUv.y <= 1.0;
+  outColor = inside ? sampleSource(handheldUv) : background;
 }`;
 
 const blurFragmentSource = `#version 300 es
@@ -229,6 +249,8 @@ const uniforms = {
   pan: gl.getUniformLocation(program, "u_pan"),
   rotation: gl.getUniformLocation(program, "u_rotation"),
   mirrored: gl.getUniformLocation(program, "u_mirrored"),
+  handheldRoll: gl.getUniformLocation(program, "u_handheld_roll"),
+  handheldPerspective: gl.getUniformLocation(program, "u_handheld_perspective"),
 };
 const blurUniforms = {
   texture: gl.getUniformLocation(blurProgram, "u_texture"),
@@ -307,6 +329,11 @@ let activeOutputOrigin = "manual";
 let lastWorkingOutput = { width: canvas.width, height: canvas.height };
 let recent = [];
 let currentServerInfo = null;
+const handheldController = new CamHandheld.Controller();
+let handheldRenderFrameId = null;
+let handheldLastRenderAt = 0;
+let handheldSamples = 0;
+let handheldMetricsStartedAt = performance.now();
 let transforms = {
   portrait: { scale: 1, panX: 0, panY: 0 },
   landscape: { scale: 1, panX: 0, panY: 0 },
@@ -670,6 +697,7 @@ function renderFrame(force, frameMetadata = null) {
   if (!uploadSource()) return false;
   const size = sourceDimensions();
   const t = transform();
+  const handheld = handheldController.output(canvas.width, canvas.height);
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.useProgram(program);
   bindQuad(program);
@@ -681,11 +709,17 @@ function renderFrame(force, frameMetadata = null) {
   gl.uniform1i(uniforms.background, 1);
   gl.uniform2f(uniforms.output, canvas.width, canvas.height);
   gl.uniform2f(uniforms.source, size.width, size.height);
-  gl.uniform1f(uniforms.scale, t.scale);
+  gl.uniform1f(uniforms.scale, t.scale * handheld.scale);
   gl.uniform1f(uniforms.lodBias, 0);
-  gl.uniform2f(uniforms.pan, t.panX, t.panY);
+  gl.uniform2f(uniforms.pan, t.panX + handheld.panX, t.panY + handheld.panY);
   gl.uniform1i(uniforms.rotation, sourceRotation);
   gl.uniform1i(uniforms.mirrored, sourceMirrored ? 1 : 0);
+  gl.uniform1f(uniforms.handheldRoll, handheld.roll);
+  gl.uniform2f(
+    uniforms.handheldPerspective,
+    handheld.perspectiveX,
+    handheld.perspectiveY,
+  );
   gl.drawArrays(gl.TRIANGLES, 0, 6);
   if (canvasTrack && typeof canvasTrack.requestFrame === "function") {
     canvasTrack.requestFrame();
@@ -1142,6 +1176,9 @@ function savePreferences() {
     fallbackResolution: fallbackResolutionToggle.checked,
     loop: document.getElementById("loopToggle").checked,
     mirrored: sourceMirrored,
+    handheld: handheldToggle.checked,
+    motion: Number(motionInput.value),
+    stabilization: Number(stabilizationInput.value),
     lastWorkingOutput,
     recent,
   });
@@ -1857,6 +1894,34 @@ document.getElementById("mirrorButton").addEventListener("click", (event) => {
   log(`Source horizontal mirror=${sourceMirrored}`);
   event.currentTarget.blur();
 });
+function configureHandheld(reason, persist = true) {
+  motionValue.value = motionInput.value;
+  stabilizationValue.value = stabilizationInput.value;
+  handheldController.configure({
+    enabled: handheldToggle.checked,
+    motion: Number(motionInput.value),
+    stabilization: Number(stabilizationInput.value),
+  });
+  handheldStatus.textContent = handheldController.latest
+    ? (handheldToggle.checked ? "Phone motion active" : "Phone motion available")
+    : "Waiting for phone motion";
+  renderFrame(true);
+  if (persist) {
+    savePreferences();
+    log(`Handheld configured enabled=${handheldToggle.checked} motion=${motionInput.value} `
+      + `stabilization=${stabilizationInput.value} reason=${reason}`);
+  }
+}
+handheldToggle.addEventListener("change", () => configureHandheld("toggle"));
+motionInput.addEventListener("input", () => configureHandheld("motion preview", false));
+motionInput.addEventListener("change", () => configureHandheld("motion"));
+stabilizationInput.addEventListener("input", () => configureHandheld("stabilization preview", false));
+stabilizationInput.addEventListener("change", () => configureHandheld("stabilization"));
+recenterButton.addEventListener("click", () => {
+  handheldController.recenter();
+  renderFrame(true);
+  log("Handheld recentered");
+});
 document.getElementById("loopToggle").addEventListener("change", (event) => {
   video.loop = event.target.checked;
   savePreferences();
@@ -1981,6 +2046,42 @@ function applyServerInfo(info) {
 }
 window.camPlayer.onServerInfo(applyServerInfo);
 window.camPlayer.onLog(appendLog);
+window.camPlayer.onHandheldMotion((sample) => {
+  handheldController.ingest(sample, performance.now());
+  handheldSamples += 1;
+  recenterButton.disabled = false;
+  handheldStatus.textContent = handheldToggle.checked
+    ? "Phone motion active"
+    : "Phone motion available";
+  const now = performance.now();
+  if (now - handheldMetricsStartedAt >= 10000) {
+    const motion = handheldController.output(canvas.width, canvas.height);
+    log(`Handheld samples rateHz=${(handheldSamples * 1000 / (now - handheldMetricsStartedAt)).toFixed(1)} `
+      + `enabled=${handheldToggle.checked} pan=${motion.panX.toFixed(1)},${motion.panY.toFixed(1)} `
+      + `rollDeg=${(motion.roll * 180 / Math.PI).toFixed(2)}`);
+    handheldSamples = 0;
+    handheldMetricsStartedAt = now;
+  }
+  if (handheldToggle.checked && sourceElement && !playing && handheldRenderFrameId == null) {
+    const configuredFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+    const motionFps = Math.min(
+      configuredFps,
+      30,
+      Math.ceil(CamGeometry.adaptiveFrameRate(
+        canvas.width,
+        canvas.height,
+        configuredFps,
+        "interaction",
+      ) * 1.5),
+    );
+    if (now - handheldLastRenderAt < 1000 / motionFps) return;
+    handheldRenderFrameId = requestAnimationFrame(() => {
+      handheldRenderFrameId = null;
+      handheldLastRenderAt = performance.now();
+      renderFrame(true);
+    });
+  }
+});
 
 async function initialize() {
   const preferences = await window.camPlayer.readPreferences();
@@ -1999,6 +2100,17 @@ async function initialize() {
   sourceMirrored = preferences.mirrored === true;
   document.getElementById("mirrorButton")
     .setAttribute("aria-pressed", String(sourceMirrored));
+  handheldToggle.checked = preferences.handheld === true;
+  motionInput.value = String(preferences.motion ?? 35);
+  stabilizationInput.value = String(preferences.stabilization ?? 55);
+  motionValue.value = motionInput.value;
+  stabilizationValue.value = stabilizationInput.value;
+  recenterButton.disabled = true;
+  handheldController.configure({
+    enabled: handheldToggle.checked,
+    motion: Number(motionInput.value),
+    stabilization: Number(stabilizationInput.value),
+  });
   if (preferences.lastWorkingOutput?.width && preferences.lastWorkingOutput?.height) {
     lastWorkingOutput = {
       width: Number(preferences.lastWorkingOutput.width),
@@ -2048,6 +2160,7 @@ canvas.addEventListener("webglcontextlost", (event) => {
 });
 
 window.addEventListener("beforeunload", () => {
+  if (handheldRenderFrameId != null) cancelAnimationFrame(handheldRenderFrameId);
   stopVideoFrameLoop();
   stopPausedFrameHeartbeat();
   clearInterval(timelineTimer);

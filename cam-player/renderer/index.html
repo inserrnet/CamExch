@@ -62,6 +62,16 @@
           <button id="mirrorButton" class="command" title="Flip left and right"
                   aria-label="Flip left and right" aria-pressed="false">Mirror</button>
         </div>
+        <label class="toggle wide">
+          <input id="handheldToggle" type="checkbox">
+          Handheld
+        </label>
+        <label>Motion <span class="range-control"><input id="motionInput" type="range" min="0" max="100" value="35"><output id="motionValue">35</output></span></label>
+        <label>Stabilization <span class="range-control"><input id="stabilizationInput" type="range" min="0" max="100" value="55"><output id="stabilizationValue">55</output></span></label>
+        <div class="button-row">
+          <button id="recenterButton" class="command">Recenter</button>
+          <span id="handheldStatus" class="hint inline-status">Waiting for phone motion</span>
+        </div>
         <p class="hint">Wheel: source scale. Drag: source position. Space + wheel/drag: preview.</p>
       </section>
 
@@ -94,6 +104,7 @@
   <div id="toast" role="status" aria-live="polite" hidden></div>
 
   <script src="../lib/geometry.js"></script>
+  <script src="../lib/handheld-motion.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

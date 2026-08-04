@@ -95,6 +95,18 @@ final class CamPlayerClient {
         post("/close", request, true, CONNECT_TIMEOUT_MS);
     }
 
+    HttpURLConnection openMotionStream() throws Exception {
+        if (token.isEmpty()) {
+            throw new IllegalStateException("Cam Player is not paired");
+        }
+        HttpURLConnection connection = open("/motion-stream", "POST", 0);
+        connection.setRequestProperty("Content-Type", "application/x-ndjson");
+        connection.setRequestProperty("Authorization", "Bearer " + token);
+        connection.setDoOutput(true);
+        connection.setChunkedStreamingMode(512);
+        return connection;
+    }
+
     private static void mergeConfig(JSONObject target, String configJson) throws Exception {
         if (configJson == null || configJson.trim().isEmpty()) {
             return;

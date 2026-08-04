@@ -52,6 +52,14 @@ test("mirrors the transmitted source and cached background on the GPU", () => {
   assert.match(renderer, /Source horizontal mirror=/);
 });
 
+test("composes live phone motion on the GPU without changing manual transforms", () => {
+  assert.match(renderer, /uniform float u_handheld_roll/);
+  assert.match(renderer, /uniform vec2 u_handheld_perspective/);
+  assert.match(renderer, /t\.scale \* handheld\.scale/);
+  assert.match(renderer, /t\.panX \+ handheld\.panX/);
+  assert.match(renderer, /window\.camPlayer\.onHandheldMotion/);
+});
+
 test("opens dropped media through the same preparation pipeline", () => {
   assert.match(preload, /webUtils\.getPathForFile\(file\)/);
   assert.match(renderer, /prepareAndLoadMediaPath\(filePath, "drop"\)/);

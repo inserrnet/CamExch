@@ -24,4 +24,5 @@ contextBridge.exposeInMainWorld("camPlayer", {
   onConfig: (listener) => ipcRenderer.on("source-config", (_event, value) => listener(value)),
   onServerInfo: (listener) => ipcRenderer.on("server-info", (_event, value) => listener(value)),
   onLog: (listener) => ipcRenderer.on("app-log", (_event, value) => listener(value)),
+  onHandheldMotion: (listener) => ipcRenderer.on("handheld-motion", (_event, value) => listener(value)),
 });

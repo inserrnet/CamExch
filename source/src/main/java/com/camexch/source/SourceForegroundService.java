@@ -66,6 +66,7 @@ public class SourceForegroundService extends Service {
     private FloatingPlaybackControls playbackControls;
     private boolean videoPausePending;
     private volatile CamPlayerClient camPlayerClient;
+    private CamPlayerMotionSender camPlayerMotionSender;
     private final ExecutorService camPlayerExecutor = Executors.newSingleThreadExecutor();
     private final Object localPublisherOfferLock = new Object();
     private long rtspPipelineStartedRealtimeMs;
@@ -146,6 +147,7 @@ public class SourceForegroundService extends Service {
     @Override
     public void onDestroy() {
         instance = null;
+        stopCamPlayerMotion();
         camPlayerExecutor.shutdownNow();
         removePlaybackControls();
         releaseVideoPipeline();
@@ -269,6 +271,7 @@ public class SourceForegroundService extends Service {
         rtspRecoveryNotBeforeRealtimeMs = 0;
         videoPausePending = false;
         AppLog.info(this, "startSource mode=" + requestedMode + " uri=" + uriText);
+        stopCamPlayerMotion();
         removePlaybackControls();
         error = "";
         getSharedPreferences("source", MODE_PRIVATE).edit()
@@ -304,6 +307,7 @@ public class SourceForegroundService extends Service {
                             + " output=" + status.optInt("outputWidth", 0) + "x"
                             + status.optInt("outputHeight", 0)
                             + " interfaces=" + String.valueOf(status.optJSONArray("interfaces")));
+                    startCamPlayerMotion(expectedClient);
                 } catch (Throwable throwable) {
                     synchronized (SourceForegroundService.this) {
                         if (camPlayerClient != expectedClient || !"Cam Player".equals(mode)) {
@@ -652,11 +656,30 @@ public class SourceForegroundService extends Service {
         mode = "Idle";
         error = "";
         directH264 = false;
+        stopCamPlayerMotion();
         camPlayerClient = null;
         removePlaybackControls();
         getSharedPreferences("source", MODE_PRIVATE).edit().clear().apply();
         releaseVideoPipeline();
         reportStatus("Idle");
+    }
+
+    private synchronized void startCamPlayerMotion(CamPlayerClient expectedClient) {
+        stopCamPlayerMotion();
+        if (camPlayerClient != expectedClient || !"Cam Player".equals(mode)) {
+            return;
+        }
+        CamPlayerMotionSender sender = new CamPlayerMotionSender(this, expectedClient);
+        if (sender.start()) {
+            camPlayerMotionSender = sender;
+        }
+    }
+
+    private synchronized void stopCamPlayerMotion() {
+        if (camPlayerMotionSender != null) {
+            camPlayerMotionSender.stop();
+            camPlayerMotionSender = null;
+        }
     }
 
     private boolean loadPhoto(String uriText) {

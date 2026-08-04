@@ -338,6 +338,49 @@ async function handleRequest(request, response) {
       sendJson(response, 401, { error: "Cam Player pairing is required" });
       return;
     }
+    if (request.method === "POST" && requestUrl.pathname === "/motion-stream") {
+      let buffer = "";
+      let samples = 0;
+      const startedAt = Date.now();
+      let finished = false;
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        buffer += chunk;
+        if (buffer.length > 64 * 1024) {
+          request.destroy(new Error("Motion stream buffer exceeded"));
+          return;
+        }
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const sample = JSON.parse(line);
+            if (!Array.isArray(sample.quaternion) || sample.quaternion.length < 4) continue;
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send("handheld-motion", sample);
+            }
+            samples += 1;
+          } catch (error) {
+            log(`Motion sample rejected ${error.message}`);
+          }
+        }
+      });
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (!response.writableEnded && !response.destroyed) {
+          sendJson(response, 200, { ok: true });
+        }
+        const elapsed = Math.max(1, Date.now() - startedAt);
+        log(`Motion stream closed samples=${samples} averageHz=${(samples * 1000 / elapsed).toFixed(1)}`);
+      };
+      request.once("end", finish);
+      request.once("close", finish);
+      request.once("error", finish);
+      log("Motion stream connected");
+      return;
+    }
     if (request.method === "POST" && requestUrl.pathname === "/offer") {
       const body = await readBody(request);
       if (!body.sdp || typeof body.sdp !== "string") {
