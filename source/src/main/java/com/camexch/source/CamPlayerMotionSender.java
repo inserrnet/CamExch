@@ -194,7 +194,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
         return new float[]{values[0], values[1], values[2]};
     }
 
-    private static JSONArray array(float[] values) {
+    private static JSONArray array(float[] values) throws org.json.JSONException {
         JSONArray result = new JSONArray();
         for (float value : values) {
             result.put(value);
