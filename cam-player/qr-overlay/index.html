@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src data:; script-src 'self'; style-src 'self'">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Select QR code</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <img id="screenImage" alt="">
+  <div id="shade"></div>
+  <div id="selection" hidden></div>
+  <div id="instruction">Drag around the QR code. Esc cancels.</div>
+  <script src="selection.js"></script>
+</body>
+</html>

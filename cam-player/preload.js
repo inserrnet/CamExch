@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("camPlayer", {
   readLogTail: () => ipcRenderer.invoke("read-log-tail"),
   clearLog: () => ipcRenderer.invoke("clear-log"),
   copyText: (value) => ipcRenderer.invoke("copy-text", value),
+  scanQr: () => ipcRenderer.invoke("scan-qr"),
   log: (message) => ipcRenderer.send("renderer-log", String(message)),
   updateState: (value) => ipcRenderer.send("player-state", value),
   answerOffer: (value) => ipcRenderer.send("webrtc-answer", value),

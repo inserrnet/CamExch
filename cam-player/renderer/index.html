@@ -16,6 +16,7 @@
     </select>
     <button id="clearRecentButton" class="icon" title="Clear recent files"
             aria-label="Clear recent files" disabled>&times;</button>
+    <button id="scanQrButton" class="command" title="Select a screen area containing a QR code">Scan QR</button>
     <button id="playButton" class="icon" title="Play" aria-label="Play">&#9654;</button>
     <button id="pauseButton" class="icon" title="Pause" aria-label="Pause">&#10074;&#10074;</button>
     <label class="toggle"><input id="loopToggle" type="checkbox" checked> Loop</label>
@@ -90,6 +91,7 @@
 
   <video id="videoSource" playsinline hidden></video>
   <img id="imageSource" alt="" hidden>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
 
   <script src="../lib/geometry.js"></script>
   <script src="renderer.js"></script>

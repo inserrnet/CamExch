@@ -15,8 +15,20 @@ const timeline = document.getElementById("timeline");
 const timeLabel = document.getElementById("timeLabel");
 const recentFiles = document.getElementById("recentFiles");
 const clearRecentButton = document.getElementById("clearRecentButton");
+const scanQrButton = document.getElementById("scanQrButton");
 const logOutput = document.getElementById("logOutput");
 const connectionStatus = document.getElementById("connectionStatus");
+const toast = document.getElementById("toast");
+let toastTimer = null;
+
+function showToast(message) {
+  clearTimeout(toastTimer);
+  toast.textContent = message;
+  toast.hidden = false;
+  toastTimer = setTimeout(() => {
+    toast.hidden = true;
+  }, 2200);
+}
 
 const gl = canvas.getContext("webgl2", {
   alpha: false,
@@ -1790,6 +1802,25 @@ window.addEventListener("resize", applyPreviewTransform);
 document.getElementById("openButton").addEventListener("click", async () => {
   const file = await window.camPlayer.openMedia();
   if (file) loadMedia(file);
+});
+scanQrButton.addEventListener("click", async () => {
+  scanQrButton.disabled = true;
+  try {
+    const result = await window.camPlayer.scanQr();
+    if (result?.status === "copied") {
+      showToast("QR copied");
+    } else if (result?.status === "not-found") {
+      showToast("QR not found");
+    } else if (result?.status === "cancelled") {
+      showToast("Selection cancelled");
+    }
+  } catch (error) {
+    log(`QR scan failed ${error}`);
+    showToast("QR scan failed");
+  } finally {
+    scanQrButton.disabled = false;
+    scanQrButton.blur();
+  }
 });
 document.getElementById("playButton").addEventListener("click", play);
 document.getElementById("pauseButton").addEventListener("click", pause);

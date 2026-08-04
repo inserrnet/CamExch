@@ -1,6 +1,6 @@
 {
   "name": "cam-player",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Low-latency LAN media source for CamExch",
   "main": "main.js",
   "packageManager": "pnpm@11.9.0",
@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "bonjour-service": "1.3.0",
-    "ffmpeg-static": "5.2.0"
+    "ffmpeg-static": "5.2.0",
+    "jsqr": "1.4.0"
   },
   "devDependencies": {
     "electron": "39.2.7",
@@ -29,6 +30,8 @@
     "files": [
       "main.js",
       "preload.js",
+      "qr-preload.js",
+      "qr-overlay/**/*",
       "renderer/**/*",
       "lib/**/*",
       "package.json"

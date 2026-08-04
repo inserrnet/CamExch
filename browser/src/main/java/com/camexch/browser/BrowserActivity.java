@@ -24,6 +24,7 @@ import android.webkit.PermissionRequest;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.JavascriptInterface;
 import android.webkit.ConsoleMessage;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -55,6 +56,7 @@ import java.util.concurrent.Future;
 
 public class BrowserActivity extends Activity {
     private static final String HOME_URL = "https://webcamtests.com/";
+    private static final int FILE_CHOOSER_REQUEST_CODE = 4107;
     private final List<Tab> tabs = new ArrayList<>();
     private FrameLayout webContainer;
     private LinearLayout tabStrip;
@@ -72,6 +74,8 @@ public class BrowserActivity extends Activity {
     private final Set<String> bridgePending = ConcurrentHashMap.newKeySet();
     private final SourceBridge sourceBridge = new SourceBridge();
     private final Handler diagnosticsHandler = new Handler(Looper.getMainLooper());
+    private ValueCallback<Uri[]> fileChooserCallback;
+    private WebView fileChooserOwner;
     private final Runnable diagnosticsTask = new Runnable() {
         @Override
         public void run() {
@@ -123,6 +127,7 @@ public class BrowserActivity extends Activity {
     @Override
     protected void onDestroy() {
         diagnosticsHandler.removeCallbacks(diagnosticsTask);
+        cancelFileChooser(null, "activity destroyed");
         if (floatingCameraControls != null) {
             floatingCameraControls.hide();
         }
@@ -134,6 +139,24 @@ public class BrowserActivity extends Activity {
         bridgeRequests.clear();
         bridgePending.clear();
         super.onDestroy();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode != FILE_CHOOSER_REQUEST_CODE) {
+            super.onActivityResult(requestCode, resultCode, data);
+            return;
+        }
+        ValueCallback<Uri[]> callback = fileChooserCallback;
+        fileChooserCallback = null;
+        fileChooserOwner = null;
+        Uri[] result = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+        AppLog.info(this, "File chooser completed result="
+                + (resultCode == RESULT_OK ? "selected" : "cancelled")
+                + " files=" + (result == null ? 0 : result.length));
+        if (callback != null) {
+            callback.onReceiveValue(result);
+        }
     }
 
     private void logProcessDiagnostics() {
@@ -332,6 +355,35 @@ public class BrowserActivity extends Activity {
         }
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
+            public boolean onShowFileChooser(WebView view,
+                                             ValueCallback<Uri[]> callback,
+                                             FileChooserParams params) {
+                cancelFileChooser(null, "superseded by a new request");
+                fileChooserCallback = callback;
+                fileChooserOwner = view;
+                String[] acceptTypes = params == null ? new String[0] : params.getAcceptTypes();
+                boolean multiple = params != null
+                        && params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE;
+                AppLog.info(BrowserActivity.this, "File chooser requested origin="
+                        + fileChooserOrigin(view)
+                        + " accept=" + Arrays.toString(acceptTypes)
+                        + " multiple=" + multiple
+                        + " capture=" + (params != null && params.isCaptureEnabled()));
+                try {
+                    Intent intent = params == null
+                            ? new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*")
+                            : params.createIntent();
+                    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple);
+                    startActivityForResult(intent, FILE_CHOOSER_REQUEST_CODE);
+                    return true;
+                } catch (RuntimeException error) {
+                    AppLog.info(BrowserActivity.this, "File chooser failed " + error);
+                    cancelFileChooser(view, "unable to open Android picker");
+                    return false;
+                }
+            }
+
+            @Override
             public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
                 if (consoleMessage.messageLevel() == ConsoleMessage.MessageLevel.ERROR
                         || consoleMessage.messageLevel() == ConsoleMessage.MessageLevel.WARNING) {
@@ -387,6 +439,7 @@ public class BrowserActivity extends Activity {
     }
 
     private boolean recoverFromRendererExit(WebView failed, RenderProcessGoneDetail detail) {
+        cancelFileChooser(failed, "WebView renderer exited");
         Tab tab = findTab(failed);
         AppLog.info(this, "WebView renderer exited crashed=" + detail.didCrash()
                 + " priority=" + detail.rendererPriorityAtExit()
@@ -515,9 +568,31 @@ public class BrowserActivity extends Activity {
             return;
         }
         Tab removed = tabs.remove(index);
+        cancelFileChooser(removed.webView, "tab closed");
         webContainer.removeView(removed.webView);
         removed.webView.destroy();
         switchToTab(Math.max(0, Math.min(index, tabs.size() - 1)));
+    }
+
+    private String fileChooserOrigin(WebView view) {
+        try {
+            Uri uri = Uri.parse(view == null ? "" : view.getUrl());
+            String host = uri.getHost();
+            return host == null || host.trim().isEmpty() ? "unknown" : host;
+        } catch (RuntimeException ignored) {
+            return "unknown";
+        }
+    }
+
+    private void cancelFileChooser(WebView owner, String reason) {
+        if (fileChooserCallback == null || (owner != null && owner != fileChooserOwner)) {
+            return;
+        }
+        ValueCallback<Uri[]> callback = fileChooserCallback;
+        fileChooserCallback = null;
+        fileChooserOwner = null;
+        callback.onReceiveValue(null);
+        AppLog.info(this, "File chooser cancelled reason=" + reason);
     }
 
     private void loadAddress() {

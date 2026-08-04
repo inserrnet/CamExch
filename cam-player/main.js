@@ -1,6 +1,14 @@
 "use strict";
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  clipboard,
+  desktopCapturer,
+  dialog,
+  ipcMain,
+  screen,
+} = require("electron");
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
@@ -10,6 +18,8 @@ const { pathToFileURL } = require("url");
 const { Bonjour } = require("bonjour-service");
 const { execFile, spawn } = require("child_process");
 const ffmpegStaticPath = require("ffmpeg-static");
+const jsQR = require("jsqr");
+const { bgraToRgba, cropForNormalized } = require("./lib/qr-selection");
 
 app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -36,6 +46,7 @@ const pendingOffers = new Map();
 const interfaceDescriptions = new Map();
 let pendingLogLines = [];
 let logFlushTimer = null;
+let activeQrScan = null;
 
 function userFile(name) {
   return path.join(app.getPath("userData"), name);
@@ -439,6 +450,100 @@ function createWindow() {
   });
 }
 
+function decodeQrImage(image) {
+  const attempts = [image];
+  const originalSize = image.getSize();
+  if (Math.min(originalSize.width, originalSize.height) < 900) {
+    const scale = Math.min(3, Math.max(2, Math.ceil(900 / Math.min(
+      originalSize.width,
+      originalSize.height,
+    ))));
+    attempts.push(image.resize({
+      width: originalSize.width * scale,
+      height: originalSize.height * scale,
+      quality: "best",
+    }));
+  }
+  for (const candidate of attempts) {
+    const size = candidate.getSize();
+    const decoded = jsQR(
+      bgraToRgba(candidate.toBitmap()),
+      size.width,
+      size.height,
+      { inversionAttempts: "attemptBoth" },
+    );
+    if (decoded?.data) return decoded.data;
+  }
+  return null;
+}
+
+function settleQrScan(result) {
+  const active = activeQrScan;
+  if (!active) return;
+  activeQrScan = null;
+  if (active.window && !active.window.isDestroyed()) active.window.destroy();
+  active.resolve(result);
+}
+
+async function beginQrScan() {
+  if (activeQrScan) throw new Error("QR selection is already active");
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const captureWidth = Math.max(1, Math.round(display.size.width * display.scaleFactor));
+  const captureHeight = Math.max(1, Math.round(display.size.height * display.scaleFactor));
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    thumbnailSize: { width: captureWidth, height: captureHeight },
+    fetchWindowIcons: false,
+  });
+  const displayId = String(display.id);
+  const source = sources.find((candidate) => String(candidate.display_id) === displayId)
+    || (sources.length === 1 ? sources[0] : null);
+  if (!source || source.thumbnail.isEmpty()) {
+    log(`QR capture failed display=${displayId} sources=${sources.length}`);
+    throw new Error("Unable to capture the selected monitor");
+  }
+
+  const screenshot = source.thumbnail;
+  const screenshotSize = screenshot.getSize();
+  const overlay = new BrowserWindow({
+    ...display.bounds,
+    frame: false,
+    show: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    backgroundColor: "#000000",
+    webPreferences: {
+      preload: path.join(__dirname, "qr-preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  overlay.setAlwaysOnTop(true, "screen-saver");
+
+  return new Promise((resolve) => {
+    activeQrScan = { window: overlay, screenshot, screenshotSize, resolve };
+    overlay.on("closed", () => {
+      if (activeQrScan?.window === overlay) settleQrScan({ status: "cancelled" });
+    });
+    overlay.webContents.once("did-finish-load", () => {
+      if (!activeQrScan || overlay.isDestroyed()) return;
+      overlay.webContents.send("qr-selection-initialize", {
+        image: screenshot.toDataURL(),
+      });
+      overlay.show();
+      overlay.focus();
+      log(`QR selection started display=${displayId} capture=${screenshotSize.width}x${screenshotSize.height} scaleFactor=${display.scaleFactor}`);
+    });
+    overlay.loadFile(path.join(__dirname, "qr-overlay", "index.html"));
+  });
+}
+
 ipcMain.handle("open-media", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
@@ -522,6 +627,33 @@ ipcMain.handle("copy-text", (_event, value) => {
   clipboard.writeText(String(value || ""));
   return true;
 });
+ipcMain.handle("scan-qr", () => beginQrScan());
+ipcMain.on("qr-selection-cancel", (event) => {
+  if (!activeQrScan || event.sender !== activeQrScan.window.webContents) return;
+  log("QR selection cancelled");
+  settleQrScan({ status: "cancelled" });
+});
+ipcMain.on("qr-selection-complete", (event, selection) => {
+  const active = activeQrScan;
+  if (!active || event.sender !== active.window.webContents) return;
+  active.window.hide();
+  try {
+    const crop = cropForNormalized(selection, active.screenshotSize);
+    const image = active.screenshot.crop(crop);
+    const result = decodeQrImage(image);
+    if (!result) {
+      log(`QR not found crop=${crop.width}x${crop.height}`);
+      settleQrScan({ status: "not-found" });
+      return;
+    }
+    clipboard.writeText(result);
+    log(`QR copied characters=${result.length} type=${/^https?:\/\//i.test(result) ? "url" : "text"}`);
+    settleQrScan({ status: "copied" });
+  } catch (error) {
+    log(`QR decode failed ${error.stack || error}`);
+    settleQrScan({ status: "not-found" });
+  }
+});
 ipcMain.on("renderer-log", (_event, message) => log(`Renderer ${message}`));
 ipcMain.on("player-state", (_event, value) => {
   state = { ...state, ...(value || {}) };
@@ -547,6 +679,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  if (activeQrScan) settleQrScan({ status: "cancelled" });
   for (const pending of pendingOffers.values()) {
     clearTimeout(pending.timeout);
     pending.reject(new Error("Cam Player is closing"));

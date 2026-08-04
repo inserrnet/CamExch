@@ -283,6 +283,21 @@ dd {
   line-height: 1;
 }
 
+#toast {
+  position: fixed;
+  z-index: 20;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 9px 13px;
+  border: 1px solid #4a4f55;
+  border-radius: 4px;
+  background: #272b30;
+  color: #f4f5f6;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.35);
+}
+
 .section-title {
   display: flex;
   align-items: center;
