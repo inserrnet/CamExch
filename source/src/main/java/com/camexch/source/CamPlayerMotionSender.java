@@ -5,6 +5,8 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.view.WindowManager;
@@ -30,6 +32,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
     private final CamPlayerClient client;
     private final SensorManager sensorManager;
     private final WindowManager windowManager;
+    private final int cameraSensorOrientation;
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private final ScheduledExecutorService controlExecutor = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean running = new AtomicBoolean();
@@ -49,6 +52,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
         this.client = client;
         sensorManager = this.context.getSystemService(SensorManager.class);
         windowManager = this.context.getSystemService(WindowManager.class);
+        cameraSensorOrientation = findRearCameraSensorOrientation();
     }
 
     boolean start() {
@@ -225,7 +229,8 @@ final class CamPlayerMotionSender implements SensorEventListener {
             public void onPose(long timestampNs, float[] position, float[] quaternion) {
                 if (!running.get() || !arCoreRequested) return;
                 latestArCore = Sample.arCore(
-                        sequence.incrementAndGet(), timestampNs, position, quaternion, displayRotation());
+                        sequence.incrementAndGet(), timestampNs, position, quaternion,
+                        displayRotation(), sensorToDisplayRotation());
             }
 
             @Override
@@ -254,6 +259,32 @@ final class CamPlayerMotionSender implements SensorEventListener {
         } catch (Throwable ignored) {
             return 0;
         }
+    }
+
+    private int sensorToDisplayRotation() {
+        int displayDegrees = displayRotation() * 90;
+        return ((cameraSensorOrientation - displayDegrees + 360) % 360) / 90;
+    }
+
+    private int findRearCameraSensorOrientation() {
+        try {
+            CameraManager manager = context.getSystemService(CameraManager.class);
+            if (manager == null) return 0;
+            for (String cameraId : manager.getCameraIdList()) {
+                CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
+                Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
+                if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) {
+                    Integer orientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
+                    int value = orientation == null ? 0 : orientation;
+                    AppLog.info(context, "ARCore rear camera sensorOrientation=" + value);
+                    return value;
+                }
+            }
+        } catch (Throwable error) {
+            AppLog.info(context, "Unable to read rear camera orientation "
+                    + error.getClass().getSimpleName() + ": " + error.getMessage());
+        }
+        return 0;
     }
 
     private static float[] copyVector(float[] values) {
@@ -285,10 +316,11 @@ final class CamPlayerMotionSender implements SensorEventListener {
         final float[] position;
         final int displayRotation;
         final String trackingSource;
+        final int sensorToDisplayRotation;
 
         private Sample(long sequence, long timestampNs, float[] quaternion, float[] gyro,
                        float[] acceleration, float[] position, int displayRotation,
-                       String trackingSource) {
+                       String trackingSource, int sensorToDisplayRotation) {
             this.sequence = sequence;
             this.timestampNs = timestampNs;
             this.quaternion = quaternion.clone();
@@ -297,18 +329,21 @@ final class CamPlayerMotionSender implements SensorEventListener {
             this.position = position == null ? null : position.clone();
             this.displayRotation = displayRotation;
             this.trackingSource = trackingSource;
+            this.sensorToDisplayRotation = sensorToDisplayRotation;
         }
 
         static Sample sensor(long sequence, long timestampNs, float[] quaternion, float[] gyro,
                              float[] acceleration, int displayRotation) {
             return new Sample(sequence, timestampNs, quaternion, gyro, acceleration,
-                    null, displayRotation, "sensors");
+                    null, displayRotation, "sensors", 0);
         }
 
         static Sample arCore(long sequence, long timestampNs, float[] position,
-                             float[] quaternion, int displayRotation) {
+                             float[] quaternion, int displayRotation,
+                             int sensorToDisplayRotation) {
             return new Sample(sequence, timestampNs, quaternion, new float[]{0f, 0f, 0f},
-                    new float[]{0f, 0f, 0f}, position, displayRotation, "arcore");
+                    new float[]{0f, 0f, 0f}, position, displayRotation, "arcore",
+                    sensorToDisplayRotation);
         }
 
         JSONObject toJson() throws Exception {
@@ -320,6 +355,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
             value.put("acceleration", array(acceleration));
             value.put("displayRotation", displayRotation);
             value.put("trackingSource", trackingSource);
+            value.put("sensorToDisplayRotation", sensorToDisplayRotation);
             if (position != null) value.put("position", array(position));
             return value;
         }

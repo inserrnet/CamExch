@@ -136,7 +136,10 @@
         const worldDelta = sample.position.slice(0, 3).map(
           (value, index) => Number(value) - this.baselinePosition[index],
         );
-        const cameraDelta = rotateVector(conjugate(this.baseline), worldDelta);
+        const cameraDelta = remapVectorForDisplay(
+          rotateVector(conjugate(this.baseline), worldDelta),
+          Number(sample.sensorToDisplayRotation) || 0,
+        );
         for (let axis = 0; axis < 3; axis += 1) {
           const target = clamp(cameraDelta[axis], -0.5, 0.5);
           this.smoothedPosition[axis] += (target - this.smoothedPosition[axis]) * alpha;

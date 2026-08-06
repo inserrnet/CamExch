@@ -86,8 +86,14 @@ test("phone tilt translates without exposing perspective controls", () => {
   assert.equal("perspectiveY" in output, false);
 });
 
-function arPose(position, quaternion = [1, 0, 0, 0]) {
-  return { trackingSource: "arcore", position, quaternion, displayRotation: 0 };
+function arPose(position, quaternion = [1, 0, 0, 0], sensorToDisplayRotation = 0) {
+  return {
+    trackingSource: "arcore",
+    position,
+    quaternion,
+    displayRotation: 0,
+    sensorToDisplayRotation,
+  };
 }
 
 test("live motion follows direct ARCore translation instead of phone tilt", () => {
@@ -111,6 +117,22 @@ test("live motion follows direct ARCore translation instead of phone tilt", () =
   tiltOnly.ingest(arPose([0, 0, 0]), 0);
   tiltOnly.ingest(arPose([0, 0, 0], axisAngle([0, 1, 0], 0.16)), 100);
   assert.ok(Math.abs(tiltOnly.output(1080, 1920).panX) < 1e-9);
+});
+
+test("maps a portrait rear-camera sensor axis onto screen axes", () => {
+  const horizontal = new Controller();
+  horizontal.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
+  horizontal.ingest(arPose([0, 0, 0], [1, 0, 0, 0], 1), 0);
+  horizontal.ingest(arPose([0, 0.08, 0], [1, 0, 0, 0], 1), 100);
+  assert.ok(horizontal.output(1080, 1920).panX > 10);
+  assert.ok(Math.abs(horizontal.output(1080, 1920).panY) < 1e-9);
+
+  const vertical = new Controller();
+  vertical.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
+  vertical.ingest(arPose([0, 0, 0], [1, 0, 0, 0], 1), 0);
+  vertical.ingest(arPose([0.08, 0, 0], [1, 0, 0, 0], 1), 100);
+  assert.ok(Math.abs(vertical.output(1080, 1920).panX) < 1e-9);
+  assert.ok(vertical.output(1080, 1920).panY > 10);
 });
 
 test("live forward translation changes scale and remains bounded", () => {
