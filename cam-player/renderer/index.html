@@ -62,16 +62,35 @@
           <button id="mirrorButton" class="command" title="Flip left and right"
                   aria-label="Flip left and right" aria-pressed="false">Mirror</button>
         </div>
-        <label class="toggle wide">
-          <input id="handheldToggle" type="checkbox">
-          Handheld
+        <label>Motion mode
+          <select id="motionMode">
+            <option value="off">Off</option>
+            <option value="live">Live phone</option>
+            <option value="recorded">Recorded profile</option>
+          </select>
+        </label>
+        <label>Profile
+          <select id="motionProfileSelect" disabled>
+            <option value="">No saved profiles</option>
+          </select>
         </label>
         <label>Motion <span class="range-control"><input id="motionInput" type="range" min="0" max="100" value="35"><output id="motionValue">35</output></span></label>
         <label>Stabilization <span class="range-control"><input id="stabilizationInput" type="range" min="0" max="100" value="55"><output id="stabilizationValue">55</output></span></label>
         <div class="button-row">
           <button id="recenterButton" class="command">Recenter</button>
-          <span id="handheldStatus" class="hint inline-status">Waiting for phone motion</span>
+          <button id="recordMotionButton" class="command">Record Motion</button>
+          <button id="cancelMotionRecordingButton" class="command" hidden>Cancel</button>
         </div>
+        <div class="button-row">
+          <button id="renameMotionProfileButton" class="command" disabled>Rename</button>
+          <button id="deleteMotionProfileButton" class="command" disabled>Delete</button>
+        </div>
+        <label class="toggle wide">
+          <input id="rememberMotionStateToggle" type="checkbox">
+          Remember enabled state
+        </label>
+        <div id="motionRecordingStatus" class="recording-status" hidden></div>
+        <p id="handheldStatus" class="hint">Waiting for phone motion</p>
         <p class="hint">Wheel: source scale. Drag: source position. Space + wheel/drag: preview.</p>
       </section>
 
@@ -105,6 +124,7 @@
 
   <script src="../lib/geometry.js"></script>
   <script src="../lib/handheld-motion.js"></script>
+  <script src="../lib/motion-profile.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

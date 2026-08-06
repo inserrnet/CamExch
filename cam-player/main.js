@@ -20,6 +20,7 @@ const { execFile, spawn } = require("child_process");
 const ffmpegStaticPath = require("ffmpeg-static");
 const { decodeQrImage } = require("./lib/qr-decoder");
 const { cropForNormalized } = require("./lib/qr-selection");
+const { validateProfile } = require("./lib/motion-profile");
 
 app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -63,6 +64,39 @@ function readJson(name, fallback) {
 function writeJson(name, value) {
   fs.mkdirSync(app.getPath("userData"), { recursive: true });
   fs.writeFileSync(userFile(name), JSON.stringify(value, null, 2));
+}
+
+function writeJsonAtomic(name, value) {
+  fs.mkdirSync(app.getPath("userData"), { recursive: true });
+  const destination = userFile(name);
+  const temporary = `${destination}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(value));
+  fs.rmSync(destination, { force: true });
+  fs.renameSync(temporary, destination);
+}
+
+function motionProfiles() {
+  const stored = readJson("motion-profiles.json", { version: 1, profiles: [] });
+  const profiles = Array.isArray(stored?.profiles) ? stored.profiles : [];
+  return profiles.filter(validateProfile);
+}
+
+function saveMotionProfiles(profiles) {
+  writeJsonAtomic("motion-profiles.json", { version: 1, profiles });
+}
+
+function profileSummary(profile) {
+  return {
+    id: profile.id,
+    name: profile.name,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt,
+    durationMs: profile.durationMs,
+    sampleRateHz: profile.sampleRateHz,
+    motion: profile.motion,
+    stabilization: profile.stabilization,
+    sampleCount: profile.samples.length,
+  };
 }
 
 function log(message) {
@@ -581,6 +615,46 @@ ipcMain.handle("open-media", async () => {
 });
 
 ipcMain.handle("read-preferences", () => readJson("preferences.json", {}));
+ipcMain.handle("list-motion-profiles", () => motionProfiles().map(profileSummary));
+ipcMain.handle("read-motion-profile", (_event, id) => (
+  motionProfiles().find((profile) => profile.id === String(id || "")) || null
+));
+ipcMain.handle("save-motion-profile", (_event, value) => {
+  const profile = { ...(value || {}) };
+  profile.id = String(profile.id || crypto.randomUUID());
+  profile.name = String(profile.name || "Motion profile").trim().slice(0, 80) || "Motion profile";
+  profile.createdAt = String(profile.createdAt || new Date().toISOString());
+  profile.updatedAt = new Date().toISOString();
+  if (!validateProfile(profile)) throw new Error("Motion profile is invalid");
+  const profiles = motionProfiles();
+  const existingIndex = profiles.findIndex((candidate) => candidate.id === profile.id);
+  if (existingIndex >= 0) profiles[existingIndex] = profile;
+  else profiles.push(profile);
+  saveMotionProfiles(profiles);
+  log(`Motion profile saved id=${profile.id} name=${profile.name} samples=${profile.samples.length} `
+    + `durationMs=${profile.durationMs} rateHz=${profile.sampleRateHz}`);
+  return profileSummary(profile);
+});
+ipcMain.handle("rename-motion-profile", (_event, id, requestedName) => {
+  const profiles = motionProfiles();
+  const profile = profiles.find((candidate) => candidate.id === String(id || ""));
+  if (!profile) throw new Error("Motion profile was not found");
+  profile.name = String(requestedName || "").trim().slice(0, 80);
+  if (!profile.name) throw new Error("Motion profile name is empty");
+  profile.updatedAt = new Date().toISOString();
+  saveMotionProfiles(profiles);
+  log(`Motion profile renamed id=${profile.id} name=${profile.name}`);
+  return profileSummary(profile);
+});
+ipcMain.handle("delete-motion-profile", (_event, id) => {
+  const profileId = String(id || "");
+  const profiles = motionProfiles();
+  const remaining = profiles.filter((candidate) => candidate.id !== profileId);
+  if (remaining.length === profiles.length) return false;
+  saveMotionProfiles(remaining);
+  log(`Motion profile deleted id=${profileId}`);
+  return true;
+});
 ipcMain.handle("prepare-media", async (_event, filePath) => {
   const originalPath = String(filePath || "");
   if (!originalPath || !fs.existsSync(originalPath)) {

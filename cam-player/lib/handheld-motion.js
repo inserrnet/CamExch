@@ -134,8 +134,8 @@
         panX: -y * Math.max(1, width) * 0.7,
         panY: x * Math.max(1, height) * 0.7,
         roll: -z * 0.9,
-        perspectiveX: y * 0.8,
-        perspectiveY: -x * 0.8,
+        perspectiveX: y * 0.15,
+        perspectiveY: -x * 0.15,
         scale: overscan,
       };
     }

@@ -11,12 +11,19 @@ const fpsInput = document.getElementById("fpsInput");
 const blurInput = document.getElementById("blurInput");
 const followSiteToggle = document.getElementById("followSiteToggle");
 const fallbackResolutionToggle = document.getElementById("fallbackResolutionToggle");
-const handheldToggle = document.getElementById("handheldToggle");
+const motionMode = document.getElementById("motionMode");
+const motionProfileSelect = document.getElementById("motionProfileSelect");
 const motionInput = document.getElementById("motionInput");
 const stabilizationInput = document.getElementById("stabilizationInput");
 const motionValue = document.getElementById("motionValue");
 const stabilizationValue = document.getElementById("stabilizationValue");
 const recenterButton = document.getElementById("recenterButton");
+const recordMotionButton = document.getElementById("recordMotionButton");
+const cancelMotionRecordingButton = document.getElementById("cancelMotionRecordingButton");
+const renameMotionProfileButton = document.getElementById("renameMotionProfileButton");
+const deleteMotionProfileButton = document.getElementById("deleteMotionProfileButton");
+const rememberMotionStateToggle = document.getElementById("rememberMotionStateToggle");
+const motionRecordingStatus = document.getElementById("motionRecordingStatus");
 const handheldStatus = document.getElementById("handheldStatus");
 const timeline = document.getElementById("timeline");
 const timeLabel = document.getElementById("timeLabel");
@@ -329,11 +336,21 @@ let activeOutputOrigin = "manual";
 let lastWorkingOutput = { width: canvas.width, height: canvas.height };
 let recent = [];
 let currentServerInfo = null;
-const handheldController = new CamHandheld.Controller();
+let handheldController = new CamHandheld.Controller();
 let handheldRenderFrameId = null;
 let handheldLastRenderAt = 0;
 let handheldSamples = 0;
 let handheldMetricsStartedAt = performance.now();
+let latestPhoneMotionAt = 0;
+let latestPhoneSample = null;
+let motionProfiles = [];
+let activeMotionProfile = null;
+let recordedMotionPlayer = null;
+let recordedMotionTimer = null;
+let motionRecordingTimer = null;
+let motionRecording = null;
+let motionProfileSaveTimer = null;
+let liveMotionSettings = { motion: 35, stabilization: 55 };
 let transforms = {
   portrait: { scale: 1, panX: 0, panY: 0 },
   landscape: { scale: 1, panX: 0, panY: 0 },
@@ -1176,7 +1193,11 @@ function savePreferences() {
     fallbackResolution: fallbackResolutionToggle.checked,
     loop: document.getElementById("loopToggle").checked,
     mirrored: sourceMirrored,
-    handheld: handheldToggle.checked,
+    motionMode: motionMode.value,
+    selectedMotionProfileId: motionProfileSelect.value,
+    rememberMotionEnabled: rememberMotionStateToggle.checked,
+    liveMotion: liveMotionSettings.motion,
+    liveStabilization: liveMotionSettings.stabilization,
     motion: Number(motionInput.value),
     stabilization: Number(stabilizationInput.value),
     lastWorkingOutput,
@@ -1894,33 +1915,350 @@ document.getElementById("mirrorButton").addEventListener("click", (event) => {
   log(`Source horizontal mirror=${sourceMirrored}`);
   event.currentTarget.blur();
 });
-function configureHandheld(reason, persist = true) {
-  motionValue.value = motionInput.value;
-  stabilizationValue.value = stabilizationInput.value;
+function motionIsEnabled() {
+  return motionMode.value !== "off";
+}
+
+function scheduleHandheldRender(now = performance.now()) {
+  if (!motionIsEnabled() || !sourceElement || playing || handheldRenderFrameId != null) return;
+  const configuredFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+  const motionFps = Math.min(
+    configuredFps,
+    30,
+    Math.ceil(CamGeometry.adaptiveFrameRate(
+      canvas.width,
+      canvas.height,
+      configuredFps,
+      "interaction",
+    ) * 1.5),
+  );
+  if (now - handheldLastRenderAt < 1000 / motionFps) return;
+  handheldRenderFrameId = requestAnimationFrame(() => {
+    handheldRenderFrameId = null;
+    handheldLastRenderAt = performance.now();
+    renderFrame(true);
+  });
+}
+
+function stopRecordedMotion() {
+  clearInterval(recordedMotionTimer);
+  recordedMotionTimer = null;
+  recordedMotionPlayer = null;
+  activeMotionProfile = null;
+}
+
+function startRecordedMotion(profile) {
+  stopRecordedMotion();
+  activeMotionProfile = profile;
+  recordedMotionPlayer = new CamMotionProfile.Player(profile);
+  const startedAt = performance.now();
+  recordedMotionPlayer.restart(startedAt);
+  handheldController = new CamHandheld.Controller();
   handheldController.configure({
-    enabled: handheldToggle.checked,
+    enabled: true,
     motion: Number(motionInput.value),
     stabilization: Number(stabilizationInput.value),
   });
-  handheldStatus.textContent = handheldController.latest
-    ? (handheldToggle.checked ? "Phone motion active" : "Phone motion available")
-    : "Waiting for phone motion";
+  const first = recordedMotionPlayer.sampleAt(startedAt);
+  handheldController.ingest(first, startedAt);
+  handheldController.recenter();
+  recordedMotionTimer = setInterval(() => {
+    const now = performance.now();
+    handheldController.ingest(recordedMotionPlayer.sampleAt(now), now);
+    scheduleHandheldRender(now);
+  }, CamMotionProfile.SAMPLE_INTERVAL_MS);
+  handheldStatus.textContent = `Recorded motion active: ${profile.name}`;
+}
+
+function renderMotionProfiles(selectedId = motionProfileSelect.value) {
+  motionProfileSelect.textContent = "";
+  if (!motionProfiles.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No saved profiles";
+    motionProfileSelect.append(option);
+  } else {
+    for (const profile of motionProfiles) {
+      const option = document.createElement("option");
+      option.value = profile.id;
+      option.textContent = `${profile.name} (${Math.round(profile.durationMs / 1000)}s)`;
+      motionProfileSelect.append(option);
+    }
+  }
+  const availableId = motionProfiles.some((profile) => profile.id === selectedId)
+    ? selectedId
+    : motionProfiles[0]?.id || "";
+  motionProfileSelect.value = availableId;
+  const hasProfile = Boolean(availableId);
+  motionProfileSelect.disabled = !hasProfile;
+  renameMotionProfileButton.disabled = !hasProfile;
+  deleteMotionProfileButton.disabled = !hasProfile;
+  if (!hasProfile && motionMode.value === "recorded") motionMode.value = "off";
+}
+
+async function refreshMotionProfiles(selectedId) {
+  motionProfiles = await window.camPlayer.listMotionProfiles();
+  renderMotionProfiles(selectedId);
+}
+
+function applyMotionSettings(motion, stabilization) {
+  motionInput.value = String(motion ?? 35);
+  stabilizationInput.value = String(stabilization ?? 55);
+  motionValue.value = motionInput.value;
+  stabilizationValue.value = stabilizationInput.value;
+}
+
+async function activateRecordedProfile() {
+  const profileId = motionProfileSelect.value;
+  if (!profileId) {
+    motionMode.value = "off";
+    stopRecordedMotion();
+    handheldController.configure({ enabled: false, motion: 0, stabilization: 0 });
+    handheldStatus.textContent = "Record a motion profile first";
+    return;
+  }
+  const profile = await window.camPlayer.readMotionProfile(profileId);
+  if (!profile || !CamMotionProfile.validateProfile(profile)) {
+    throw new Error("The selected motion profile is unavailable or damaged");
+  }
+  applyMotionSettings(profile.motion, profile.stabilization);
+  startRecordedMotion(profile);
+}
+
+async function configureHandheld(reason, persist = true) {
+  motionValue.value = motionInput.value;
+  stabilizationValue.value = stabilizationInput.value;
+  if (motionMode.value === "recorded") {
+    await activateRecordedProfile();
+  } else {
+    stopRecordedMotion();
+    handheldController = new CamHandheld.Controller();
+    handheldController.configure({
+      enabled: motionMode.value === "live",
+      motion: Number(motionInput.value),
+      stabilization: Number(stabilizationInput.value),
+    });
+    if (latestPhoneMotionAt > 0 && latestPhoneSample) {
+      handheldController.ingest(latestPhoneSample, performance.now());
+      handheldController.recenter();
+    }
+    if (motionMode.value === "live") {
+      handheldStatus.textContent = latestPhoneMotionAt > 0
+        ? "Live phone motion active"
+        : "Waiting for phone motion";
+    } else {
+      handheldStatus.textContent = latestPhoneMotionAt > 0
+        ? "Phone motion available"
+        : "Waiting for phone motion";
+    }
+  }
   renderFrame(true);
   if (persist) {
     savePreferences();
-    log(`Handheld configured enabled=${handheldToggle.checked} motion=${motionInput.value} `
-      + `stabilization=${stabilizationInput.value} reason=${reason}`);
+    log(`Handheld configured mode=${motionMode.value} profile=${motionProfileSelect.value || "none"} `
+      + `motion=${motionInput.value} stabilization=${stabilizationInput.value} reason=${reason}`);
   }
 }
-handheldToggle.addEventListener("change", () => configureHandheld("toggle"));
-motionInput.addEventListener("input", () => configureHandheld("motion preview", false));
-motionInput.addEventListener("change", () => configureHandheld("motion"));
-stabilizationInput.addEventListener("input", () => configureHandheld("stabilization preview", false));
-stabilizationInput.addEventListener("change", () => configureHandheld("stabilization"));
+
+function scheduleActiveProfileSettingsSave() {
+  if (motionMode.value !== "recorded" || !activeMotionProfile) return;
+  const profile = activeMotionProfile;
+  const motion = Number(motionInput.value);
+  const stabilization = Number(stabilizationInput.value);
+  clearTimeout(motionProfileSaveTimer);
+  motionProfileSaveTimer = setTimeout(async () => {
+    profile.motion = motion;
+    profile.stabilization = stabilization;
+    try {
+      const summary = await window.camPlayer.saveMotionProfile(profile);
+      const index = motionProfiles.findIndex((profile) => profile.id === summary.id);
+      if (index >= 0) motionProfiles[index] = summary;
+    } catch (error) {
+      log(`Motion profile settings save failed ${error}`);
+    }
+  }, 300);
+}
+
+motionMode.addEventListener("change", async () => {
+  try {
+    if (motionMode.value === "live") applyMotionSettings(liveMotionSettings.motion, liveMotionSettings.stabilization);
+    await configureHandheld("mode");
+  } catch (error) {
+    motionMode.value = "off";
+    await configureHandheld("mode failure");
+    showToast(error.message || String(error));
+  }
+});
+motionProfileSelect.addEventListener("change", async () => {
+  if (motionMode.value === "recorded") await configureHandheld("profile");
+  else savePreferences();
+});
+function updateMotionStrengthPreview() {
+  motionValue.value = motionInput.value;
+  stabilizationValue.value = stabilizationInput.value;
+  handheldController.configure({
+    enabled: motionIsEnabled(),
+    motion: Number(motionInput.value),
+    stabilization: Number(stabilizationInput.value),
+  });
+  renderFrame(true);
+}
+
+motionInput.addEventListener("input", updateMotionStrengthPreview);
+motionInput.addEventListener("change", () => {
+  if (motionMode.value === "live") liveMotionSettings.motion = Number(motionInput.value);
+  scheduleActiveProfileSettingsSave();
+  updateMotionStrengthPreview();
+  savePreferences();
+  log(`Handheld motion=${motionInput.value} mode=${motionMode.value}`);
+});
+stabilizationInput.addEventListener("input", updateMotionStrengthPreview);
+stabilizationInput.addEventListener("change", () => {
+  if (motionMode.value === "live") liveMotionSettings.stabilization = Number(stabilizationInput.value);
+  scheduleActiveProfileSettingsSave();
+  updateMotionStrengthPreview();
+  savePreferences();
+  log(`Handheld stabilization=${stabilizationInput.value} mode=${motionMode.value}`);
+});
 recenterButton.addEventListener("click", () => {
   handheldController.recenter();
   renderFrame(true);
   log("Handheld recentered");
+});
+
+function defaultMotionProfileName() {
+  const now = new Date();
+  const date = now.toLocaleDateString(undefined, { year: "numeric", month: "2-digit", day: "2-digit" });
+  const time = now.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return `Motion ${date} ${time}`;
+}
+
+function showMotionRecordingStatus(text) {
+  motionRecordingStatus.textContent = text;
+  motionRecordingStatus.hidden = false;
+}
+
+function resetMotionRecordingUi() {
+  clearInterval(motionRecordingTimer);
+  motionRecordingTimer = null;
+  motionRecording = null;
+  recordMotionButton.disabled = performance.now() - latestPhoneMotionAt > 2000;
+  cancelMotionRecordingButton.hidden = true;
+}
+
+function cancelMotionRecording(reason = "cancelled") {
+  if (!motionRecording) return;
+  resetMotionRecordingUi();
+  motionRecordingStatus.hidden = true;
+  handheldStatus.textContent = "Motion recording cancelled";
+  log(`Motion recording cancelled reason=${reason}`);
+}
+
+async function finishMotionRecording() {
+  if (!motionRecording || motionRecording.phase === "processing") return;
+  const samples = motionRecording.samples;
+  motionRecording.phase = "processing";
+  clearInterval(motionRecordingTimer);
+  motionRecordingTimer = null;
+  showMotionRecordingStatus("Processing...");
+  cancelMotionRecordingButton.hidden = true;
+  try {
+    const profile = CamMotionProfile.prepareProfile(samples, {
+      name: defaultMotionProfileName(),
+      motion: Number(motionInput.value),
+      stabilization: Number(stabilizationInput.value),
+    });
+    const summary = await window.camPlayer.saveMotionProfile(profile);
+    await refreshMotionProfiles(summary.id);
+    motionMode.value = "recorded";
+    await configureHandheld("recording completed");
+    showMotionRecordingStatus("Motion profile saved");
+    setTimeout(() => {
+      if (!motionRecording) motionRecordingStatus.hidden = true;
+    }, 3000);
+    log(`Motion recording completed samples=${samples.length} profile=${summary.id}`);
+  } catch (error) {
+    motionRecordingStatus.hidden = true;
+    handheldStatus.textContent = "Motion profile was not saved";
+    showToast(error.message || String(error));
+    log(`Motion recording failed ${error.stack || error}`);
+  } finally {
+    resetMotionRecordingUi();
+  }
+}
+
+function updateMotionRecordingClock() {
+  if (!motionRecording) return;
+  const now = performance.now();
+  if (motionRecording.phase === "countdown") {
+    const remaining = Math.max(0, Math.ceil((motionRecording.startsAt - now) / 1000));
+    showMotionRecordingStatus(`Starting in ${remaining}...`);
+    if (now >= motionRecording.startsAt) {
+      motionRecording.phase = "recording";
+      motionRecording.startedAt = now;
+      motionRecording.endsAt = now + CamMotionProfile.RECORDING_DURATION_MS;
+      motionRecording.samples = [];
+      showMotionRecordingStatus("Recording 00:00 / 00:30");
+      log("Motion recording started durationMs=30000");
+    }
+    return;
+  }
+  if (motionRecording.phase !== "recording") return;
+  if (now - latestPhoneMotionAt > 2000) {
+    const message = "Phone motion connection was lost";
+    cancelMotionRecording(message);
+    showToast(message);
+    return;
+  }
+  const elapsedMs = Math.min(CamMotionProfile.RECORDING_DURATION_MS, now - motionRecording.startedAt);
+  const elapsedSeconds = Math.floor(elapsedMs / 1000);
+  showMotionRecordingStatus(`Recording 00:${String(elapsedSeconds).padStart(2, "0")} / 00:30`);
+  if (now >= motionRecording.endsAt) finishMotionRecording();
+}
+
+recordMotionButton.addEventListener("click", () => {
+  if (performance.now() - latestPhoneMotionAt > 2000) {
+    showToast("Connect Source and start Cam Player mode first");
+    return;
+  }
+  motionRecording = {
+    phase: "countdown",
+    startsAt: performance.now() + 3000,
+    samples: [],
+  };
+  recordMotionButton.disabled = true;
+  cancelMotionRecordingButton.hidden = false;
+  showMotionRecordingStatus("Starting in 3...");
+  motionRecordingTimer = setInterval(updateMotionRecordingClock, 100);
+  log("Motion recording countdown started seconds=3");
+});
+cancelMotionRecordingButton.addEventListener("click", () => cancelMotionRecording("user"));
+rememberMotionStateToggle.addEventListener("change", savePreferences);
+renameMotionProfileButton.addEventListener("click", async () => {
+  const current = motionProfiles.find((profile) => profile.id === motionProfileSelect.value);
+  if (!current) return;
+  const name = window.prompt("Motion profile name", current.name);
+  if (name == null || !name.trim()) return;
+  const renamed = await window.camPlayer.renameMotionProfile(current.id, name.trim());
+  await refreshMotionProfiles(renamed.id);
+  if (activeMotionProfile?.id === renamed.id) {
+    activeMotionProfile.name = renamed.name;
+    handheldStatus.textContent = `Recorded motion active: ${renamed.name}`;
+  }
+  savePreferences();
+});
+deleteMotionProfileButton.addEventListener("click", async () => {
+  const current = motionProfiles.find((profile) => profile.id === motionProfileSelect.value);
+  if (!current || !window.confirm(`Delete motion profile "${current.name}"?`)) return;
+  await window.camPlayer.deleteMotionProfile(current.id);
+  await refreshMotionProfiles();
+  if (!motionProfiles.length || activeMotionProfile?.id === current.id) {
+    motionMode.value = "off";
+    await configureHandheld("profile deleted");
+  } else if (motionMode.value === "recorded") {
+    await configureHandheld("profile deleted");
+  }
+  savePreferences();
 });
 document.getElementById("loopToggle").addEventListener("change", (event) => {
   video.loop = event.target.checked;
@@ -2047,39 +2385,39 @@ function applyServerInfo(info) {
 window.camPlayer.onServerInfo(applyServerInfo);
 window.camPlayer.onLog(appendLog);
 window.camPlayer.onHandheldMotion((sample) => {
-  handheldController.ingest(sample, performance.now());
+  const now = performance.now();
+  latestPhoneSample = sample;
+  latestPhoneMotionAt = now;
   handheldSamples += 1;
   recenterButton.disabled = false;
-  handheldStatus.textContent = handheldToggle.checked
-    ? "Phone motion active"
-    : "Phone motion available";
-  const now = performance.now();
+  if (!motionRecording) recordMotionButton.disabled = false;
+  if (motionRecording?.phase === "recording") {
+    const elapsed = now - motionRecording.startedAt;
+    if (elapsed >= 0 && elapsed <= CamMotionProfile.RECORDING_DURATION_MS) {
+      motionRecording.samples.push({
+        ...sample,
+        quaternion: Array.from(sample.quaternion || []),
+        gyro: Array.from(sample.gyro || []),
+        acceleration: Array.from(sample.acceleration || []),
+        t: elapsed,
+      });
+    }
+  }
+  if (motionMode.value === "live") {
+    handheldController.ingest(sample, now);
+    handheldStatus.textContent = "Live phone motion active";
+    scheduleHandheldRender(now);
+  } else if (motionMode.value === "off") {
+    handheldStatus.textContent = "Phone motion available";
+  }
   if (now - handheldMetricsStartedAt >= 10000) {
     const motion = handheldController.output(canvas.width, canvas.height);
     log(`Handheld samples rateHz=${(handheldSamples * 1000 / (now - handheldMetricsStartedAt)).toFixed(1)} `
-      + `enabled=${handheldToggle.checked} pan=${motion.panX.toFixed(1)},${motion.panY.toFixed(1)} `
+      + `mode=${motionMode.value} recording=${motionRecording?.phase || "none"} `
+      + `pan=${motion.panX.toFixed(1)},${motion.panY.toFixed(1)} `
       + `rollDeg=${(motion.roll * 180 / Math.PI).toFixed(2)}`);
     handheldSamples = 0;
     handheldMetricsStartedAt = now;
-  }
-  if (handheldToggle.checked && sourceElement && !playing && handheldRenderFrameId == null) {
-    const configuredFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
-    const motionFps = Math.min(
-      configuredFps,
-      30,
-      Math.ceil(CamGeometry.adaptiveFrameRate(
-        canvas.width,
-        canvas.height,
-        configuredFps,
-        "interaction",
-      ) * 1.5),
-    );
-    if (now - handheldLastRenderAt < 1000 / motionFps) return;
-    handheldRenderFrameId = requestAnimationFrame(() => {
-      handheldRenderFrameId = null;
-      handheldLastRenderAt = performance.now();
-      renderFrame(true);
-    });
   }
 });
 
@@ -2100,17 +2438,26 @@ async function initialize() {
   sourceMirrored = preferences.mirrored === true;
   document.getElementById("mirrorButton")
     .setAttribute("aria-pressed", String(sourceMirrored));
-  handheldToggle.checked = preferences.handheld === true;
-  motionInput.value = String(preferences.motion ?? 35);
-  stabilizationInput.value = String(preferences.stabilization ?? 55);
-  motionValue.value = motionInput.value;
-  stabilizationValue.value = stabilizationInput.value;
+  liveMotionSettings = {
+    motion: Number(preferences.liveMotion ?? preferences.motion ?? 35),
+    stabilization: Number(preferences.liveStabilization ?? preferences.stabilization ?? 55),
+  };
+  rememberMotionStateToggle.checked = preferences.rememberMotionEnabled == null
+    ? preferences.handheld === true
+    : preferences.rememberMotionEnabled === true;
+  await refreshMotionProfiles(preferences.selectedMotionProfileId);
+  const storedMotionMode = preferences.motionMode
+    || (preferences.handheld === true ? "live" : "off");
+  motionMode.value = rememberMotionStateToggle.checked ? storedMotionMode : "off";
+  if (motionMode.value === "recorded" && !motionProfileSelect.value) motionMode.value = "off";
+  if (motionMode.value === "recorded") {
+    const summary = motionProfiles.find((profile) => profile.id === motionProfileSelect.value);
+    applyMotionSettings(summary?.motion ?? 35, summary?.stabilization ?? 55);
+  } else {
+    applyMotionSettings(liveMotionSettings.motion, liveMotionSettings.stabilization);
+  }
   recenterButton.disabled = true;
-  handheldController.configure({
-    enabled: handheldToggle.checked,
-    motion: Number(motionInput.value),
-    stabilization: Number(stabilizationInput.value),
-  });
+  recordMotionButton.disabled = true;
   if (preferences.lastWorkingOutput?.width && preferences.lastWorkingOutput?.height) {
     lastWorkingOutput = {
       width: Number(preferences.lastWorkingOutput.width),
@@ -2131,6 +2478,13 @@ async function initialize() {
   } catch (error) {
     applyOutputSize(720, 1280, "startup fallback", { origin: "manual" });
     log(`Stored output size rejected ${error}`);
+  }
+  try {
+    await configureHandheld("startup", false);
+  } catch (error) {
+    motionMode.value = "off";
+    await configureHandheld("startup profile failure", false);
+    log(`Stored motion profile unavailable ${error}`);
   }
   clearInterval(timelineTimer);
   timelineTimer = setInterval(updateTimeline, 200);
@@ -2161,6 +2515,9 @@ canvas.addEventListener("webglcontextlost", (event) => {
 
 window.addEventListener("beforeunload", () => {
   if (handheldRenderFrameId != null) cancelAnimationFrame(handheldRenderFrameId);
+  clearInterval(recordedMotionTimer);
+  clearInterval(motionRecordingTimer);
+  clearTimeout(motionProfileSaveTimer);
   stopVideoFrameLoop();
   stopPausedFrameHeartbeat();
   clearInterval(timelineTimer);

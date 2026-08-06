@@ -200,6 +200,12 @@ h2 {
   padding: 0 8px;
 }
 
+.settings select {
+  width: 100%;
+  min-width: 0;
+  padding: 0 7px;
+}
+
 .settings input[type="range"] {
   width: 100%;
 }
@@ -256,6 +262,15 @@ h2 {
 .inline-status {
   align-self: center;
   margin: 0;
+}
+
+.recording-status {
+  margin-top: 10px;
+  padding: 8px;
+  border-left: 3px solid #d6a23a;
+  background: #292d31;
+  color: #f4f5f6;
+  font: 12px Consolas, monospace;
 }
 
 .status {
