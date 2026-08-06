@@ -777,8 +777,8 @@ if (mapped.find((device) => device.deviceId === "rear-id")?.label !== "camera 2,
 if (mapped.find((device) => device.kind === "videoinput")?.deviceId !== "main-rear-id") {
   throw new Error("The primary camera 0 was not preferred over secondary rear modules");
 }
-if (mapped.find((device) => device.deviceId === "front-id")?.label !== "Front Camera 4") {
-  throw new Error("Front camera label was not replaced");
+if (mapped.find((device) => device.deviceId === "front-id")?.label !== "camera2 2, facing front") {
+  throw new Error("Native front camera label was not preserved");
 }
 if (mapped.some((device) => device.deviceId === "camexch-back-camera")) {
   throw new Error("Synthetic back camera duplicated a visible physical back camera");
@@ -1091,7 +1091,7 @@ if (onlineSourceSwitch.switched !== 1 || onlineSourceSwitch.failed !== 0
     || activeEntry.controller.route !== "SOURCE"
     || onlineSourceSwitch.devicechange !== 1
     || deviceChangeCount !== deviceChangesBeforeOnlineSwitch + 1
-    || stableTrackBeforeOnlineSwitch.label !== "Front Camera 4"
+    || stableTrackBeforeOnlineSwitch.label !== "camera2 2, facing front"
     || inheritedSwitchVideo?.width?.ideal !== 1280
     || inheritedSwitchVideo?.height?.ideal !== 720
     || inheritedSwitchVideo?.deviceId !== undefined) {
@@ -1165,7 +1165,7 @@ if (revivedSourceSwitch.switched !== 1 || revivedSourceSwitch.revived !== 1
     || !revivedClonedTrack || revivedClonedTrack === clonedStreamTrackBeforeRevival
     || revivedClonedTrack.readyState !== "live"
     || clonedStreamTrackBeforeRevival.readyState !== "ended"
-    || revivedTrack.label !== "Front Camera 4"
+    || revivedTrack.label !== "camera2 2, facing front"
     || revivedTrack.getSettings().width !== TEST_SOURCE_WIDTH
     || revivedTrack.getSettings().height !== TEST_SOURCE_HEIGHT) {
   throw new Error("Stopped camera session was not rebuilt with a new Source track");
@@ -1228,7 +1228,7 @@ const deviceChangeStream = await deviceChangeStreamPromise;
 const deviceChangeTrack = deviceChangeStream?.getVideoTracks?.()[0];
 if (sourceDeviceChangeSwitch.devicechange !== 1
     || !deviceChangeTrack
-    || deviceChangeTrack.label !== "Front Camera 4"
+    || deviceChangeTrack.label !== "camera2 2, facing front"
     || deviceChangeTrack.getSettings().facingMode !== "user"
     || nativeGetCount !== nativeCountBeforeDeviceChangeRequest) {
   throw new Error("Devicechange camera retry bypassed Source routing");
@@ -1250,7 +1250,7 @@ const sourceIframeStream = await sourceIframeGetUserMedia.call(
 );
 const sourceIframeTrack = sourceIframeStream?.getVideoTracks?.()[0];
 if (!sourceIframeTrack
-    || sourceIframeTrack.label !== "Front Camera 4"
+    || sourceIframeTrack.label !== "camera2 2, facing front"
     || sourceIframeTrack.getSettings().facingMode !== "user"
     || earlyIframeNativeCalls !== earlyIframeCallsBeforeSourceRetry) {
   throw new Error("Early iframe retry ignored the selected Source route");
@@ -1453,7 +1453,7 @@ const racedStream = await delayedNativeRequest;
 const racedSwitch = await sourceWinsRace;
 const racedTrack = racedStream.getVideoTracks()[0];
 if (racedSwitch.failed !== 0
-    || racedTrack?.label !== "Front Camera 4"
+    || racedTrack?.label !== "camera2 2, facing front"
     || racedTrack?.getSettings?.().facingMode !== "user"
     || lastNativeTrack?.readyState !== "ended") {
   throw new Error("Late native getUserMedia result survived the N to F race");

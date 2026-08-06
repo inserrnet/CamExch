@@ -87,6 +87,20 @@ public class VirtualCameraScriptTest {
     }
 
     @Test
+    public void sourceCameraExposesTheNativeFrontCameraLabel() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "let nativeFrontLabel='Front Camera'"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "nativeFrontLabel=label"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "if(controller.route==='SOURCE')return sourceCameraLabel()"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "label:sourceCameraLabel()"));
+        assertFalse(VirtualCameraScript.SCRIPT.contains(
+                "d.label==='Front Camera 4'"));
+    }
+
+    @Test
     public void staticSourceCloneKeepsTheHealthySharedConnection() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "waitForLiveSourceTrack(track,2000,true)"));
