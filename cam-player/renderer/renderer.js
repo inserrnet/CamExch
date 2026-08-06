@@ -12,6 +12,7 @@ const blurInput = document.getElementById("blurInput");
 const followSiteToggle = document.getElementById("followSiteToggle");
 const fallbackResolutionToggle = document.getElementById("fallbackResolutionToggle");
 const motionMode = document.getElementById("motionMode");
+const liveMotionToggle = document.getElementById("liveMotionToggle");
 const motionProfileSelect = document.getElementById("motionProfileSelect");
 const motionInput = document.getElementById("motionInput");
 const stabilizationInput = document.getElementById("stabilizationInput");
@@ -349,6 +350,7 @@ let motionRecordingTimer = null;
 let motionRecording = null;
 let motionProfileSaveTimer = null;
 let liveMotionSettings = { motion: 35, stabilization: 55 };
+let motionModeBeforeLive = "off";
 let transforms = {
   portrait: { scale: 1, panX: 0, panY: 0 },
   landscape: { scale: 1, panX: 0, panY: 0 },
@@ -1912,6 +1914,10 @@ function motionIsEnabled() {
   return motionMode.value !== "off";
 }
 
+function syncLiveMotionToggle() {
+  liveMotionToggle.checked = motionMode.value === "live";
+}
+
 function scheduleHandheldRender(now = performance.now()) {
   if (!motionIsEnabled() || !sourceElement || playing || handheldRenderFrameId != null) return;
   const configuredFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
@@ -1949,6 +1955,7 @@ function startRecordedMotion(profile) {
   handheldController = new CamHandheld.Controller();
   handheldController.configure({
     enabled: true,
+    liveDepth: false,
     motion: Number(motionInput.value),
     stabilization: Number(stabilizationInput.value),
   });
@@ -2028,6 +2035,7 @@ async function configureHandheld(reason, persist = true) {
     handheldController = new CamHandheld.Controller();
     handheldController.configure({
       enabled: motionMode.value === "live",
+      liveDepth: motionMode.value === "live",
       motion: Number(motionInput.value),
       stabilization: Number(stabilizationInput.value),
     });
@@ -2074,13 +2082,36 @@ function scheduleActiveProfileSettingsSave() {
 
 motionMode.addEventListener("change", async () => {
   try {
+    if (motionMode.value !== "live") motionModeBeforeLive = motionMode.value;
+    syncLiveMotionToggle();
     if (motionMode.value === "live") applyMotionSettings(liveMotionSettings.motion, liveMotionSettings.stabilization);
     await configureHandheld("mode");
   } catch (error) {
     motionMode.value = "off";
+    syncLiveMotionToggle();
     await configureHandheld("mode failure");
     showToast(error.message || String(error));
   }
+});
+liveMotionToggle.addEventListener("change", async () => {
+  if (liveMotionToggle.checked) {
+    if (motionMode.value !== "live") motionModeBeforeLive = motionMode.value;
+    motionMode.value = "live";
+    applyMotionSettings(liveMotionSettings.motion, liveMotionSettings.stabilization);
+  } else if (motionMode.value === "live") {
+    motionMode.value = motionModeBeforeLive === "recorded" && motionProfileSelect.value
+      ? "recorded"
+      : "off";
+  }
+  try {
+    await configureHandheld("live toggle");
+  } catch (error) {
+    motionMode.value = "off";
+    syncLiveMotionToggle();
+    await configureHandheld("live toggle failure");
+    showToast(error.message || String(error));
+  }
+  syncLiveMotionToggle();
 });
 motionProfileSelect.addEventListener("change", async () => {
   if (motionMode.value === "recorded") await configureHandheld("profile");
@@ -2091,6 +2122,7 @@ function updateMotionStrengthPreview() {
   stabilizationValue.value = stabilizationInput.value;
   handheldController.configure({
     enabled: motionIsEnabled(),
+    liveDepth: motionMode.value === "live",
     motion: Number(motionInput.value),
     stabilization: Number(stabilizationInput.value),
   });
@@ -2408,7 +2440,8 @@ window.camPlayer.onHandheldMotion((sample) => {
     log(`Handheld samples rateHz=${(handheldSamples * 1000 / (now - handheldMetricsStartedAt)).toFixed(1)} `
       + `mode=${motionMode.value} recording=${motionRecording?.phase || "none"} `
       + `pan=${motion.panX.toFixed(1)},${motion.panY.toFixed(1)} `
-      + `rollDeg=${(motion.roll * 180 / Math.PI).toFixed(2)}`);
+      + `rollDeg=${(motion.roll * 180 / Math.PI).toFixed(2)} `
+      + `depthScale=${motion.depthScale.toFixed(4)}`);
     handheldSamples = 0;
     handheldMetricsStartedAt = now;
   }
@@ -2442,7 +2475,9 @@ async function initialize() {
   const storedMotionMode = preferences.motionMode
     || (preferences.handheld === true ? "live" : "off");
   motionMode.value = rememberMotionStateToggle.checked ? storedMotionMode : "off";
+  motionModeBeforeLive = motionMode.value === "recorded" ? "recorded" : "off";
   if (motionMode.value === "recorded" && !motionProfileSelect.value) motionMode.value = "off";
+  syncLiveMotionToggle();
   if (motionMode.value === "recorded") {
     const summary = motionProfiles.find((profile) => profile.id === motionProfileSelect.value);
     applyMotionSettings(summary?.motion ?? 35, summary?.stabilization ?? 55);

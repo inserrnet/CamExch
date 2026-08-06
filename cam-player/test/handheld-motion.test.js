@@ -85,3 +85,74 @@ test("phone tilt translates without exposing perspective controls", () => {
   assert.equal("perspectiveX" in output, false);
   assert.equal("perspectiveY" in output, false);
 });
+
+test("live depth acceleration changes scale and remains bounded", () => {
+  const controller = new Controller();
+  controller.configure({ enabled: true, liveDepth: true, motion: 100, stabilization: 0 });
+  for (let index = 0; index < 10; index += 1) {
+    controller.ingest({
+      quaternion: [1, 0, 0, 0],
+      acceleration: [0, 0, 0],
+      displayRotation: 0,
+    }, index * 33);
+  }
+  for (let index = 10; index <= 40; index += 1) {
+    controller.ingest({
+      quaternion: [1, 0, 0, 0],
+      acceleration: [0, 0, -2],
+      displayRotation: 0,
+    }, index * 33);
+  }
+  const output = controller.output(1080, 1920);
+  assert.ok(output.depthScale > 1.01);
+  assert.ok(output.depthScale <= 1.14);
+  assert.ok(output.scale <= 1.14 * 1.04);
+});
+
+test("recorded motion ignores acceleration depth for backwards compatibility", () => {
+  const controller = new Controller();
+  controller.configure({ enabled: true, liveDepth: false, motion: 100, stabilization: 0 });
+  for (let index = 0; index <= 30; index += 1) {
+    controller.ingest({
+      quaternion: [1, 0, 0, 0],
+      acceleration: [0, 0, -4],
+      displayRotation: 0,
+    }, index * 33);
+  }
+  assert.equal(controller.output(1080, 1920).depthScale, 1);
+});
+
+test("recenter clears accumulated live depth", () => {
+  const controller = new Controller();
+  controller.configure({ enabled: true, liveDepth: true, motion: 100, stabilization: 0 });
+  for (let index = 0; index < 10; index += 1) {
+    controller.ingest({
+      quaternion: [1, 0, 0, 0],
+      acceleration: [0, 0, 0],
+      displayRotation: 0,
+    }, index * 33);
+  }
+  for (let index = 10; index <= 30; index += 1) {
+    controller.ingest({
+      quaternion: [1, 0, 0, 0],
+      acceleration: [0, 0, -2],
+      displayRotation: 0,
+    }, index * 33);
+  }
+  assert.notEqual(controller.output(720, 1280).depthScale, 1);
+  controller.recenter();
+  assert.equal(controller.output(720, 1280).depthScale, 1);
+});
+
+test("live depth calibrates and rejects a constant accelerometer bias", () => {
+  const controller = new Controller();
+  controller.configure({ enabled: true, liveDepth: true, motion: 100, stabilization: 0 });
+  for (let index = 0; index < 300; index += 1) {
+    controller.ingest({
+      quaternion: [1, 0, 0, 0],
+      acceleration: [0, 0, 0.08],
+      displayRotation: 0,
+    }, index * 33);
+  }
+  assert.ok(Math.abs(controller.output(1080, 1920).depthScale - 1) < 1e-6);
+});

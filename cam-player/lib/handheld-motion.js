@@ -50,20 +50,35 @@
     return euler;
   }
 
+  function newDepthState(acceleration) {
+    const z = Number(acceleration?.[2]);
+    return {
+      acceleration: 0,
+      velocity: 0,
+      position: 0,
+      bias: null,
+      calibrationSum: Number.isFinite(z) ? z : 0,
+      calibrationSamples: Number.isFinite(z) ? 1 : 0,
+    };
+  }
+
   class Controller {
     constructor() {
       this.enabled = false;
+      this.liveDepth = false;
       this.motion = 35;
       this.stabilization = 55;
       this.latest = null;
       this.baseline = null;
       this.smoothed = { x: 0, y: 0, z: 0 };
+      this.depth = newDepthState();
       this.lastTimestampMs = null;
     }
 
-    configure({ enabled, motion, stabilization }) {
+    configure({ enabled, liveDepth = false, motion, stabilization }) {
       const wasEnabled = this.enabled;
       this.enabled = !!enabled;
+      this.liveDepth = !!liveDepth;
       this.motion = clamp(motion, 0, 100);
       this.stabilization = clamp(stabilization, 0, 100);
       if (this.enabled && !wasEnabled) this.recenter();
@@ -97,7 +112,46 @@
       for (const axis of ["x", "y", "z"]) {
         this.smoothed[axis] += (target[axis] - this.smoothed[axis]) * alpha;
       }
+      this.updateDepth(sample.acceleration, deltaSeconds);
       return this.output();
+    }
+
+    updateDepth(acceleration, deltaSeconds) {
+      if (!this.liveDepth || !Array.isArray(acceleration) || acceleration.length < 3) {
+        this.depth = newDepthState();
+        return;
+      }
+      const accelerationZ = Number(acceleration[2]);
+      if (!Number.isFinite(accelerationZ)) return;
+      if (this.depth.calibrationSamples < 10) {
+        this.depth.calibrationSum += accelerationZ;
+        this.depth.calibrationSamples += 1;
+        if (this.depth.calibrationSamples === 10) {
+          this.depth.bias = this.depth.calibrationSum / this.depth.calibrationSamples;
+        }
+        return;
+      }
+      if (!Number.isFinite(this.depth.bias)) this.depth.bias = accelerationZ;
+      const biasDelta = accelerationZ - this.depth.bias;
+      if (Math.abs(biasDelta) < 0.24) {
+        const biasAlpha = 1 - Math.exp(-deltaSeconds / 2.5);
+        this.depth.bias += biasDelta * biasAlpha;
+      }
+      const rawTowardSource = clamp(-(accelerationZ - this.depth.bias), -5, 5);
+      const sensorAlpha = 1 - Math.exp(-deltaSeconds / 0.055);
+      this.depth.acceleration += (rawTowardSource - this.depth.acceleration) * sensorAlpha;
+      const deadZone = 0.10;
+      const activeAcceleration = Math.abs(this.depth.acceleration) <= deadZone
+        ? 0
+        : this.depth.acceleration - Math.sign(this.depth.acceleration) * deadZone;
+      this.depth.velocity += activeAcceleration * deltaSeconds;
+      this.depth.velocity *= Math.exp(-deltaSeconds * 3.5);
+      this.depth.position += this.depth.velocity * deltaSeconds;
+      this.depth.position *= Math.exp(-deltaSeconds * 0.12);
+      this.depth.position = clamp(this.depth.position, -0.16, 0.16);
+      if (activeAcceleration === 0 && Math.abs(this.depth.velocity) < 0.001) {
+        this.depth.velocity = 0;
+      }
     }
 
     recenter() {
@@ -109,6 +163,7 @@
 
     resetSmoothing() {
       this.smoothed = { x: 0, y: 0, z: 0 };
+      this.depth = newDepthState(this.latest?.acceleration);
       this.lastTimestampMs = null;
     }
 
@@ -119,6 +174,7 @@
           panY: 0,
           roll: 0,
           scale: 1,
+          depthScale: 1,
         };
       }
       const gain = this.motion / 50;
@@ -128,11 +184,16 @@
       const y = this.smoothed.y * gain * residual;
       const z = this.smoothed.z * gain * residual;
       const overscan = 1 + Math.min(0.04, 0.025 * gain);
+      const depthResidual = 1 - stabilization * 0.65;
+      const depthScale = this.liveDepth
+        ? clamp(Math.exp(this.depth.position * 0.75 * gain * depthResidual), 0.90, 1.14)
+        : 1;
       return {
         panX: -y * Math.max(1, width) * 0.7,
         panY: x * Math.max(1, height) * 0.7,
         roll: -z * 0.9,
-        scale: overscan,
+        scale: overscan * depthScale,
+        depthScale,
       };
     }
   }

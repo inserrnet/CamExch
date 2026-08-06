@@ -65,9 +65,20 @@ test("composes live and recorded phone motion without changing manual transforms
   assert.match(renderer, /new CamMotionProfile\.Player/);
   assert.match(renderer, /Recording 00:\$\{String\(elapsedSeconds\)/);
   assert.match(indexHtml, /id="motionMode"/);
+  assert.match(indexHtml, /id="liveMotionToggle"/);
   assert.match(indexHtml, /id="motionProfileSelect"/);
   assert.match(indexHtml, /id="recordMotionButton"/);
   assert.doesNotMatch(indexHtml, /id="handheldToggle"/);
+  assert.match(renderer, /liveDepth: motionMode\.value === "live"/);
+  assert.match(renderer, /depthScale=\$\{motion\.depthScale\.toFixed\(4\)\}/);
+});
+
+test("coalesces phone motion before renderer IPC delivery", () => {
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  assert.match(main, /function dispatchLatestMotionSample\(sample\)/);
+  assert.match(main, /pendingMotionSample = sample/);
+  assert.match(main, /setImmediate\(\(\) =>/);
+  assert.match(main, /sequence <= latestSequence/);
 });
 
 test("opens dropped media through the same preparation pipeline", () => {

@@ -48,6 +48,22 @@ const interfaceDescriptions = new Map();
 let pendingLogLines = [];
 let logFlushTimer = null;
 let activeQrScan = null;
+let pendingMotionSample = null;
+let motionDispatchScheduled = false;
+
+function dispatchLatestMotionSample(sample) {
+  pendingMotionSample = sample;
+  if (motionDispatchScheduled) return;
+  motionDispatchScheduled = true;
+  setImmediate(() => {
+    motionDispatchScheduled = false;
+    const latest = pendingMotionSample;
+    pendingMotionSample = null;
+    if (latest && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("handheld-motion", latest);
+    }
+  });
+}
 
 function userFile(name) {
   return path.join(app.getPath("userData"), name);
@@ -375,6 +391,8 @@ async function handleRequest(request, response) {
     if (request.method === "POST" && requestUrl.pathname === "/motion-stream") {
       let buffer = "";
       let samples = 0;
+      let discarded = 0;
+      let latestSequence = -1;
       const startedAt = Date.now();
       let finished = false;
       request.setEncoding("utf8");
@@ -391,9 +409,13 @@ async function handleRequest(request, response) {
           try {
             const sample = JSON.parse(line);
             if (!Array.isArray(sample.quaternion) || sample.quaternion.length < 4) continue;
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send("handheld-motion", sample);
+            const sequence = Number(sample.sequence);
+            if (Number.isFinite(sequence) && sequence <= latestSequence) {
+              discarded += 1;
+              continue;
             }
+            if (Number.isFinite(sequence)) latestSequence = sequence;
+            dispatchLatestMotionSample(sample);
             samples += 1;
           } catch (error) {
             log(`Motion sample rejected ${error.message}`);
@@ -407,7 +429,8 @@ async function handleRequest(request, response) {
           sendJson(response, 200, { ok: true });
         }
         const elapsed = Math.max(1, Date.now() - startedAt);
-        log(`Motion stream closed samples=${samples} averageHz=${(samples * 1000 / elapsed).toFixed(1)}`);
+        log(`Motion stream closed samples=${samples} discarded=${discarded} `
+          + `averageHz=${(samples * 1000 / elapsed).toFixed(1)}`);
       };
       request.once("end", finish);
       request.once("close", finish);
