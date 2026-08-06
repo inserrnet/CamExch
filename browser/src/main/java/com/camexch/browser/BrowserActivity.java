@@ -8,6 +8,8 @@ import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -41,6 +43,7 @@ import android.widget.Toast;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -76,6 +79,7 @@ public class BrowserActivity extends Activity {
     private final Handler diagnosticsHandler = new Handler(Looper.getMainLooper());
     private ValueCallback<Uri[]> fileChooserCallback;
     private WebView fileChooserOwner;
+    private volatile String cameraInventoryJson;
     private final Runnable diagnosticsTask = new Runnable() {
         @Override
         public void run() {
@@ -705,6 +709,50 @@ public class BrowserActivity extends Activity {
 
     private final class SourceBridge {
         private static final String BRIDGE_URI = "content://com.camexch.source.bridge";
+
+        @JavascriptInterface
+        public String getCameraInventory() {
+            String cached = cameraInventoryJson;
+            if (cached != null) {
+                return cached;
+            }
+            JSONObject inventory = new JSONObject();
+            JSONArray front = new JSONArray();
+            JSONArray back = new JSONArray();
+            try {
+                CameraManager manager = (CameraManager) getSystemService(CAMERA_SERVICE);
+                String[] cameraIds = manager.getCameraIdList();
+                Arrays.sort(cameraIds);
+                for (String cameraId : cameraIds) {
+                    Integer facing = manager.getCameraCharacteristics(cameraId)
+                            .get(CameraCharacteristics.LENS_FACING);
+                    JSONArray target;
+                    String facingName;
+                    if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
+                        target = front;
+                        facingName = "front";
+                    } else if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) {
+                        target = back;
+                        facingName = "back";
+                    } else {
+                        continue;
+                    }
+                    JSONObject camera = new JSONObject();
+                    camera.put("id", cameraId);
+                    camera.put("label", "camera " + cameraId + ", facing " + facingName);
+                    target.put(camera);
+                }
+                inventory.put("front", front);
+                inventory.put("back", back);
+                cached = inventory.toString();
+                cameraInventoryJson = cached;
+                AppLog.info(BrowserActivity.this, "Native camera inventory=" + cached);
+                return cached;
+            } catch (Throwable error) {
+                AppLog.info(BrowserActivity.this, "Native camera inventory unavailable " + error);
+                return "{\"front\":[],\"back\":[]}";
+            }
+        }
 
         @JavascriptInterface
         public String getCameraRouteMode() {

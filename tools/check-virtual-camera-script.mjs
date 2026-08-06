@@ -76,7 +76,7 @@ for (const marker of [
 const nativeDevices = [
   { kind: "videoinput", deviceId: "rear-id", label: "camera 2, facing back", groupId: "rear" },
   { kind: "videoinput", deviceId: "main-rear-id", label: "camera 0, facing back", groupId: "main-rear" },
-  { kind: "videoinput", deviceId: "front-id", label: "camera2 2, facing front", groupId: "front" },
+  { kind: "videoinput", deviceId: "front-id", label: "camera 1, facing front", groupId: "front" },
 ];
 let nativeGetCount = 0;
 let lastNativeConstraints = null;
@@ -558,6 +558,10 @@ context.window = context;
 context.globalThis = context;
 context.CamExchBridge = {
   authorizeNativeCamera: () => "OK",
+  getCameraInventory: () => JSON.stringify({
+    front: [{ id: "1", label: "camera 1, facing front" }],
+    back: [{ id: "0", label: "camera 0, facing back" }],
+  }),
   getCameraRouteMode: () => "AUTO",
   getDeviceOrientation: () => "portrait",
   getMode: () => sourceOnline ? "RTSP" : "ERROR:source offline",
@@ -777,7 +781,7 @@ if (mapped.find((device) => device.deviceId === "rear-id")?.label !== "camera 2,
 if (mapped.find((device) => device.kind === "videoinput")?.deviceId !== "main-rear-id") {
   throw new Error("The primary camera 0 was not preferred over secondary rear modules");
 }
-if (mapped.find((device) => device.deviceId === "front-id")?.label !== "camera2 2, facing front") {
+if (mapped.find((device) => device.deviceId === "front-id")?.label !== "camera 1, facing front") {
   throw new Error("Native front camera label was not preserved");
 }
 if (mapped.some((device) => device.deviceId === "camexch-back-camera")) {
@@ -1091,15 +1095,15 @@ if (onlineSourceSwitch.switched !== 1 || onlineSourceSwitch.failed !== 0
     || activeEntry.controller.route !== "SOURCE"
     || onlineSourceSwitch.devicechange !== 1
     || deviceChangeCount !== deviceChangesBeforeOnlineSwitch + 1
-    || stableTrackBeforeOnlineSwitch.label !== "camera2 2, facing front"
+    || stableTrackBeforeOnlineSwitch.label !== "camera 0, facing back"
     || inheritedSwitchVideo?.width?.ideal !== 1280
     || inheritedSwitchVideo?.height?.ideal !== 720
     || inheritedSwitchVideo?.deviceId !== undefined) {
   throw new Error("Online Source switch did not preserve and relabel the page track");
 }
 const sourceSettings = stableTrackBeforeOnlineSwitch.getSettings();
-if (sourceSettings.facingMode !== "user"
-    || sourceSettings.deviceId !== "camexch-front-camera-4"
+if (sourceSettings.facingMode !== "environment"
+    || sourceSettings.deviceId !== "main-rear-id"
     || sourceSettings.width !== TEST_SOURCE_WIDTH
     || sourceSettings.height !== TEST_SOURCE_HEIGHT
     || nativeGetCount !== nativeCountBeforeOnlineSwitch) {
@@ -1138,7 +1142,7 @@ if (detachedLiveSwitch.switched !== 1 || detachedLiveSwitch.revived !== 0
     || detachedLiveSwitch.reattached !== 1 || detachedLiveSwitch.failed !== 0
     || activeEntry.stream.getVideoTracks()[0] !== endedSessionTrack
     || endedSessionTrack.readyState !== "live"
-    || endedSessionTrack.getSettings().facingMode !== "user"
+    || endedSessionTrack.getSettings().facingMode !== "environment"
     || clonedManagedStream.getVideoTracks().length !== 1
     || connectedConsumer.playCount < 1 || clonedConsumer.playCount < 1
     || detachedConsumer.playCount < 1
@@ -1165,7 +1169,7 @@ if (revivedSourceSwitch.switched !== 1 || revivedSourceSwitch.revived !== 1
     || !revivedClonedTrack || revivedClonedTrack === clonedStreamTrackBeforeRevival
     || revivedClonedTrack.readyState !== "live"
     || clonedStreamTrackBeforeRevival.readyState !== "ended"
-    || revivedTrack.label !== "camera2 2, facing front"
+    || revivedTrack.label !== "camera 0, facing back"
     || revivedTrack.getSettings().width !== TEST_SOURCE_WIDTH
     || revivedTrack.getSettings().height !== TEST_SOURCE_HEIGHT) {
   throw new Error("Stopped camera session was not rebuilt with a new Source track");
@@ -1228,8 +1232,8 @@ const deviceChangeStream = await deviceChangeStreamPromise;
 const deviceChangeTrack = deviceChangeStream?.getVideoTracks?.()[0];
 if (sourceDeviceChangeSwitch.devicechange !== 1
     || !deviceChangeTrack
-    || deviceChangeTrack.label !== "camera2 2, facing front"
-    || deviceChangeTrack.getSettings().facingMode !== "user"
+    || deviceChangeTrack.label !== "camera 0, facing back"
+    || deviceChangeTrack.getSettings().facingMode !== "environment"
     || nativeGetCount !== nativeCountBeforeDeviceChangeRequest) {
   throw new Error("Devicechange camera retry bypassed Source routing");
 }
@@ -1250,8 +1254,8 @@ const sourceIframeStream = await sourceIframeGetUserMedia.call(
 );
 const sourceIframeTrack = sourceIframeStream?.getVideoTracks?.()[0];
 if (!sourceIframeTrack
-    || sourceIframeTrack.label !== "camera2 2, facing front"
-    || sourceIframeTrack.getSettings().facingMode !== "user"
+    || sourceIframeTrack.label !== "camera 0, facing back"
+    || sourceIframeTrack.getSettings().facingMode !== "environment"
     || earlyIframeNativeCalls !== earlyIframeCallsBeforeSourceRetry) {
   throw new Error("Early iframe retry ignored the selected Source route");
 }
@@ -1453,7 +1457,7 @@ const racedStream = await delayedNativeRequest;
 const racedSwitch = await sourceWinsRace;
 const racedTrack = racedStream.getVideoTracks()[0];
 if (racedSwitch.failed !== 0
-    || racedTrack?.label !== "camera2 2, facing front"
+    || racedTrack?.label !== "camera 1, facing front"
     || racedTrack?.getSettings?.().facingMode !== "user"
     || lastNativeTrack?.readyState !== "ended") {
   throw new Error("Late native getUserMedia result survived the N to F race");

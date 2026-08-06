@@ -93,11 +93,25 @@ public class VirtualCameraScriptTest {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "nativeFrontLabel=label"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "if(controller.route==='SOURCE')return sourceCameraLabel()"));
+                "getCameraInventory"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "label:sourceCameraLabel()"));
+                "if(controller.route==='SOURCE')return sourceIdentity(controller).label"));
         assertFalse(VirtualCameraScript.SCRIPT.contains(
                 "d.label==='Front Camera 4'"));
+    }
+
+    @Test
+    public void forcedSourceIdentityFollowsTheSitesRequestedCamera() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "function sourceIdentity(controller)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "constraintHas(v.facingMode,'environment')"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "result.facingMode=identity.facingMode"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "result.deviceId=identity.deviceId"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "label:nativeRearLabel||'Back Camera'"));
     }
 
     @Test
