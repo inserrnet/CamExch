@@ -75,6 +75,13 @@
       && sample.position.slice(0, 3).every((value) => Number.isFinite(Number(value)));
   }
 
+  function sensorToDisplayRotation(sample) {
+    const explicit = Number(sample?.sensorToDisplayRotation);
+    if (Number.isInteger(explicit) && explicit >= 0 && explicit <= 3) return explicit;
+    const display = Math.round(clamp(sample?.displayRotation, 0, 3));
+    return (1 - display + 4) % 4;
+  }
+
   class Controller {
     constructor() {
       this.enabled = false;
@@ -138,7 +145,7 @@
         );
         const cameraDelta = remapVectorForDisplay(
           rotateVector(conjugate(this.baseline), worldDelta),
-          Number(sample.sensorToDisplayRotation) || 0,
+          sensorToDisplayRotation(sample),
         );
         for (let axis = 0; axis < 3; axis += 1) {
           const target = clamp(cameraDelta[axis], -0.5, 0.5);
@@ -203,5 +210,6 @@
   return {
     Controller, normalizeQuaternion, multiply, relativeQuaternion,
     rotateVector, relativeEuler, remapForDisplay, remapVectorForDisplay,
+    sensorToDisplayRotation,
   };
 }));

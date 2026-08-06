@@ -6,6 +6,7 @@ const {
   Controller,
   relativeEuler,
   remapForDisplay,
+  sensorToDisplayRotation,
 } = require("../lib/handheld-motion");
 
 function axisAngle(axis, radians) {
@@ -133,6 +134,12 @@ test("maps a portrait rear-camera sensor axis onto screen axes", () => {
   vertical.ingest(arPose([0.08, 0, 0], [1, 0, 0, 0], 1), 100);
   assert.ok(Math.abs(vertical.output(1080, 1920).panX) < 1e-9);
   assert.ok(vertical.output(1080, 1920).panY > 10);
+});
+
+test("uses the standard 90 degree rear-camera orientation with older Source builds", () => {
+  assert.equal(sensorToDisplayRotation({ displayRotation: 0 }), 1);
+  assert.equal(sensorToDisplayRotation({ displayRotation: 1 }), 0);
+  assert.equal(sensorToDisplayRotation({ displayRotation: 0, sensorToDisplayRotation: 3 }), 3);
 });
 
 test("live forward translation changes scale and remains bounded", () => {
