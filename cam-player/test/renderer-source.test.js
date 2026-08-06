@@ -54,7 +54,11 @@ test("mirrors the transmitted source and cached background on the GPU", () => {
 
 test("composes live and recorded phone motion without changing manual transforms", () => {
   assert.match(renderer, /uniform float u_handheld_roll/);
-  assert.match(renderer, /uniform vec2 u_handheld_perspective/);
+  assert.doesNotMatch(renderer, /u_handheld_perspective/);
+  assert.match(renderer, /centeredPixels = \(uv - 0\.5\) \* safeDisplayed/);
+  assert.match(renderer, /rotatedPixels \/ safeDisplayed \+ 0\.5/);
+  assert.match(renderer, /applyHandheld\(fgUv, displayed\)/);
+  assert.doesNotMatch(renderer, /float depth =/);
   assert.match(renderer, /t\.scale \* handheld\.scale/);
   assert.match(renderer, /t\.panX \+ handheld\.panX/);
   assert.match(renderer, /window\.camPlayer\.onHandheldMotion/);

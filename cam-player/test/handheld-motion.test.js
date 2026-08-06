@@ -49,8 +49,8 @@ test("recenter makes the current phone pose motionless", () => {
   assert.ok(Math.abs(centered.panX) < 1e-12);
   assert.ok(Math.abs(centered.panY) < 1e-12);
   assert.ok(Math.abs(centered.roll) < 1e-12);
-  assert.ok(Math.abs(centered.perspectiveX) < 1e-12);
-  assert.ok(Math.abs(centered.perspectiveY) < 1e-12);
+  assert.equal("perspectiveX" in centered, false);
+  assert.equal("perspectiveY" in centered, false);
   assert.equal(centered.scale, 1.025);
 });
 
@@ -70,7 +70,7 @@ test("stabilization reduces and slows the same phone movement", () => {
     > Math.abs(high.output(720, 1280).panY) * 10);
 });
 
-test("phone tilt never applies trapezoid perspective to a document", () => {
+test("phone tilt translates without exposing perspective controls", () => {
   const controller = new Controller();
   controller.configure({ enabled: true, motion: 100, stabilization: 0 });
   controller.ingest({ quaternion: [1, 0, 0, 0], displayRotation: 0 }, 0);
@@ -82,6 +82,6 @@ test("phone tilt never applies trapezoid perspective to a document", () => {
   }
   const output = controller.output(720, 1280);
   assert.ok(Math.abs(output.panX) > 5);
-  assert.equal(output.perspectiveX, 0);
-  assert.equal(output.perspectiveY, 0);
+  assert.equal("perspectiveX" in output, false);
+  assert.equal("perspectiveY" in output, false);
 });

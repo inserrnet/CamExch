@@ -74,7 +74,6 @@ uniform vec2 u_pan;
 uniform int u_rotation;
 uniform int u_mirrored;
 uniform float u_handheld_roll;
-uniform vec2 u_handheld_perspective;
 in vec2 v_uv;
 out vec4 outColor;
 
@@ -95,13 +94,13 @@ vec4 sampleSource(vec2 uv) {
   return texture(u_texture, orientUv(vec2(uv.x, 1.0 - uv.y)), u_lod_bias);
 }
 
-vec2 applyHandheld(vec2 uv) {
-  vec2 centered = uv - 0.5;
+vec2 applyHandheld(vec2 uv, vec2 displayed) {
+  vec2 safeDisplayed = max(displayed, vec2(1.0));
+  vec2 centeredPixels = (uv - 0.5) * safeDisplayed;
   float cosine = cos(u_handheld_roll);
   float sine = sin(u_handheld_roll);
-  vec2 rotated = mat2(cosine, -sine, sine, cosine) * centered;
-  float depth = max(0.72, 1.0 + dot(u_handheld_perspective, rotated));
-  return rotated / depth + 0.5;
+  vec2 rotatedPixels = mat2(cosine, -sine, sine, cosine) * centeredPixels;
+  return rotatedPixels / safeDisplayed + 0.5;
 }
 
 void main() {
@@ -111,7 +110,7 @@ void main() {
   vec2 displayed = u_source * fit * u_scale;
   vec2 center = u_output * 0.5 + u_pan;
   vec2 fgUv = (pixel - (center - displayed * 0.5)) / displayed;
-  vec2 handheldUv = applyHandheld(fgUv);
+  vec2 handheldUv = applyHandheld(fgUv, displayed);
   bool inside = handheldUv.x >= 0.0 && handheldUv.x <= 1.0
     && handheldUv.y >= 0.0 && handheldUv.y <= 1.0;
   outColor = inside ? sampleSource(handheldUv) : background;
@@ -257,7 +256,6 @@ const uniforms = {
   rotation: gl.getUniformLocation(program, "u_rotation"),
   mirrored: gl.getUniformLocation(program, "u_mirrored"),
   handheldRoll: gl.getUniformLocation(program, "u_handheld_roll"),
-  handheldPerspective: gl.getUniformLocation(program, "u_handheld_perspective"),
 };
 const blurUniforms = {
   texture: gl.getUniformLocation(blurProgram, "u_texture"),
@@ -732,11 +730,6 @@ function renderFrame(force, frameMetadata = null) {
   gl.uniform1i(uniforms.rotation, sourceRotation);
   gl.uniform1i(uniforms.mirrored, sourceMirrored ? 1 : 0);
   gl.uniform1f(uniforms.handheldRoll, handheld.roll);
-  gl.uniform2f(
-    uniforms.handheldPerspective,
-    handheld.perspectiveX,
-    handheld.perspectiveY,
-  );
   gl.drawArrays(gl.TRIANGLES, 0, 6);
   if (canvasTrack && typeof canvasTrack.requestFrame === "function") {
     canvasTrack.requestFrame();
