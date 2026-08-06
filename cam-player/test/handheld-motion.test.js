@@ -69,3 +69,19 @@ test("stabilization reduces and slows the same phone movement", () => {
   assert.ok(Math.abs(low.output(720, 1280).panY)
     > Math.abs(high.output(720, 1280).panY) * 10);
 });
+
+test("phone tilt never applies trapezoid perspective to a document", () => {
+  const controller = new Controller();
+  controller.configure({ enabled: true, motion: 100, stabilization: 0 });
+  controller.ingest({ quaternion: [1, 0, 0, 0], displayRotation: 0 }, 0);
+  for (let index = 1; index <= 8; index += 1) {
+    controller.ingest({
+      quaternion: axisAngle([0, 1, 0], 0.16),
+      displayRotation: 0,
+    }, index * 33);
+  }
+  const output = controller.output(720, 1280);
+  assert.ok(Math.abs(output.panX) > 5);
+  assert.equal(output.perspectiveX, 0);
+  assert.equal(output.perspectiveY, 0);
+});

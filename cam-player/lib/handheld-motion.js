@@ -134,8 +134,9 @@
         panX: -y * Math.max(1, width) * 0.7,
         panY: x * Math.max(1, height) * 0.7,
         roll: -z * 0.9,
-        perspectiveX: y * 0.15,
-        perspectiveY: -x * 0.15,
+        // Phone tilt still moves the frame, but document geometry stays rectangular.
+        perspectiveX: 0,
+        perspectiveY: 0,
         scale: overscan,
       };
     }
