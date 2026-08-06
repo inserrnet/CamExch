@@ -31,11 +31,26 @@
     ];
   }
 
-  function relativeEuler(baseline, current) {
-    const [w, x, y, z] = normalizeQuaternion(multiply(
+  function relativeQuaternion(baseline, current) {
+    return normalizeQuaternion(multiply(
       conjugate(normalizeQuaternion(baseline)),
       normalizeQuaternion(current),
     ));
+  }
+
+  function rotateVector([w, x, y, z], [vx, vy, vz]) {
+    const tx = 2 * (y * vz - z * vy);
+    const ty = 2 * (z * vx - x * vz);
+    const tz = 2 * (x * vy - y * vx);
+    return [
+      vx + w * tx + (y * tz - z * ty),
+      vy + w * ty + (z * tx - x * tz),
+      vz + w * tz + (x * ty - y * tx),
+    ];
+  }
+
+  function relativeEuler(baseline, current) {
+    const [w, x, y, z] = relativeQuaternion(baseline, current);
     const roll = Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y));
     const pitchValue = clamp(2 * (w * y - z * x), -1, 1);
     const pitch = Math.asin(pitchValue);
@@ -50,35 +65,42 @@
     return euler;
   }
 
-  function newDepthState(acceleration) {
-    const z = Number(acceleration?.[2]);
+  function remapVectorForDisplay([x, y, z], displayRotation) {
+    if (displayRotation === 1) return [y, -x, z];
+    if (displayRotation === 2) return [-x, -y, z];
+    if (displayRotation === 3) return [-y, x, z];
+    return [x, y, z];
+  }
+
+  function newTranslationState() {
     return {
-      acceleration: 0,
-      velocity: 0,
-      position: 0,
-      bias: null,
-      calibrationSum: Number.isFinite(z) ? z : 0,
-      calibrationSamples: Number.isFinite(z) ? 1 : 0,
+      acceleration: [0, 0, 0],
+      velocity: [0, 0, 0],
+      position: [0, 0, 0],
+      bias: [0, 0, 0],
+      calibrationSum: [0, 0, 0],
+      calibrationSamples: 0,
+      stationarySeconds: 0,
     };
   }
 
   class Controller {
     constructor() {
       this.enabled = false;
-      this.liveDepth = false;
+      this.liveTranslation = false;
       this.motion = 35;
       this.stabilization = 55;
       this.latest = null;
       this.baseline = null;
       this.smoothed = { x: 0, y: 0, z: 0 };
-      this.depth = newDepthState();
+      this.translation = newTranslationState();
       this.lastTimestampMs = null;
     }
 
-    configure({ enabled, liveDepth = false, motion, stabilization }) {
+    configure({ enabled, liveTranslation = false, motion, stabilization }) {
       const wasEnabled = this.enabled;
       this.enabled = !!enabled;
-      this.liveDepth = !!liveDepth;
+      this.liveTranslation = !!liveTranslation;
       this.motion = clamp(motion, 0, 100);
       this.stabilization = clamp(stabilization, 0, 100);
       if (this.enabled && !wasEnabled) this.recenter();
@@ -112,46 +134,81 @@
       for (const axis of ["x", "y", "z"]) {
         this.smoothed[axis] += (target[axis] - this.smoothed[axis]) * alpha;
       }
-      this.updateDepth(sample.acceleration, deltaSeconds);
+      const relativeRotation = relativeQuaternion(this.baseline, sample.quaternion);
+      const acceleration = remapVectorForDisplay(
+        rotateVector(relativeRotation, Array.from(sample.acceleration || [0, 0, 0])),
+        Number(sample.displayRotation) || 0,
+      );
+      this.updateTranslation(acceleration, sample.gyro, deltaSeconds);
       return this.output();
     }
 
-    updateDepth(acceleration, deltaSeconds) {
-      if (!this.liveDepth || !Array.isArray(acceleration) || acceleration.length < 3) {
-        this.depth = newDepthState();
+    updateTranslation(acceleration, gyro, deltaSeconds) {
+      if (!this.liveTranslation || !Array.isArray(acceleration) || acceleration.length < 3) {
+        this.translation = newTranslationState();
         return;
       }
-      const accelerationZ = Number(acceleration[2]);
-      if (!Number.isFinite(accelerationZ)) return;
-      if (this.depth.calibrationSamples < 10) {
-        this.depth.calibrationSum += accelerationZ;
-        this.depth.calibrationSamples += 1;
-        if (this.depth.calibrationSamples === 10) {
-          this.depth.bias = this.depth.calibrationSum / this.depth.calibrationSamples;
+      const measured = acceleration.slice(0, 3).map(Number);
+      if (measured.some((value) => !Number.isFinite(value))) return;
+      if (this.translation.calibrationSamples < 12) {
+        for (let axis = 0; axis < 3; axis += 1) {
+          this.translation.calibrationSum[axis] += measured[axis];
+        }
+        this.translation.calibrationSamples += 1;
+        if (this.translation.calibrationSamples === 12) {
+          this.translation.bias = this.translation.calibrationSum.map(
+            (sum) => sum / this.translation.calibrationSamples,
+          );
         }
         return;
       }
-      if (!Number.isFinite(this.depth.bias)) this.depth.bias = accelerationZ;
-      const biasDelta = accelerationZ - this.depth.bias;
-      if (Math.abs(biasDelta) < 0.24) {
-        const biasAlpha = 1 - Math.exp(-deltaSeconds / 2.5);
-        this.depth.bias += biasDelta * biasAlpha;
-      }
-      const rawTowardSource = clamp(-(accelerationZ - this.depth.bias), -5, 5);
       const sensorAlpha = 1 - Math.exp(-deltaSeconds / 0.055);
-      this.depth.acceleration += (rawTowardSource - this.depth.acceleration) * sensorAlpha;
-      const deadZone = 0.10;
-      const activeAcceleration = Math.abs(this.depth.acceleration) <= deadZone
-        ? 0
-        : this.depth.acceleration - Math.sign(this.depth.acceleration) * deadZone;
-      this.depth.velocity += activeAcceleration * deltaSeconds;
-      this.depth.velocity *= Math.exp(-deltaSeconds * 3.5);
-      this.depth.position += this.depth.velocity * deltaSeconds;
-      this.depth.position *= Math.exp(-deltaSeconds * 0.12);
-      this.depth.position = clamp(this.depth.position, -0.16, 0.16);
-      if (activeAcceleration === 0 && Math.abs(this.depth.velocity) < 0.001) {
-        this.depth.velocity = 0;
+      for (let axis = 0; axis < 3; axis += 1) {
+        const corrected = measured[axis] - this.translation.bias[axis];
+        this.translation.acceleration[axis] += (
+          corrected - this.translation.acceleration[axis]
+        ) * sensorAlpha;
       }
+
+      const accelerationMagnitude = Math.hypot(...this.translation.acceleration);
+      const gyroMagnitude = Array.isArray(gyro) ? Math.hypot(...gyro.map(Number)) : 0;
+      const stationary = accelerationMagnitude < 0.22 && gyroMagnitude < 0.08;
+      this.translation.stationarySeconds = stationary
+        ? this.translation.stationarySeconds + deltaSeconds
+        : 0;
+
+      if (this.translation.stationarySeconds > 0.12) {
+        const biasAlpha = 1 - Math.exp(-deltaSeconds / 3.0);
+        for (let axis = 0; axis < 3; axis += 1) {
+          this.translation.bias[axis] += (
+            measured[axis] - this.translation.bias[axis]
+          ) * biasAlpha;
+          this.translation.velocity[axis] *= Math.exp(-deltaSeconds * 20);
+          if (this.translation.stationarySeconds > 0.3) {
+            this.translation.velocity[axis] = 0;
+          }
+        }
+      } else {
+        const deadZone = 0.12;
+        for (let axis = 0; axis < 3; axis += 1) {
+          const filtered = this.translation.acceleration[axis];
+          const active = Math.abs(filtered) <= deadZone
+            ? 0
+            : filtered - Math.sign(filtered) * deadZone;
+          this.translation.velocity[axis] = clamp(
+            (this.translation.velocity[axis] + active * deltaSeconds)
+              * Math.exp(-deltaSeconds * 0.6),
+            -1.5,
+            1.5,
+          );
+        }
+      }
+      for (let axis = 0; axis < 3; axis += 1) {
+        this.translation.position[axis] += this.translation.velocity[axis] * deltaSeconds;
+      }
+      this.translation.position[0] = clamp(this.translation.position[0], -0.22, 0.22);
+      this.translation.position[1] = clamp(this.translation.position[1], -0.22, 0.22);
+      this.translation.position[2] = clamp(this.translation.position[2], -0.20, 0.20);
     }
 
     recenter() {
@@ -163,7 +220,7 @@
 
     resetSmoothing() {
       this.smoothed = { x: 0, y: 0, z: 0 };
-      this.depth = newDepthState(this.latest?.acceleration);
+      this.translation = newTranslationState();
       this.lastTimestampMs = null;
     }
 
@@ -175,6 +232,11 @@
           roll: 0,
           scale: 1,
           depthScale: 1,
+          translationX: 0,
+          translationY: 0,
+          translationZ: 0,
+          translationCalibrated: false,
+          translationStationary: true,
         };
       }
       const gain = this.motion / 50;
@@ -184,16 +246,23 @@
       const y = this.smoothed.y * gain * residual;
       const z = this.smoothed.z * gain * residual;
       const overscan = 1 + Math.min(0.04, 0.025 * gain);
-      const depthResidual = 1 - stabilization * 0.65;
-      const depthScale = this.liveDepth
-        ? clamp(Math.exp(this.depth.position * 0.75 * gain * depthResidual), 0.90, 1.14)
+      const translationResidual = 1 - stabilization * 0.7;
+      const [translationX, translationY, translationZ] = this.translation.position;
+      const depthScale = this.liveTranslation
+        ? clamp(Math.exp(-translationZ * 0.6 * gain * translationResidual), 0.85, 1.20)
         : 1;
+      const translationGain = Math.min(width, height) * 1.2 * gain * translationResidual;
       return {
-        panX: -y * Math.max(1, width) * 0.7,
-        panY: x * Math.max(1, height) * 0.7,
+        panX: this.liveTranslation ? translationX * translationGain : -y * Math.max(1, width) * 0.7,
+        panY: this.liveTranslation ? -translationY * translationGain : x * Math.max(1, height) * 0.7,
         roll: -z * 0.9,
         scale: overscan * depthScale,
         depthScale,
+        translationX,
+        translationY,
+        translationZ,
+        translationCalibrated: this.translation.calibrationSamples >= 12,
+        translationStationary: this.translation.stationarySeconds > 0.12,
       };
     }
   }
@@ -202,7 +271,10 @@
     Controller,
     normalizeQuaternion,
     multiply,
+    relativeQuaternion,
+    rotateVector,
     relativeEuler,
     remapForDisplay,
+    remapVectorForDisplay,
   };
 }));

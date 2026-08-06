@@ -1955,7 +1955,7 @@ function startRecordedMotion(profile) {
   handheldController = new CamHandheld.Controller();
   handheldController.configure({
     enabled: true,
-    liveDepth: false,
+    liveTranslation: false,
     motion: Number(motionInput.value),
     stabilization: Number(stabilizationInput.value),
   });
@@ -2035,7 +2035,7 @@ async function configureHandheld(reason, persist = true) {
     handheldController = new CamHandheld.Controller();
     handheldController.configure({
       enabled: motionMode.value === "live",
-      liveDepth: motionMode.value === "live",
+      liveTranslation: motionMode.value === "live",
       motion: Number(motionInput.value),
       stabilization: Number(stabilizationInput.value),
     });
@@ -2122,7 +2122,7 @@ function updateMotionStrengthPreview() {
   stabilizationValue.value = stabilizationInput.value;
   handheldController.configure({
     enabled: motionIsEnabled(),
-    liveDepth: motionMode.value === "live",
+    liveTranslation: motionMode.value === "live",
     motion: Number(motionInput.value),
     stabilization: Number(stabilizationInput.value),
   });
@@ -2441,7 +2441,9 @@ window.camPlayer.onHandheldMotion((sample) => {
       + `mode=${motionMode.value} recording=${motionRecording?.phase || "none"} `
       + `pan=${motion.panX.toFixed(1)},${motion.panY.toFixed(1)} `
       + `rollDeg=${(motion.roll * 180 / Math.PI).toFixed(2)} `
-      + `depthScale=${motion.depthScale.toFixed(4)}`);
+      + `translation=${motion.translationX.toFixed(3)},${motion.translationY.toFixed(3)},${motion.translationZ.toFixed(3)}m `
+      + `depthScale=${motion.depthScale.toFixed(4)} `
+      + `tracking=${motion.translationCalibrated ? (motion.translationStationary ? "stationary" : "moving") : "calibrating"}`);
     handheldSamples = 0;
     handheldMetricsStartedAt = now;
   }

@@ -86,73 +86,131 @@ test("phone tilt translates without exposing perspective controls", () => {
   assert.equal("perspectiveY" in output, false);
 });
 
-test("live depth acceleration changes scale and remains bounded", () => {
-  const controller = new Controller();
-  controller.configure({ enabled: true, liveDepth: true, motion: 100, stabilization: 0 });
-  for (let index = 0; index < 10; index += 1) {
+function ingestAcceleration(controller, acceleration, startIndex, frameCount) {
+  for (let offset = 0; offset < frameCount; offset += 1) {
     controller.ingest({
       quaternion: [1, 0, 0, 0],
+      acceleration,
+      gyro: [0, 0, 0],
+      displayRotation: 0,
+    }, (startIndex + offset) * 33);
+  }
+  return startIndex + frameCount;
+}
+
+test("live motion follows physical rightward translation instead of phone tilt", () => {
+  const controller = new Controller();
+  controller.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
+  let frame = ingestAcceleration(controller, [0, 0, 0], 0, 12);
+  frame = ingestAcceleration(controller, [0.7, 0, 0], frame, 15);
+  frame = ingestAcceleration(controller, [-0.7, 0, 0], frame, 15);
+  ingestAcceleration(controller, [0, 0, 0], frame, 12);
+  const moved = controller.output(1080, 1920);
+  assert.ok(moved.translationX > 0.01);
+  assert.ok(moved.panX > 10);
+
+  const upward = new Controller();
+  upward.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
+  frame = ingestAcceleration(upward, [0, 0, 0], 0, 12);
+  frame = ingestAcceleration(upward, [0, 0.7, 0], frame, 15);
+  frame = ingestAcceleration(upward, [0, -0.7, 0], frame, 15);
+  ingestAcceleration(upward, [0, 0, 0], frame, 12);
+  assert.ok(upward.output(1080, 1920).translationY > 0.01);
+  assert.ok(upward.output(1080, 1920).panY < -10);
+
+  const tiltOnly = new Controller();
+  tiltOnly.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
+  for (let index = 0; index < 20; index += 1) {
+    tiltOnly.ingest({
+      quaternion: index < 12 ? [1, 0, 0, 0] : axisAngle([0, 1, 0], 0.16),
       acceleration: [0, 0, 0],
+      gyro: [0, 0, 0],
       displayRotation: 0,
     }, index * 33);
   }
-  for (let index = 10; index <= 40; index += 1) {
+  assert.ok(Math.abs(tiltOnly.output(1080, 1920).panX) < 1e-9);
+});
+
+test("live forward translation changes scale and remains bounded", () => {
+  const controller = new Controller();
+  controller.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
+  let frame = ingestAcceleration(controller, [0, 0, 0], 0, 12);
+  frame = ingestAcceleration(controller, [0, 0, -0.8], frame, 15);
+  frame = ingestAcceleration(controller, [0, 0, 0.8], frame, 15);
+  ingestAcceleration(controller, [0, 0, 0], frame, 12);
+  const output = controller.output(1080, 1920);
+  assert.ok(output.translationZ < -0.01);
+  assert.ok(output.depthScale > 1.01);
+  assert.ok(output.depthScale <= 1.20);
+  assert.ok(output.scale <= 1.20 * 1.04);
+});
+
+test("recorded motion ignores acceleration translation for backwards compatibility", () => {
+  const controller = new Controller();
+  controller.configure({ enabled: true, liveTranslation: false, motion: 100, stabilization: 0 });
+  for (let index = 0; index <= 30; index += 1) {
     controller.ingest({
       quaternion: [1, 0, 0, 0],
-      acceleration: [0, 0, -2],
+      acceleration: [4, 0, -4],
+      gyro: [0, 0, 0],
       displayRotation: 0,
     }, index * 33);
   }
   const output = controller.output(1080, 1920);
-  assert.ok(output.depthScale > 1.01);
-  assert.ok(output.depthScale <= 1.14);
-  assert.ok(output.scale <= 1.14 * 1.04);
+  assert.equal(output.depthScale, 1);
+  assert.equal(output.translationX, 0);
+  assert.equal(output.translationZ, 0);
 });
 
-test("recorded motion ignores acceleration depth for backwards compatibility", () => {
+test("recenter clears accumulated live translation and depth", () => {
   const controller = new Controller();
-  controller.configure({ enabled: true, liveDepth: false, motion: 100, stabilization: 0 });
-  for (let index = 0; index <= 30; index += 1) {
-    controller.ingest({
-      quaternion: [1, 0, 0, 0],
-      acceleration: [0, 0, -4],
-      displayRotation: 0,
-    }, index * 33);
-  }
-  assert.equal(controller.output(1080, 1920).depthScale, 1);
-});
-
-test("recenter clears accumulated live depth", () => {
-  const controller = new Controller();
-  controller.configure({ enabled: true, liveDepth: true, motion: 100, stabilization: 0 });
-  for (let index = 0; index < 10; index += 1) {
-    controller.ingest({
-      quaternion: [1, 0, 0, 0],
-      acceleration: [0, 0, 0],
-      displayRotation: 0,
-    }, index * 33);
-  }
-  for (let index = 10; index <= 30; index += 1) {
-    controller.ingest({
-      quaternion: [1, 0, 0, 0],
-      acceleration: [0, 0, -2],
-      displayRotation: 0,
-    }, index * 33);
-  }
+  controller.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
+  let frame = ingestAcceleration(controller, [0, 0, 0], 0, 12);
+  frame = ingestAcceleration(controller, [0.8, 0, -0.8], frame, 15);
+  ingestAcceleration(controller, [-0.8, 0, 0.8], frame, 15);
+  assert.notEqual(controller.output(720, 1280).translationX, 0);
   assert.notEqual(controller.output(720, 1280).depthScale, 1);
   controller.recenter();
-  assert.equal(controller.output(720, 1280).depthScale, 1);
+  const centered = controller.output(720, 1280);
+  assert.equal(centered.translationX, 0);
+  assert.equal(centered.translationY, 0);
+  assert.equal(centered.translationZ, 0);
+  assert.equal(centered.depthScale, 1);
 });
 
-test("live depth calibrates and rejects a constant accelerometer bias", () => {
+test("live translation calibrates and rejects a constant accelerometer bias", () => {
   const controller = new Controller();
-  controller.configure({ enabled: true, liveDepth: true, motion: 100, stabilization: 0 });
+  controller.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
   for (let index = 0; index < 300; index += 1) {
     controller.ingest({
       quaternion: [1, 0, 0, 0],
-      acceleration: [0, 0, 0.08],
+      acceleration: [-0.03, 0.02, 0.08],
+      gyro: [0, 0, 0],
       displayRotation: 0,
     }, index * 33);
   }
-  assert.ok(Math.abs(controller.output(1080, 1920).depthScale - 1) < 1e-6);
+  const output = controller.output(1080, 1920);
+  assert.ok(Math.abs(output.depthScale - 1) < 1e-6);
+  assert.ok(Math.abs(output.panX) < 1e-6);
+  assert.ok(Math.abs(output.panY) < 1e-6);
+});
+
+test("ordinary handheld sensor noise does not accumulate into visible drift", () => {
+  const controller = new Controller();
+  controller.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
+  for (let index = 0; index < 900; index += 1) {
+    controller.ingest({
+      quaternion: [1, 0, 0, 0],
+      acceleration: [
+        -0.02 + Math.sin(index * 0.31) * 0.08,
+        0.01 + Math.sin(index * 0.23) * 0.04,
+        0.07 + Math.sin(index * 0.19) * 0.11,
+      ],
+      gyro: [0.01, 0.01, 0.01],
+      displayRotation: 0,
+    }, index * 47);
+  }
+  const output = controller.output(1080, 1920);
+  assert.ok(Math.hypot(output.panX, output.panY) < 2);
+  assert.ok(Math.abs(output.depthScale - 1) < 0.005);
 });
