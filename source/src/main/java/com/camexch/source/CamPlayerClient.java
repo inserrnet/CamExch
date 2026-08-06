@@ -60,6 +60,19 @@ final class CamPlayerClient {
         }
     }
 
+    JSONObject motionConfig() throws Exception {
+        if (token.isEmpty()) {
+            throw new IllegalStateException("Cam Player is not paired");
+        }
+        HttpURLConnection connection = open("/motion-config", "GET", CONNECT_TIMEOUT_MS);
+        try {
+            connection.setRequestProperty("Authorization", "Bearer " + token);
+            return readResponse(connection);
+        } finally {
+            connection.disconnect();
+        }
+    }
+
     String answerOffer(String offer, String configJson) throws Exception {
         if (token.isEmpty()) {
             throw new IllegalStateException("Cam Player is not paired");

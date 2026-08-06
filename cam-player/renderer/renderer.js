@@ -2028,6 +2028,7 @@ async function activateRecordedProfile() {
 async function configureHandheld(reason, persist = true) {
   motionValue.value = motionInput.value;
   stabilizationValue.value = stabilizationInput.value;
+  await window.camPlayer.setLiveMotionRequested(motionMode.value === "live");
   if (motionMode.value === "recorded") {
     await activateRecordedProfile();
   } else {
@@ -2044,9 +2045,9 @@ async function configureHandheld(reason, persist = true) {
       handheldController.recenter();
     }
     if (motionMode.value === "live") {
-      handheldStatus.textContent = latestPhoneMotionAt > 0
-        ? "Live phone motion active"
-        : "Waiting for phone motion";
+      handheldStatus.textContent = latestPhoneSample?.trackingSource === "arcore"
+        ? "ARCore phone tracking active"
+        : "Waiting for ARCore phone tracking";
     } else {
       handheldStatus.textContent = latestPhoneMotionAt > 0
         ? "Phone motion available"
@@ -2430,7 +2431,9 @@ window.camPlayer.onHandheldMotion((sample) => {
   }
   if (motionMode.value === "live") {
     handheldController.ingest(sample, now);
-    handheldStatus.textContent = "Live phone motion active";
+    handheldStatus.textContent = sample.trackingSource === "arcore"
+      ? "ARCore phone tracking active"
+      : "Waiting for ARCore phone tracking";
     scheduleHandheldRender(now);
   } else if (motionMode.value === "off") {
     handheldStatus.textContent = "Phone motion available";
@@ -2443,7 +2446,7 @@ window.camPlayer.onHandheldMotion((sample) => {
       + `rollDeg=${(motion.roll * 180 / Math.PI).toFixed(2)} `
       + `translation=${motion.translationX.toFixed(3)},${motion.translationY.toFixed(3)},${motion.translationZ.toFixed(3)}m `
       + `depthScale=${motion.depthScale.toFixed(4)} `
-      + `tracking=${motion.translationCalibrated ? (motion.translationStationary ? "stationary" : "moving") : "calibrating"}`);
+      + `trackingSource=${motion.trackingSource} tracking=${motion.translationTracked ? "tracked" : "waiting"}`);
     handheldSamples = 0;
     handheldMetricsStartedAt = now;
   }

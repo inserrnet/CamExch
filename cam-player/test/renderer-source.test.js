@@ -71,7 +71,8 @@ test("composes live and recorded phone motion without changing manual transforms
   assert.doesNotMatch(indexHtml, /id="handheldToggle"/);
   assert.match(renderer, /liveTranslation: motionMode\.value === "live"/);
   assert.match(renderer, /depthScale=\$\{motion\.depthScale\.toFixed\(4\)\}/);
-  assert.match(renderer, /tracking=\$\{motion\.translationCalibrated/);
+  assert.match(renderer, /trackingSource=\$\{motion\.trackingSource/);
+  assert.match(renderer, /setLiveMotionRequested/);
 });
 
 test("coalesces phone motion before renderer IPC delivery", () => {

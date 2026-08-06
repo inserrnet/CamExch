@@ -17,6 +17,8 @@ import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -29,13 +31,18 @@ final class CamPlayerMotionSender implements SensorEventListener {
     private final SensorManager sensorManager;
     private final WindowManager windowManager;
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
+    private final ScheduledExecutorService controlExecutor = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicLong sequence = new AtomicLong();
-    private volatile Sample latest;
+    private volatile Sample latestSensor;
+    private volatile Sample latestArCore;
+    private volatile boolean arCoreRequested;
+    private volatile long nextArCoreStartMs;
     private volatile float[] gyro = new float[]{0f, 0f, 0f};
     private volatile float[] acceleration = new float[]{0f, 0f, 0f};
     private volatile HttpURLConnection activeConnection;
     private HandlerThread sensorThread;
+    private ArCorePoseTracker arCoreTracker;
 
     CamPlayerMotionSender(Context context, CamPlayerClient client) {
         this.context = context.getApplicationContext();
@@ -79,6 +86,8 @@ final class CamPlayerMotionSender implements SensorEventListener {
             );
         }
         networkExecutor.execute(this::streamLoop);
+        controlExecutor.scheduleWithFixedDelay(this::refreshMotionConfig,
+                0L, 500L, TimeUnit.MILLISECONDS);
         AppLog.info(context, "Cam Player motion sensors started rotation=" + rotation.getName()
                 + " gyro=" + (gyroSensor != null)
                 + " linearAcceleration=" + (accelerationSensor != null));
@@ -95,6 +104,8 @@ final class CamPlayerMotionSender implements SensorEventListener {
             sensorThread = null;
         }
         networkExecutor.shutdownNow();
+        controlExecutor.shutdownNow();
+        stopArCore();
         HttpURLConnection connection = activeConnection;
         activeConnection = null;
         if (connection != null) {
@@ -122,7 +133,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
         }
         float[] quaternion = new float[4];
         SensorManager.getQuaternionFromVector(quaternion, event.values);
-        latest = new Sample(
+        latestSensor = Sample.sensor(
                 sequence.incrementAndGet(),
                 event.timestamp,
                 quaternion,
@@ -147,7 +158,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
                 activeConnection = connection;
                 try (OutputStream output = connection.getOutputStream()) {
                     while (running.get() && !Thread.currentThread().isInterrupted()) {
-                        Sample sample = latest;
+                        Sample sample = arCoreRequested ? latestArCore : latestSensor;
                         if (sample != null && sample.sequence != sentSequence) {
                             byte[] payload = (sample.toJson().toString() + "\n")
                                     .getBytes(StandardCharsets.UTF_8);
@@ -180,6 +191,61 @@ final class CamPlayerMotionSender implements SensorEventListener {
                 }
             }
         }
+    }
+
+    private void refreshMotionConfig() {
+        if (!running.get()) return;
+        try {
+            boolean requested = client.motionConfig().optBoolean("liveMotion", false);
+            if (requested != arCoreRequested) {
+                arCoreRequested = requested;
+                latestArCore = null;
+                AppLog.info(context, "Cam Player ARCore requested=" + requested);
+            }
+            if (requested) {
+                startArCoreIfNeeded();
+            } else {
+                stopArCore();
+            }
+        } catch (Throwable error) {
+            if (running.get()) {
+                AppLog.info(context, "Cam Player motion config unavailable "
+                        + error.getClass().getSimpleName() + ": " + error.getMessage());
+            }
+        }
+    }
+
+    private synchronized void startArCoreIfNeeded() {
+        if (arCoreTracker != null || !running.get()
+                || android.os.SystemClock.elapsedRealtime() < nextArCoreStartMs) {
+            return;
+        }
+        ArCorePoseTracker tracker = new ArCorePoseTracker(context, new ArCorePoseTracker.Listener() {
+            @Override
+            public void onPose(long timestampNs, float[] position, float[] quaternion) {
+                if (!running.get() || !arCoreRequested) return;
+                latestArCore = Sample.arCore(
+                        sequence.incrementAndGet(), timestampNs, position, quaternion, displayRotation());
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                synchronized (CamPlayerMotionSender.this) {
+                    arCoreTracker = null;
+                    latestArCore = null;
+                    nextArCoreStartMs = android.os.SystemClock.elapsedRealtime() + 5_000L;
+                }
+            }
+        });
+        arCoreTracker = tracker;
+        tracker.start();
+    }
+
+    private synchronized void stopArCore() {
+        ArCorePoseTracker tracker = arCoreTracker;
+        arCoreTracker = null;
+        latestArCore = null;
+        if (tracker != null) tracker.stop();
     }
 
     private int displayRotation() {
@@ -216,16 +282,33 @@ final class CamPlayerMotionSender implements SensorEventListener {
         final float[] quaternion;
         final float[] gyro;
         final float[] acceleration;
+        final float[] position;
         final int displayRotation;
+        final String trackingSource;
 
-        Sample(long sequence, long timestampNs, float[] quaternion, float[] gyro,
-               float[] acceleration, int displayRotation) {
+        private Sample(long sequence, long timestampNs, float[] quaternion, float[] gyro,
+                       float[] acceleration, float[] position, int displayRotation,
+                       String trackingSource) {
             this.sequence = sequence;
             this.timestampNs = timestampNs;
             this.quaternion = quaternion.clone();
             this.gyro = gyro.clone();
             this.acceleration = acceleration.clone();
+            this.position = position == null ? null : position.clone();
             this.displayRotation = displayRotation;
+            this.trackingSource = trackingSource;
+        }
+
+        static Sample sensor(long sequence, long timestampNs, float[] quaternion, float[] gyro,
+                             float[] acceleration, int displayRotation) {
+            return new Sample(sequence, timestampNs, quaternion, gyro, acceleration,
+                    null, displayRotation, "sensors");
+        }
+
+        static Sample arCore(long sequence, long timestampNs, float[] position,
+                             float[] quaternion, int displayRotation) {
+            return new Sample(sequence, timestampNs, quaternion, new float[]{0f, 0f, 0f},
+                    new float[]{0f, 0f, 0f}, position, displayRotation, "arcore");
         }
 
         JSONObject toJson() throws Exception {
@@ -236,6 +319,8 @@ final class CamPlayerMotionSender implements SensorEventListener {
             value.put("gyro", array(gyro));
             value.put("acceleration", array(acceleration));
             value.put("displayRotation", displayRotation);
+            value.put("trackingSource", trackingSource);
+            if (position != null) value.put("position", array(position));
             return value;
         }
     }

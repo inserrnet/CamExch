@@ -86,63 +86,43 @@ test("phone tilt translates without exposing perspective controls", () => {
   assert.equal("perspectiveY" in output, false);
 });
 
-function ingestAcceleration(controller, acceleration, startIndex, frameCount) {
-  for (let offset = 0; offset < frameCount; offset += 1) {
-    controller.ingest({
-      quaternion: [1, 0, 0, 0],
-      acceleration,
-      gyro: [0, 0, 0],
-      displayRotation: 0,
-    }, (startIndex + offset) * 33);
-  }
-  return startIndex + frameCount;
+function arPose(position, quaternion = [1, 0, 0, 0]) {
+  return { trackingSource: "arcore", position, quaternion, displayRotation: 0 };
 }
 
-test("live motion follows physical rightward translation instead of phone tilt", () => {
+test("live motion follows direct ARCore translation instead of phone tilt", () => {
   const controller = new Controller();
   controller.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
-  let frame = ingestAcceleration(controller, [0, 0, 0], 0, 12);
-  frame = ingestAcceleration(controller, [0.7, 0, 0], frame, 15);
-  frame = ingestAcceleration(controller, [-0.7, 0, 0], frame, 15);
-  ingestAcceleration(controller, [0, 0, 0], frame, 12);
+  controller.ingest(arPose([0, 0, 0]), 0);
+  controller.ingest(arPose([0.08, 0, 0]), 100);
   const moved = controller.output(1080, 1920);
   assert.ok(moved.translationX > 0.01);
   assert.ok(moved.panX > 10);
 
   const upward = new Controller();
   upward.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
-  frame = ingestAcceleration(upward, [0, 0, 0], 0, 12);
-  frame = ingestAcceleration(upward, [0, 0.7, 0], frame, 15);
-  frame = ingestAcceleration(upward, [0, -0.7, 0], frame, 15);
-  ingestAcceleration(upward, [0, 0, 0], frame, 12);
+  upward.ingest(arPose([0, 0, 0]), 0);
+  upward.ingest(arPose([0, 0.08, 0]), 100);
   assert.ok(upward.output(1080, 1920).translationY > 0.01);
   assert.ok(upward.output(1080, 1920).panY < -10);
 
   const tiltOnly = new Controller();
   tiltOnly.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
-  for (let index = 0; index < 20; index += 1) {
-    tiltOnly.ingest({
-      quaternion: index < 12 ? [1, 0, 0, 0] : axisAngle([0, 1, 0], 0.16),
-      acceleration: [0, 0, 0],
-      gyro: [0, 0, 0],
-      displayRotation: 0,
-    }, index * 33);
-  }
+  tiltOnly.ingest(arPose([0, 0, 0]), 0);
+  tiltOnly.ingest(arPose([0, 0, 0], axisAngle([0, 1, 0], 0.16)), 100);
   assert.ok(Math.abs(tiltOnly.output(1080, 1920).panX) < 1e-9);
 });
 
 test("live forward translation changes scale and remains bounded", () => {
   const controller = new Controller();
   controller.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
-  let frame = ingestAcceleration(controller, [0, 0, 0], 0, 12);
-  frame = ingestAcceleration(controller, [0, 0, -0.8], frame, 15);
-  frame = ingestAcceleration(controller, [0, 0, 0.8], frame, 15);
-  ingestAcceleration(controller, [0, 0, 0], frame, 12);
+  controller.ingest(arPose([0, 0, 0]), 0);
+  controller.ingest(arPose([0, 0, -0.2]), 100);
   const output = controller.output(1080, 1920);
   assert.ok(output.translationZ < -0.01);
   assert.ok(output.depthScale > 1.01);
-  assert.ok(output.depthScale <= 1.20);
-  assert.ok(output.scale <= 1.20 * 1.04);
+  assert.ok(output.depthScale <= 1.35);
+  assert.ok(output.scale <= 1.35 * 1.04);
 });
 
 test("recorded motion ignores acceleration translation for backwards compatibility", () => {
@@ -165,9 +145,8 @@ test("recorded motion ignores acceleration translation for backwards compatibili
 test("recenter clears accumulated live translation and depth", () => {
   const controller = new Controller();
   controller.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
-  let frame = ingestAcceleration(controller, [0, 0, 0], 0, 12);
-  frame = ingestAcceleration(controller, [0.8, 0, -0.8], frame, 15);
-  ingestAcceleration(controller, [-0.8, 0, 0.8], frame, 15);
+  controller.ingest(arPose([0, 0, 0]), 0);
+  controller.ingest(arPose([0.1, 0, -0.1]), 100);
   assert.notEqual(controller.output(720, 1280).translationX, 0);
   assert.notEqual(controller.output(720, 1280).depthScale, 1);
   controller.recenter();
@@ -178,7 +157,7 @@ test("recenter clears accumulated live translation and depth", () => {
   assert.equal(centered.depthScale, 1);
 });
 
-test("live translation calibrates and rejects a constant accelerometer bias", () => {
+test("live mode ignores accelerometer-only samples", () => {
   const controller = new Controller();
   controller.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
   for (let index = 0; index < 300; index += 1) {
@@ -193,24 +172,16 @@ test("live translation calibrates and rejects a constant accelerometer bias", ()
   assert.ok(Math.abs(output.depthScale - 1) < 1e-6);
   assert.ok(Math.abs(output.panX) < 1e-6);
   assert.ok(Math.abs(output.panY) < 1e-6);
+  assert.equal(output.translationTracked, false);
 });
 
-test("ordinary handheld sensor noise does not accumulate into visible drift", () => {
+test("a stationary ARCore pose never accumulates drift", () => {
   const controller = new Controller();
   controller.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
   for (let index = 0; index < 900; index += 1) {
-    controller.ingest({
-      quaternion: [1, 0, 0, 0],
-      acceleration: [
-        -0.02 + Math.sin(index * 0.31) * 0.08,
-        0.01 + Math.sin(index * 0.23) * 0.04,
-        0.07 + Math.sin(index * 0.19) * 0.11,
-      ],
-      gyro: [0.01, 0.01, 0.01],
-      displayRotation: 0,
-    }, index * 47);
+    controller.ingest(arPose([0.02, -0.01, 0.03]), index * 47);
   }
   const output = controller.output(1080, 1920);
-  assert.ok(Math.hypot(output.panX, output.panY) < 2);
-  assert.ok(Math.abs(output.depthScale - 1) < 0.005);
+  assert.ok(Math.hypot(output.panX, output.panY) < 1e-9);
+  assert.ok(Math.abs(output.depthScale - 1) < 1e-9);
 });

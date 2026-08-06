@@ -33,6 +33,7 @@ import java.util.concurrent.Executors;
 public class SourceActivity extends Activity {
     private static final int PICK_FILE = 42;
     private static final int REQUEST_OVERLAY = 43;
+    private static final int REQUEST_CAMERA = 44;
     private static final String UI_PREFERENCES = "source_ui";
     private static final String PREF_RTSP_URI = "rtsp_uri";
     private static final String DEFAULT_RTSP_URI = "rtsp://192.168.4.132:554/live";
@@ -54,6 +55,7 @@ public class SourceActivity extends Activity {
     private boolean receiverRegistered;
     private boolean diagnosticsOnly;
     private boolean startVideoAfterOverlayPermission;
+    private boolean startCamPlayerAfterCameraPermission;
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private CamPlayerDiscovery camPlayerDiscovery;
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
@@ -325,6 +327,15 @@ public class SourceActivity extends Activity {
             uriText = selectedUri.toString();
         }
 
+        if ("Cam Player".equals(mode)
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            startCamPlayerAfterCameraPermission = true;
+            AppLog.info(this, "Requesting camera permission for ARCore Live Motion");
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA);
+            return;
+        }
+
         if ("Video".equals(mode) && !Settings.canDrawOverlays(this)) {
             startVideoAfterOverlayPermission = true;
             AppLog.info(this, "Requesting playback overlay permission");
@@ -344,6 +355,22 @@ public class SourceActivity extends Activity {
         AppLog.info(this, "Starting mode=" + mode + " uri=" + uriText);
         startServiceCompat(intent);
         statusLabel.setText(mode + " starting");
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQUEST_CAMERA || !startCamPlayerAfterCameraPermission) {
+            return;
+        }
+        startCamPlayerAfterCameraPermission = false;
+        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            AppLog.info(this, "Camera permission granted for ARCore Live Motion");
+            startSelectedSource();
+        } else {
+            showError("Camera permission is required for ARCore Live Motion");
+        }
     }
 
     private void pairCamPlayer() {

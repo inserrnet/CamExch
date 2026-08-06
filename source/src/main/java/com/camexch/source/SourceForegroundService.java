@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.pm.ServiceInfo;
 import android.content.Intent;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
@@ -120,7 +121,7 @@ public class SourceForegroundService extends Service {
         metricsHandler = new Handler(Looper.getMainLooper());
         AppLog.info(this, "SourceForegroundService.onCreate");
         createChannel();
-        startForeground(NOTIFICATION_ID, buildNotification());
+        updateForegroundTypes(false);
         try {
             server = new MjpegServer(() -> publisher, () -> mode);
             server.start();
@@ -238,6 +239,7 @@ public class SourceForegroundService extends Service {
         if (!"Cam Player".equals(mode) || camPlayerClient == null) {
             return;
         }
+
         AppLog.info(this, "Forwarding live configuration to Cam Player length="
                 + (configJson == null ? 0 : configJson.length()));
         camPlayerClient.configure(configJson);
@@ -280,6 +282,7 @@ public class SourceForegroundService extends Service {
                 .apply();
 
         if ("Cam Player".equals(mode)) {
+            updateForegroundTypes(true);
             releaseVideoPipeline();
             directH264 = false;
             if (currentUri.trim().isEmpty()) {
@@ -320,6 +323,8 @@ public class SourceForegroundService extends Service {
             });
             return;
         }
+
+        updateForegroundTypes(false);
 
         if ("Photo".equals(mode)) {
             releaseVideoPipeline();
@@ -662,6 +667,19 @@ public class SourceForegroundService extends Service {
         getSharedPreferences("source", MODE_PRIVATE).edit().clear().apply();
         releaseVideoPipeline();
         reportStatus("Idle");
+        updateForegroundTypes(false);
+    }
+
+    private void updateForegroundTypes(boolean includeCamera) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            int types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+            if (includeCamera) {
+                types |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
+            }
+            startForeground(NOTIFICATION_ID, buildNotification(), types);
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification());
+        }
     }
 
     private synchronized void startCamPlayerMotion(CamPlayerClient expectedClient) {

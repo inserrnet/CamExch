@@ -50,6 +50,7 @@ let logFlushTimer = null;
 let activeQrScan = null;
 let pendingMotionSample = null;
 let motionDispatchScheduled = false;
+let liveMotionRequested = false;
 
 function dispatchLatestMotionSample(sample) {
   pendingMotionSample = sample;
@@ -388,6 +389,13 @@ async function handleRequest(request, response) {
       sendJson(response, 401, { error: "Cam Player pairing is required" });
       return;
     }
+    if (request.method === "GET" && requestUrl.pathname === "/motion-config") {
+      sendJson(response, 200, {
+        liveMotion: liveMotionRequested,
+        tracking: "arcore",
+      });
+      return;
+    }
     if (request.method === "POST" && requestUrl.pathname === "/motion-stream") {
       let buffer = "";
       let samples = 0;
@@ -691,6 +699,14 @@ ipcMain.handle("prepare-media", async (_event, filePath) => {
   };
 });
 ipcMain.handle("get-server-info", () => serverInfo());
+ipcMain.handle("set-live-motion-requested", (_event, enabled) => {
+  const requested = Boolean(enabled);
+  if (requested !== liveMotionRequested) {
+    liveMotionRequested = requested;
+    log(`Live motion request=${requested} tracking=arcore`);
+  }
+  return liveMotionRequested;
+});
 ipcMain.handle("get-memory-info", () => {
   const metrics = app.getAppMetrics();
   const totals = metrics.reduce((result, metric) => {
@@ -792,6 +808,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  liveMotionRequested = false;
   if (activeQrScan) settleQrScan({ status: "cancelled" });
   for (const pending of pendingOffers.values()) {
     clearTimeout(pending.timeout);
