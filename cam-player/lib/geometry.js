@@ -66,6 +66,34 @@
     return null;
   }
 
+  const SAFE_SITE_MAX_WIDTH = 1920;
+  const SAFE_SITE_MAX_HEIGHT = 1920;
+  const SAFE_SITE_MAX_SHORT_EDGE = 1440;
+  const SAFE_SITE_MAX_PIXELS = 1920 * 1440;
+
+  function isMandatoryConstraint(pair) {
+    return [pair.width.strength, pair.height.strength]
+      .some((strength) => strength === "exact" || strength === "min");
+  }
+
+  function fitOptionalSiteSize(width, height) {
+    const landscape = width >= height;
+    const widthLimit = landscape ? SAFE_SITE_MAX_WIDTH : SAFE_SITE_MAX_SHORT_EDGE;
+    const heightLimit = landscape ? SAFE_SITE_MAX_SHORT_EDGE : SAFE_SITE_MAX_HEIGHT;
+    const scale = Math.min(
+      1,
+      widthLimit / width,
+      heightLimit / height,
+      Math.sqrt(SAFE_SITE_MAX_PIXELS / (width * height)),
+    );
+    if (scale >= 1) return { width, height, clamped: false };
+    return {
+      width: Math.max(2, Math.floor((width * scale) / 2) * 2),
+      height: Math.max(2, Math.floor((height * scale) / 2) * 2),
+      clamped: true,
+    };
+  }
+
   function resolveRequestedSize(constraints, orientation, fallback) {
     const video = constraints && constraints.video && constraints.video !== true
       ? constraints.video
@@ -90,13 +118,39 @@
     );
     const normalized = requestedWidth !== Math.round(widthConstraint.value)
       || requestedHeight !== Math.round(heightConstraint.value);
+    const baseReason = `${pair.source === "direct" ? "" : `${pair.source} `}`
+      + `${widthConstraint.strength}/${heightConstraint.strength} ${orientation}`
+      + (normalized ? " H264-even" : "");
+    if (isMandatoryConstraint(pair) && isUltraHighResolution(oriented.width, oriented.height)) {
+      return {
+        width: fallback.width,
+        height: fallback.height,
+        applied: false,
+        unsupported: true,
+        requestedWidth: oriented.width,
+        requestedHeight: oriented.height,
+        reason: `${baseReason} exceeds stable mandatory encoder limit`,
+      };
+    }
+    const safe = isMandatoryConstraint(pair)
+      ? { ...oriented, clamped: false }
+      : fitOptionalSiteSize(oriented.width, oriented.height);
+    if (safe.clamped) {
+      return {
+        width: safe.width,
+        height: safe.height,
+        applied: true,
+        clamped: true,
+        requestedWidth: oriented.width,
+        requestedHeight: oriented.height,
+        reason: `${baseReason} capped for stable H264 streaming`,
+      };
+    }
     return {
-      width: oriented.width,
-      height: oriented.height,
+      width: safe.width,
+      height: safe.height,
       applied: true,
-      reason: `${pair.source === "direct" ? "" : `${pair.source} `}`
-        + `${widthConstraint.strength}/${heightConstraint.strength} ${orientation}`
-        + (normalized ? " H264-even" : ""),
+      reason: baseReason,
     };
   }
 

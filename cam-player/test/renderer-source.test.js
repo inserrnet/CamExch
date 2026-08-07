@@ -29,8 +29,10 @@ test("uses stable trilinear minification for downscaling", () => {
 test("keeps an adaptive paused heartbeat so sites see a live camera", () => {
   assert.match(
     renderer,
-    /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000 \/ idleFps\)/,
+    /pausedFrameTimer = setInterval\(emitCurrentFrame, 1000 \/ idleFps\)/,
   );
+  assert.match(renderer, /function requestCanvasFrame\(\)/);
+  assert.match(renderer, /lastCanvasFrameRequestAt < \(1000 \/ requestedFps\) \* 0\.85/);
   assert.match(renderer, /CamGeometry\.adaptiveFrameRate\([\s\S]*"idle"/);
   assert.match(renderer, /!canvasTrack \|\| peers\.size === 0/);
   assert.match(
@@ -145,7 +147,23 @@ test("reuses the healthy canvas capture track between short browser probes", () 
 test("releases a decoded photo after preserving its full GPU texture", () => {
   assert.match(renderer, /Decoded photo CPU buffer released after GPU upload/);
   assert.match(renderer, /image\.removeAttribute\("src"\)/);
+  assert.match(renderer, /image\.src = "data:image\/gif;base64/);
   assert.match(renderer, /sourceKind === "photo" && photoCpuReleased/);
+});
+
+test("replaces the capture track when a live site request changes output geometry", () => {
+  assert.match(renderer, /function scheduleCaptureTrackRestart\(reason\)/);
+  assert.match(renderer, /scheduleCaptureTrackRestart\(`output \$\{reason\}`\)/);
+  assert.match(renderer, /expectedSender\.replaceTrack\(replacementTrack\)/);
+  assert.match(renderer, /if \(captureTrackRestartPending[\s\S]*return false/);
+  assert.match(renderer, /maintenance\.unexpectedCodecReports = 0/);
+});
+
+test("recovers from an unexpected software VP9 fallback", () => {
+  assert.match(renderer, /preferredCodec === "H264"/);
+  assert.match(renderer, /actualCodec\.toLowerCase\(\)\.includes\("vp9"\)/);
+  assert.match(renderer, /Unexpected software VP9 fallback detected/);
+  assert.match(renderer, /Working output not persisted because preferred=H264/);
 });
 
 test("coalesces source interaction rendering and preference writes", () => {

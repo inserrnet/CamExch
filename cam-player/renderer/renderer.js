@@ -310,6 +310,7 @@ let cadenceMaxRenderTimeMs = 0;
 let backgroundSnapshotReady = false;
 let backgroundBlurTimer = null;
 let senderQualityRefreshTimer = null;
+let captureTrackRestartTimer = null;
 let keyFrameTimer = null;
 let siteConfigurationTimer = null;
 let preferencesSaveTimer = null;
@@ -325,6 +326,8 @@ let fileDragDepth = 0;
 let droppedFileLoading = false;
 let stream = null;
 let canvasTrack = null;
+let lastCanvasFrameRequestAt = 0;
+let captureTrackRestartPending = false;
 let peers = new Map();
 let readyPeers = new Set();
 const peerMaintenance = new Map();
@@ -598,6 +601,7 @@ function applyOutputSize(width, height, reason, options = {}) {
   if (w > maximum || h > maximum) {
     throw new Error(`Requested ${w}\u00d7${h} exceeds GPU texture limit ${maximum}`);
   }
+  if (peers.size > 0) captureTrackRestartPending = true;
   canvas.width = w;
   canvas.height = h;
   activeOutputOrigin = origin;
@@ -623,7 +627,11 @@ function applyOutputSize(width, height, reason, options = {}) {
   } else {
     renderFrame(true);
   }
-  scheduleSenderQualityRefresh(`output ${reason}`);
+  if (peers.size > 0) {
+    scheduleCaptureTrackRestart(`output ${reason}`);
+  } else {
+    scheduleSenderQualityRefresh(`output ${reason}`);
+  }
   scheduleKeyFrame(`output ${reason}`, 0);
   if (persist) savePreferences();
 }
@@ -694,6 +702,28 @@ function uploadSource() {
   }
 }
 
+function requestCanvasFrame() {
+  if (captureTrackRestartPending
+      || !canvasTrack
+      || typeof canvasTrack.requestFrame !== "function") return false;
+  const state = sourceKind === "video" && playing
+    ? "motion"
+    : sourceInteractionActive
+      ? "interaction"
+      : "idle";
+  const requestedFps = CamGeometry.adaptiveFrameRate(
+    canvas.width,
+    canvas.height,
+    Number(fpsInput.value) || 30,
+    state,
+  );
+  const now = performance.now();
+  if (now - lastCanvasFrameRequestAt < (1000 / requestedFps) * 0.85) return false;
+  canvasTrack.requestFrame();
+  lastCanvasFrameRequestAt = now;
+  return true;
+}
+
 function renderFrame(force, frameMetadata = null) {
   if (!sourceElement) return false;
   const now = performance.now();
@@ -733,9 +763,7 @@ function renderFrame(force, frameMetadata = null) {
   gl.uniform1i(uniforms.mirrored, sourceMirrored ? 1 : 0);
   gl.uniform1f(uniforms.handheldRoll, handheld.roll);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
-  if (canvasTrack && typeof canvasTrack.requestFrame === "function") {
-    canvasTrack.requestFrame();
-  }
+  requestCanvasFrame();
   const renderTimeMs = performance.now() - renderStartedAt;
   cadenceRenderTimeMs += renderTimeMs;
   cadenceMaxRenderTimeMs = Math.max(cadenceMaxRenderTimeMs, renderTimeMs);
@@ -747,11 +775,7 @@ function renderFrame(force, frameMetadata = null) {
 }
 
 function emitCurrentFrame() {
-  if (canvasTrack && typeof canvasTrack.requestFrame === "function") {
-    canvasTrack.requestFrame();
-    return true;
-  }
-  return false;
+  return requestCanvasFrame();
 }
 
 function emitBootstrapFrames(reason, count = 4, intervalMs = 80) {
@@ -762,7 +786,6 @@ function emitBootstrapFrames(reason, count = 4, intervalMs = 80) {
     remaining -= 1;
     if (remaining > 0) setTimeout(emit, intervalMs);
   };
-  renderFrame(true);
   emit();
   log(`Canvas bootstrap frames scheduled count=${count} reason=${reason}`);
 }
@@ -844,7 +867,7 @@ function updatePausedFrameHeartbeat() {
     "idle",
   );
   renderFrame(true);
-  pausedFrameTimer = setInterval(() => renderFrame(true), 1000 / idleFps);
+  pausedFrameTimer = setInterval(emitCurrentFrame, 1000 / idleFps);
   log(`Paused/photo camera heartbeat fps=${idleFps} output=${canvas.width}x${canvas.height}`);
 }
 
@@ -858,6 +881,8 @@ function discardCaptureStream(reason) {
   });
   stream = null;
   canvasTrack = null;
+  lastCanvasFrameRequestAt = 0;
+  captureTrackRestartPending = false;
   log(`Canvas capture stream discarded reason=${reason}`);
 }
 
@@ -865,6 +890,7 @@ function ensureStream() {
   if (stream) return stream;
   stream = canvas.captureStream(0);
   canvasTrack = stream.getVideoTracks()[0];
+  lastCanvasFrameRequestAt = 0;
   updateTrackContentHint("stream created");
   return stream;
 }
@@ -1126,6 +1152,7 @@ async function loadMedia(file) {
       image.onload = null;
       image.onerror = null;
       image.removeAttribute("src");
+      image.src = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
       photoCpuReleased = true;
       log(`Decoded photo CPU buffer released after GPU upload size=${sourceWidth}x${sourceHeight}`);
     }
@@ -1227,6 +1254,8 @@ async function restartCaptureTrackAtCurrentResolution(reason, expectedPeerId) {
   }
   stream = replacementStream;
   canvasTrack = replacementTrack;
+  lastCanvasFrameRequestAt = 0;
+  captureTrackRestartPending = false;
   previousStream?.getTracks().forEach((track) => {
     if (track !== replacementTrack) {
       try {
@@ -1241,6 +1270,36 @@ async function restartCaptureTrackAtCurrentResolution(reason, expectedPeerId) {
   log(`Encoder same-resolution restart output=${canvas.width}x${canvas.height} `
     + `peer=${expectedPeerId} previousTrack=${previousTrack?.id || "none"} `
     + `nextTrack=${replacementTrack.id}`);
+}
+
+function scheduleCaptureTrackRestart(reason) {
+  captureTrackRestartPending = true;
+  clearTimeout(captureTrackRestartTimer);
+  captureTrackRestartTimer = setTimeout(async () => {
+    const activePeerId = Array.from(peers.keys())[0];
+    const maintenance = activePeerId ? peerMaintenance.get(activePeerId) : null;
+    if (!activePeerId || !maintenance?.sender) {
+      captureTrackRestartPending = false;
+      return;
+    }
+    try {
+      await restartCaptureTrackAtCurrentResolution(reason, activePeerId);
+      if (!peers.has(activePeerId)) return;
+      await lockSenderQuality(maintenance.sender, canvas.width, canvas.height);
+      maintenance.outputWidth = canvas.width;
+      maintenance.outputHeight = canvas.height;
+      maintenance.unexpectedCodecReports = 0;
+      maintenance.codecRecoveryActive = false;
+      log(`Capture track restarted after output change peer=${activePeerId} `
+        + `output=${canvas.width}x${canvas.height} reason=${reason}`);
+    } catch (error) {
+      captureTrackRestartPending = false;
+      if (peers.has(activePeerId)) {
+        maintenance.codecRecoveryActive = false;
+        log(`Capture track restart failed peer=${activePeerId} reason=${reason} ${error}`);
+      }
+    }
+  }, 120);
 }
 
 async function lockSenderQuality(sender, width, height) {
@@ -1353,12 +1412,12 @@ async function handleOffer(payload) {
   const outputBeforeOffer = { ...lastWorkingOutput };
   const activeOutputBeforeOffer = { width: canvas.width, height: canvas.height };
   try {
-    applySiteConfiguration({ constraints, orientation }, "offer");
-    const expectedOutput = { width: canvas.width, height: canvas.height };
     const existingPeerIds = Array.from(peers.keys());
     for (const existingId of existingPeerIds) {
       closePeer(existingId, `superseded by offer ${id}`);
     }
+    applySiteConfiguration({ constraints, orientation }, "offer");
+    const expectedOutput = { width: canvas.width, height: canvas.height };
     if (peers.size >= MAX_ACTIVE_PEERS) {
       throw new Error(`Active encoder limit exceeded (${MAX_ACTIVE_PEERS})`);
     }
@@ -1379,6 +1438,8 @@ async function handleOffer(payload) {
       actualCodec: "",
       outputWidth: expectedOutput.width,
       outputHeight: expectedOutput.height,
+      unexpectedCodecReports: 0,
+      codecRecoveryActive: false,
       createdAt: performance.now(),
     });
     updateConnectionState();
@@ -1521,8 +1582,15 @@ async function handleOffer(payload) {
       if (!peers.has(id)) return;
       readyPeers.add(id);
       encoderFailures.delete(outputKey);
-      lastWorkingOutput = { ...expectedOutput };
-      savePreferences();
+      const maintenance = peerMaintenance.get(id);
+      const actualMime = String(result.codec || "").toLowerCase();
+      const preferredH264 = maintenance?.preferredCodec === "H264";
+      if (!preferredH264 || actualMime.includes("h264")) {
+        lastWorkingOutput = { ...expectedOutput };
+        savePreferences();
+      } else {
+        log(`Working output not persisted because preferred=H264 actual=${result.codec}`);
+      }
       log(`First encoded frame id=${id} frames=${result.encoded} `
         + `output=${result.width}x${result.height} actualCodec=${result.codec} `
         + `route=${result.route || "pending"}`);
@@ -1582,6 +1650,30 @@ async function handleOffer(payload) {
             maintenance.actualCodec = actualCodec;
             log(`Actual encoder codec id=${id} preferred=${maintenance.preferredCodec} `
               + `actual=${actualCodec}`);
+          }
+          if (maintenance && maintenance.preferredCodec === "H264"
+              && actualCodec.toLowerCase().includes("vp9")) {
+            maintenance.unexpectedCodecReports += 1;
+            if (maintenance.unexpectedCodecReports >= 2
+                && !maintenance.codecRecoveryActive) {
+              maintenance.codecRecoveryActive = true;
+              const recovery = { ...lastWorkingOutput };
+              log(`Unexpected software VP9 fallback detected id=${id} `
+                + `output=${canvas.width}x${canvas.height}; restoring stable H264 `
+                + `output=${recovery.width}x${recovery.height}`);
+              if (canvas.width !== recovery.width || canvas.height !== recovery.height) {
+                applyOutputSize(
+                  recovery.width,
+                  recovery.height,
+                  "unexpected VP9 fallback",
+                  { origin: "fallback", persist: false },
+                );
+              } else {
+                scheduleCaptureTrackRestart("unexpected VP9 fallback");
+              }
+            }
+          } else if (maintenance && actualCodec !== "unknown") {
+            maintenance.unexpectedCodecReports = 0;
           }
           const bytes = Number(entry.bytesSent) || 0;
           const timestamp = Number(entry.timestamp) || performance.now();
@@ -1653,8 +1745,16 @@ function applySiteConfiguration(config, reason) {
     fallback,
   );
   if (!resolved.applied) {
-    log(`Site size unchanged reason=${resolved.reason}`);
+    log(`Site size unchanged reason=${resolved.reason}`
+      + (resolved.unsupported
+        ? ` requested=${resolved.requestedWidth}x${resolved.requestedHeight}`
+        : ""));
     return;
+  }
+  if (resolved.clamped) {
+    log(`Site size normalized requested=${resolved.requestedWidth}x`
+      + `${resolved.requestedHeight} applied=${resolved.width}x${resolved.height} `
+      + `reason=${resolved.reason}`);
   }
   if (resolved.width === canvas.width && resolved.height === canvas.height) {
     log(`Site size already active=${canvas.width}x${canvas.height} `

@@ -11,19 +11,20 @@ test("validates arbitrary even H264 dimensions without presets", () => {
   assert.throws(() => geometry.positiveInteger("0", "Width"), /positive/);
 });
 
-test("rotates landscape site constraints into portrait output", () => {
+test("rotates and safely caps an optional landscape request for portrait output", () => {
   const resolved = geometry.resolveRequestedSize({
     video: {
       width: { ideal: 2000 },
       height: { ideal: 1500 },
     },
   }, "portrait", { width: 720, height: 1280 });
-  assert.deepEqual(resolved, {
-    width: 1500,
-    height: 2000,
-    applied: true,
-    reason: "ideal/ideal portrait",
-  });
+  assert.equal(resolved.width, 1440);
+  assert.equal(resolved.height, 1920);
+  assert.equal(resolved.applied, true);
+  assert.equal(resolved.clamped, true);
+  assert.equal(resolved.requestedWidth, 1500);
+  assert.equal(resolved.requestedHeight, 2000);
+  assert.match(resolved.reason, /capped for stable H264 streaming/);
 });
 
 test("normalizes odd site dimensions for H264 without rejecting the camera", () => {
@@ -49,6 +50,31 @@ test("returns landscape dimensions after phone rotation", () => {
   }, "landscape", { width: 720, height: 1280 });
   assert.equal(resolved.width, 2000);
   assert.equal(resolved.height, 1500);
+});
+
+test("caps a very large optional portrait request without changing its aspect", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: { width: 4080, height: 3072 },
+  }, "portrait", { width: 1080, height: 1920 });
+  assert.equal(resolved.width, 1440);
+  assert.equal(resolved.height, 1912);
+  assert.equal(resolved.clamped, true);
+  assert.equal(resolved.requestedWidth, 3072);
+  assert.equal(resolved.requestedHeight, 4080);
+});
+
+test("keeps the active output when an exact request exceeds the stable encoder limit", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: {
+      width: { exact: 4080 },
+      height: { exact: 3072 },
+    },
+  }, "portrait", { width: 1080, height: 1920 });
+  assert.equal(resolved.width, 1080);
+  assert.equal(resolved.height, 1920);
+  assert.equal(resolved.applied, false);
+  assert.equal(resolved.unsupported, true);
+  assert.match(resolved.reason, /mandatory encoder limit/);
 });
 
 test("keeps manual size when site omits dimensions", () => {
