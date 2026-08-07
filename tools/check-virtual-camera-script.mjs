@@ -642,14 +642,14 @@ const directSourceController = context.__camexchForTest.proxy(
 directSourceController.route = "SOURCE";
 context.__camexchForTest.configure(directSourceController, { video: true, audio: false });
 const directSourceSettings = directSourceController.track.getSettings();
-if (directSourceController.kind !== "generator"
-    || directSourceController.track === directSourceInputTrack
+if (directSourceController.kind !== "source-direct"
+    || directSourceController.track !== directSourceInputTrack
     || canvasDrawCount !== canvasBeforeDirectSource
     || directSourceSettings.width !== TEST_SOURCE_WIDTH
     || directSourceSettings.height !== TEST_SOURCE_HEIGHT
     || directSourceSettings.deviceId !== "camexch-front-camera-4"
     || directSourceSettings.facingMode !== "user") {
-  throw new Error("Initial Source route was not proxied at its original resolution");
+  throw new Error("Initial Source route did not preserve the compatible remote track");
 }
 directSourceController.hardStop();
 highResolutionDirect.hardStop();
@@ -1090,18 +1090,21 @@ for (const stream of [firstGeometryStream, sameGeometryStream, requestedGeometry
 }
 const onlineSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
 const inheritedSwitchVideo = lastSourceOfferConfig?.constraints?.video;
+const onlineSourceTrack = activeEntry.controller.track;
 if (onlineSourceSwitch.switched !== 1 || onlineSourceSwitch.failed !== 0
-    || activeEntry.controller.track !== stableTrackBeforeOnlineSwitch
+    || onlineSourceTrack === stableTrackBeforeOnlineSwitch
+    || stableTrackBeforeOnlineSwitch.readyState !== "ended"
+    || activeEntry.controller.kind !== "source-direct"
     || activeEntry.controller.route !== "SOURCE"
     || onlineSourceSwitch.devicechange !== 1
     || deviceChangeCount !== deviceChangesBeforeOnlineSwitch + 1
-    || stableTrackBeforeOnlineSwitch.label !== "camera 0, facing back"
+    || onlineSourceTrack.label !== "camera 0, facing back"
     || inheritedSwitchVideo?.width?.ideal !== 1280
     || inheritedSwitchVideo?.height?.ideal !== 720
     || inheritedSwitchVideo?.deviceId !== undefined) {
-  throw new Error("Online Source switch did not preserve and relabel the page track");
+  throw new Error("Online Source switch did not install the compatible remote track");
 }
-const sourceSettings = stableTrackBeforeOnlineSwitch.getSettings();
+const sourceSettings = onlineSourceTrack.getSettings();
 if (sourceSettings.facingMode !== "environment"
     || sourceSettings.deviceId !== "main-rear-id"
     || sourceSettings.width !== TEST_SOURCE_WIDTH
@@ -1110,10 +1113,12 @@ if (sourceSettings.facingMode !== "environment"
   throw new Error("Managed Source track did not expose the real Source identity and resolution");
 }
 const onlineRearSwitch = await context.__camexchSwitchCamera("REAR");
+const onlineRearTrack = activeEntry.controller.track;
 if (onlineRearSwitch.switched !== 1 || onlineRearSwitch.failed !== 0
-    || activeEntry.controller.track !== stableTrackBeforeOnlineSwitch
+    || onlineRearTrack === onlineSourceTrack
+    || onlineSourceTrack.readyState !== "ended"
     || activeEntry.controller.route !== "REAR"
-    || stableTrackBeforeOnlineSwitch.getSettings().facingMode !== "environment"
+    || onlineRearTrack.getSettings().facingMode !== "environment"
     || nativeGetCount !== nativeCountBeforeOnlineSwitch + 1
     || continuousFocusCount !== nativeGetCount) {
   throw new Error("Source-to-rear switch did not restore the physical camera on the stable track");
@@ -1138,24 +1143,39 @@ detachedConsumer.isConnected = false;
 detachedConsumer.srcObject = activeEntry.stream;
 activeEntry.stream.removeTrack(endedSessionTrack);
 const detachedLiveSwitch = await context.__camexchSwitchCamera("SOURCE");
+const liveSourceTrackAfterDetachedSwitch = activeEntry.stream.getVideoTracks()[0];
 if (detachedLiveSwitch.switched !== 1 || detachedLiveSwitch.revived !== 0
-    || detachedLiveSwitch.reattached !== 1 || detachedLiveSwitch.failed !== 0
-    || activeEntry.stream.getVideoTracks()[0] !== endedSessionTrack
-    || endedSessionTrack.readyState !== "live"
-    || endedSessionTrack.getSettings().facingMode !== "environment"
+    || detachedLiveSwitch.reattached !== 2 || detachedLiveSwitch.failed !== 0
+    || !liveSourceTrackAfterDetachedSwitch
+    || liveSourceTrackAfterDetachedSwitch === endedSessionTrack
+    || endedSessionTrack.readyState !== "ended"
+    || liveSourceTrackAfterDetachedSwitch.readyState !== "live"
+    || liveSourceTrackAfterDetachedSwitch.getSettings().facingMode !== "environment"
     || clonedManagedStream.getVideoTracks().length !== 1
     || connectedConsumer.playCount < 1 || clonedConsumer.playCount < 1
     || detachedConsumer.playCount < 1
     || detachedConsumer.srcObject !== activeEntry.stream) {
-  throw new Error("Live track removed from MediaStream was not reattached and switched");
+  throw new Error(`Live track removed from MediaStream was not reattached and switched: ${JSON.stringify({
+    detachedLiveSwitch,
+    kind: activeEntry.controller.kind,
+    route: activeEntry.controller.route,
+    sameTrack: activeEntry.stream.getVideoTracks()[0] === endedSessionTrack,
+    oldState: endedSessionTrack.readyState,
+    currentState: activeEntry.stream.getVideoTracks()[0]?.readyState,
+    currentFacing: activeEntry.stream.getVideoTracks()[0]?.getSettings?.().facingMode,
+    clonedTracks: clonedManagedStream.getVideoTracks().length,
+    connectedPlayCount: connectedConsumer.playCount,
+    clonedPlayCount: clonedConsumer.playCount,
+    detachedPlayCount: detachedConsumer.playCount,
+  })}`);
 }
 const consumerPlayCountBeforeRevival = connectedConsumer.playCount;
 const clonedConsumerPlayCountBeforeRevival = clonedConsumer.playCount;
 const detachedConsumerPlayCountBeforeRevival = detachedConsumer.playCount;
-activeEntry.stream.removeTrack(endedSessionTrack);
-endedSessionTrack.stop();
+activeEntry.stream.removeTrack(liveSourceTrackAfterDetachedSwitch);
+liveSourceTrackAfterDetachedSwitch.stop();
 if (activeEntry.stream.getVideoTracks().length !== 0
-    || endedSessionTrack.readyState !== "ended") {
+    || liveSourceTrackAfterDetachedSwitch.readyState !== "ended") {
   throw new Error("Stopped-session fixture did not match removeTrack then stop lifecycle");
 }
 const revivedSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
@@ -1164,7 +1184,7 @@ const revivedClonedTrack = clonedManagedStream.getVideoTracks()[0];
 if (revivedSourceSwitch.switched !== 1 || revivedSourceSwitch.revived !== 1
     || revivedSourceSwitch.reattached !== 2
     || revivedSourceSwitch.senders !== 2 || revivedSourceSwitch.failed !== 0
-    || !revivedTrack || revivedTrack === endedSessionTrack
+    || !revivedTrack || revivedTrack === liveSourceTrackAfterDetachedSwitch
     || revivedTrack.readyState !== "live"
     || !revivedClonedTrack || revivedClonedTrack === clonedStreamTrackBeforeRevival
     || revivedClonedTrack.readyState !== "live"
@@ -1175,9 +1195,15 @@ if (revivedSourceSwitch.switched !== 1 || revivedSourceSwitch.revived !== 1
   throw new Error("Stopped camera session was not rebuilt with a new Source track");
 }
 if (directSender.track !== revivedTrack || cloneSender.track !== revivedTrack
-    || directSender.replaceCount !== 1 || cloneSender.replaceCount !== 1
+    || directSender.replaceCount !== 2 || cloneSender.replaceCount !== 2
     || clonedSessionTrack.readyState !== "ended") {
-  throw new Error("Managed WebRTC senders were not moved to the revived Source track");
+  throw new Error(`Managed WebRTC senders were not moved to the revived Source track: ${JSON.stringify({
+    directSame: directSender.track === revivedTrack,
+    cloneSame: cloneSender.track === revivedTrack,
+    directReplaceCount: directSender.replaceCount,
+    cloneReplaceCount: cloneSender.replaceCount,
+    clonedSessionState: clonedSessionTrack.readyState,
+  })}`);
 }
 if (connectedConsumer.srcObject !== activeEntry.stream
     || clonedConsumer.srcObject !== clonedManagedStream
@@ -1396,7 +1422,7 @@ for (let cycle = 0; cycle < 4; cycle += 1) {
   const sourceCycleSettings = sourceTrack?.getSettings?.() || {};
   if (sourceSwitch.failed !== 0 || sourceSwitch.switched < 1
       || nativeEntry.stream !== nativeStream
-      || nativeEntry.controller.kind !== "generator"
+      || nativeEntry.controller.kind !== "source-direct"
       || nativeEntry.controller.route !== "SOURCE"
       || sourceCycleSettings.width !== TEST_SOURCE_WIDTH
       || sourceCycleSettings.height !== TEST_SOURCE_HEIGHT) {
@@ -1406,7 +1432,7 @@ for (let cycle = 0; cycle < 4; cycle += 1) {
   const rearTrack = nativeStream.getVideoTracks()[0];
   if (rearSwitch.failed !== 0 || rearSwitch.switched < 1
       || !rearTrack
-      || sourceTrack.readyState !== "live" || rearTrack !== sourceTrack
+      || sourceTrack.readyState !== "ended" || rearTrack === sourceTrack
       || rearTrack.getSettings().facingMode !== "environment") {
     throw new Error(`Repeated F to R switch failed at cycle ${cycle}`);
   }

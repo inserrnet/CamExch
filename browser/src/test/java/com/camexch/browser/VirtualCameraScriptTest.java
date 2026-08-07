@@ -98,17 +98,15 @@ public class VirtualCameraScriptTest {
     }
 
     @Test
-    public void sourceUsesAFrameBackedProxyBeforeResolvingGetUserMedia() {
+    public void sourcePreservesTheNativeRemoteTrackForSiteCompatibility() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "if(route==='SOURCE')return createStableProxy(initialStream)"));
-        assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "stable source proxy first frame path=generator"));
-        assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "source proxy ready before getUserMedia resolve"));
-        assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "source proxy startup failed"));
-        assertFalse(VirtualCameraScript.SCRIPT.contains(
                 "if(route==='SOURCE')return createSourceDirectProxy(initialStream)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "source direct track enabled; Canvas proxy bypassed"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "route==='NATIVE'||route==='SOURCE'||isHighResolutionRear"));
+        assertFalse(VirtualCameraScript.SCRIPT.contains(
+                "if(route==='SOURCE')return createStableProxy(initialStream)"));
     }
 
     @Test
