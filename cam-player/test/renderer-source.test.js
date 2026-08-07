@@ -41,6 +41,8 @@ test("keeps an adaptive paused heartbeat so sites see a live camera", () => {
     /const sender = pc\.addTrack[\s\S]*updatePausedFrameHeartbeat\(\)/,
   );
   assert.match(renderer, /function renderFrame\(force/);
+  assert.match(renderer, /decodedIntervalMs=/);
+  assert.match(renderer, /requestIntervalMs=/);
   assert.match(
     renderer,
     /waitForFirstEncodedFrame[\s\S]*renderFrame\(true\)/,
@@ -233,10 +235,12 @@ test("migrates the output ceiling to 60 FPS without duplicating media frames", (
   assert.match(renderer, /preferences\.preferencesVersion\) >= 2 \? preferences\.fps \|\| 60 : 60/);
 });
 
-test("keeps sender FPS ceiling above fractional media cadence", () => {
+test("keeps one sender FPS ceiling while requestFrame controls cadence", () => {
   assert.match(renderer, /const configuredFps = configuredMaximumFps\(\)/);
-  assert.match(renderer, /const contentFps = senderState === "motion" \? effectiveMediaFps\(\) : maximumFps/);
+  assert.match(renderer, /const contentFps = sourceKind === "video" \? effectiveMediaFps\(\) : configuredFps/);
   assert.match(renderer, /CamGeometry\.senderFrameRateLimit/);
   assert.match(renderer, /delete encoding\.maxFramerate/);
   assert.doesNotMatch(renderer, /const configuredFps = effectiveMediaFps\(\)/);
+  assert.doesNotMatch(renderer, /scheduleSenderQualityRefresh\(`interaction/);
+  assert.doesNotMatch(renderer, /scheduleSenderQualityRefresh\("playback/);
 });

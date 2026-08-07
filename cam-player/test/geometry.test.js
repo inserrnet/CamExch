@@ -286,12 +286,12 @@ test("keeps a quality floor below the WebRTC bitrate ceiling", () => {
 });
 
 test("uses adaptive frame rates without reducing source resolution", () => {
-  assert.equal(geometry.adaptiveFrameRate(2400, 3200, 60, "idle"), 5);
-  assert.equal(geometry.adaptiveFrameRate(1500, 2000, 60, "idle"), 8);
-  assert.equal(geometry.adaptiveFrameRate(720, 1280, 60, "idle"), 15);
-  assert.equal(geometry.adaptiveFrameRate(2400, 3200, 60, "interaction"), 10);
-  assert.equal(geometry.adaptiveFrameRate(1500, 2000, 60, "interaction"), 15);
-  assert.equal(geometry.adaptiveFrameRate(720, 1280, 60, "interaction"), 20);
+  assert.equal(geometry.adaptiveFrameRate(2400, 3200, 60, "idle"), 3);
+  assert.equal(geometry.adaptiveFrameRate(1500, 2000, 60, "idle"), 4);
+  assert.equal(geometry.adaptiveFrameRate(720, 1280, 60, "idle"), 5);
+  assert.equal(geometry.adaptiveFrameRate(2400, 3200, 60, "interaction"), 60);
+  assert.equal(geometry.adaptiveFrameRate(1500, 2000, 30, "interaction"), 30);
+  assert.equal(geometry.adaptiveFrameRate(720, 1280, 24, "interaction"), 24);
   assert.equal(geometry.adaptiveFrameRate(2400, 3200, 24, "motion"), 24);
 });
 
@@ -301,10 +301,19 @@ test("does not throttle 24, 30, or 60 FPS media when maximum FPS is 60", () => {
   }
 });
 
-test("retains explicit lower limits and adaptive static limits", () => {
+test("keeps one stable sender ceiling across playback states", () => {
   assert.equal(geometry.senderFrameRateLimit(30, 30, "motion"), 30);
-  assert.equal(geometry.senderFrameRateLimit(60, 15, "idle"), 15);
-  assert.equal(geometry.senderFrameRateLimit(60, 20, "interaction"), 20);
+  assert.equal(geometry.senderFrameRateLimit(60, 5, "idle"), null);
+  assert.equal(geometry.senderFrameRateLimit(60, 60, "interaction"), null);
+});
+
+test("summarizes frame cadence and detects late frames", () => {
+  const stats = geometry.cadenceStatistics([41, 42, 43, 80, 40], 24);
+  assert.equal(stats.samples, 5);
+  assert.equal(stats.p50, 42);
+  assert.equal(stats.p95, 80);
+  assert.equal(stats.maximum, 80);
+  assert.equal(stats.late, 1);
 });
 
 test("prefers interoperable H264 at every resolution when available", () => {

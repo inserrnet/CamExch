@@ -321,20 +321,38 @@
     const configured = Math.max(1, Math.min(60, Number(configuredFps) || 30));
     if (state === "motion") return configured;
     const pixels = Math.max(1, Number(width) || 0) * Math.max(1, Number(height) || 0);
-    if (state !== "interaction") {
-      if (pixels >= 7_000_000) return Math.min(configured, 5);
-      if (pixels >= 3_000_000) return Math.min(configured, 8);
-      return Math.min(configured, 15);
-    }
-    if (pixels >= 7_000_000) return Math.min(configured, 10);
-    if (pixels >= 3_000_000) return Math.min(configured, 15);
-    return Math.min(configured, 20);
+    if (state === "interaction") return configured;
+    if (pixels >= 7_000_000) return Math.min(configured, 3);
+    if (pixels >= 3_000_000) return Math.min(configured, 4);
+    return Math.min(configured, 5);
   }
 
   function senderFrameRateLimit(configuredFps, adaptiveFps, state) {
     const configured = Math.max(1, Math.min(60, Number(configuredFps) || 30));
-    if (state === "motion" && configured >= 60) return null;
-    return Math.max(1, Math.min(configured, Number(adaptiveFps) || configured));
+    return configured >= 60 ? null : configured;
+  }
+
+  function cadenceStatistics(intervals, expectedFps) {
+    const values = (Array.isArray(intervals) ? intervals : [])
+      .map(Number)
+      .filter((value) => Number.isFinite(value) && value >= 0)
+      .sort((a, b) => a - b);
+    if (!values.length) {
+      return { p50: 0, p95: 0, maximum: 0, late: 0, samples: 0 };
+    }
+    const percentile = (ratio) => values[Math.min(
+      values.length - 1,
+      Math.max(0, Math.ceil(values.length * ratio) - 1),
+    )];
+    const fps = Math.max(1, Math.min(60, Number(expectedFps) || 30));
+    const lateThreshold = (1000 / fps) * 1.5;
+    return {
+      p50: percentile(0.5),
+      p95: percentile(0.95),
+      maximum: values[values.length - 1],
+      late: values.filter((value) => value > lateThreshold).length,
+      samples: values.length,
+    };
   }
 
   function isHighResolution(width, height) {
@@ -542,6 +560,7 @@
     videoBitrateProfile,
     adaptiveFrameRate,
     senderFrameRateLimit,
+    cadenceStatistics,
     isHighResolution,
     isUltraHighResolution,
     preferredVideoCodecs,

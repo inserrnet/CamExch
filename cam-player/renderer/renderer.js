@@ -307,6 +307,9 @@ let cadenceRenderedFrames = 0;
 let cadenceSkippedFrames = 0;
 let cadenceRenderTimeMs = 0;
 let cadenceMaxRenderTimeMs = 0;
+let cadenceFrameIntervalsMs = [];
+let cadenceRequestIntervalsMs = [];
+let cadenceLastDecodedAt = 0;
 let detectedMediaFps = 0;
 let mediaFrameTimes = [];
 let backgroundSnapshotReady = false;
@@ -721,6 +724,10 @@ function requestCanvasFrame() {
   );
   const now = performance.now();
   if (now - lastCanvasFrameRequestAt < (1000 / requestedFps) * 0.85) return false;
+  if (lastCanvasFrameRequestAt > 0) {
+    cadenceRequestIntervalsMs.push(now - lastCanvasFrameRequestAt);
+    if (cadenceRequestIntervalsMs.length > 600) cadenceRequestIntervalsMs.shift();
+  }
   canvasTrack.requestFrame();
   lastCanvasFrameRequestAt = now;
   return true;
@@ -795,6 +802,9 @@ function resetPlaybackCadence() {
   cadenceSkippedFrames = 0;
   cadenceRenderTimeMs = 0;
   cadenceMaxRenderTimeMs = 0;
+  cadenceFrameIntervalsMs = [];
+  cadenceRequestIntervalsMs = [];
+  cadenceLastDecodedAt = 0;
 }
 
 function configuredMaximumFps() {
@@ -827,7 +837,6 @@ function observeMediaFrameRate(metadata) {
   detectedMediaFps = measured;
   log(`Source frame rate detected fps=${detectedMediaFps.toFixed(3)} `
     + `effective=${effectiveMediaFps().toFixed(3)} samples=${intervals.length}`);
-  scheduleSenderQualityRefresh("source frame rate detected");
 }
 
 function reportPlaybackCadence() {
@@ -838,12 +847,19 @@ function reportPlaybackCadence() {
   const averageRenderMs = cadenceRenderedFrames
     ? cadenceRenderTimeMs / cadenceRenderedFrames
     : 0;
+  const expectedFps = effectiveMediaFps();
+  const decodedTiming = CamGeometry.cadenceStatistics(cadenceFrameIntervalsMs, expectedFps);
+  const requestTiming = CamGeometry.cadenceStatistics(cadenceRequestIntervalsMs, expectedFps);
   log(
     `Playback cadence decodedFps=${(cadenceDecodedFrames / elapsedSeconds).toFixed(1)} `
       + `renderedFps=${(cadenceRenderedFrames / elapsedSeconds).toFixed(1)} `
       + `skipped=${cadenceSkippedFrames} `
       + `renderAvgMs=${averageRenderMs.toFixed(2)} `
       + `renderMaxMs=${cadenceMaxRenderTimeMs.toFixed(2)} `
+      + `decodedIntervalMs=${decodedTiming.p50.toFixed(1)}/${decodedTiming.p95.toFixed(1)}/${decodedTiming.maximum.toFixed(1)} `
+      + `requestIntervalMs=${requestTiming.p50.toFixed(1)}/${requestTiming.p95.toFixed(1)}/${requestTiming.maximum.toFixed(1)} `
+      + `lateDecoded=${decodedTiming.late}/${decodedTiming.samples} `
+      + `lateRequests=${requestTiming.late}/${requestTiming.samples} `
       + `output=${canvas.width}x${canvas.height}`,
   );
   resetPlaybackCadence();
@@ -866,6 +882,11 @@ function scheduleVideoFrame() {
     videoFrameCallbackId = null;
     if (!playing) return;
     cadenceDecodedFrames += 1;
+    if (cadenceLastDecodedAt > 0) {
+      cadenceFrameIntervalsMs.push(_now - cadenceLastDecodedAt);
+      if (cadenceFrameIntervalsMs.length > 600) cadenceFrameIntervalsMs.shift();
+    }
+    cadenceLastDecodedAt = _now;
     observeMediaFrameRate(metadata);
     sourceTextureDirty = true;
     if (renderFrame(false, metadata)) {
@@ -1215,7 +1236,6 @@ async function play() {
     resetPlaybackCadence();
     stopPausedFrameHeartbeat();
     updateTrackContentHint("playback started");
-    scheduleSenderQualityRefresh("playback started");
     scheduleKeyFrame("playback started", 0);
     scheduleVideoFrame();
     updateOutputLabel();
@@ -1234,7 +1254,6 @@ function pause() {
   sourceTextureDirty = true;
   renderFrame(true);
   updateTrackContentHint("playback paused");
-  scheduleSenderQualityRefresh("playback paused");
   scheduleKeyFrame("playback paused", 0);
   updatePausedFrameHeartbeat();
   log(`Playback paused positionMs=${Math.round(video.currentTime * 1000)}`);
@@ -1346,21 +1365,11 @@ async function lockSenderQuality(sender, width, height) {
   // sender limiter drops frames when maxFramerate is equal to a fractional
   // source rate (for example 23.9998), even though canvas supplies all frames.
   const configuredFps = configuredMaximumFps();
-  const senderState = sourceKind === "video" && playing
-    ? "motion"
-    : sourceInteractionActive
-      ? "interaction"
-      : "idle";
-  const maximumFps = CamGeometry.adaptiveFrameRate(
-    width,
-    height,
-    configuredFps,
-    senderState,
-  );
-  const contentFps = senderState === "motion" ? effectiveMediaFps() : maximumFps;
+  const senderState = sourceKind === "video" && playing ? "motion" : "stable";
+  const contentFps = sourceKind === "video" ? effectiveMediaFps() : configuredFps;
   const senderFpsLimit = CamGeometry.senderFrameRateLimit(
     configuredFps,
-    maximumFps,
+    configuredFps,
     senderState,
   );
   const bitrateProfile = CamGeometry.videoBitrateProfile(width, height, contentFps);
@@ -1905,7 +1914,6 @@ function setSourceInteraction(active, reason) {
     interactionStartedAt = performance.now();
     interactionRenderedFrames = 0;
     interactionSequence += 1;
-    scheduleSenderQualityRefresh(`interaction ${reason} started`);
     updatePausedFrameHeartbeat();
     log(`Source interaction started sequence=${interactionSequence} reason=${reason} `
       + `output=${canvas.width}x${canvas.height}`);
@@ -1913,7 +1921,6 @@ function setSourceInteraction(active, reason) {
   }
   if (!sourceInteractionActive) return;
   sourceInteractionActive = false;
-  scheduleSenderQualityRefresh(`interaction ${reason} completed`);
   updatePausedFrameHeartbeat();
   log(`Source interaction completed sequence=${interactionSequence} reason=${reason} `
     + `durationMs=${Math.round(performance.now() - interactionStartedAt)} `

@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicLong;
 final class CamPlayerMotionSender implements SensorEventListener {
     private static final long SEND_INTERVAL_MS = 33L;
     private static final long RECONNECT_DELAY_MS = 1_000L;
+    private static final long MAX_RECONNECT_DELAY_MS = 15_000L;
 
     private final Context context;
     private final CamPlayerClient client;
@@ -156,8 +157,10 @@ final class CamPlayerMotionSender implements SensorEventListener {
         long sentSequence = -1L;
         long sentCount = 0L;
         long metricsStartedMs = android.os.SystemClock.elapsedRealtime();
+        long reconnectDelayMs = RECONNECT_DELAY_MS;
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             HttpURLConnection connection = null;
+            boolean sentOnConnection = false;
             try {
                 connection = client.openMotionStream();
                 activeConnection = connection;
@@ -171,6 +174,8 @@ final class CamPlayerMotionSender implements SensorEventListener {
                             output.flush();
                             sentSequence = sample.sequence;
                             sentCount++;
+                            sentOnConnection = true;
+                            reconnectDelayMs = RECONNECT_DELAY_MS;
                         }
                         long nowMs = android.os.SystemClock.elapsedRealtime();
                         if (nowMs - metricsStartedMs >= 10_000L) {
@@ -186,8 +191,13 @@ final class CamPlayerMotionSender implements SensorEventListener {
             } catch (Throwable error) {
                 if (running.get()) {
                     AppLog.info(context, "Cam Player motion stream reconnecting reason="
-                            + error.getClass().getSimpleName() + ": " + error.getMessage());
-                    sleepQuietly(RECONNECT_DELAY_MS);
+                            + error.getClass().getSimpleName() + ": " + error.getMessage()
+                            + " retryMs=" + reconnectDelayMs);
+                    sleepQuietly(reconnectDelayMs);
+                    if (!sentOnConnection) {
+                        reconnectDelayMs = Math.min(MAX_RECONNECT_DELAY_MS,
+                                reconnectDelayMs * 2L);
+                    }
                 }
             } finally {
                 activeConnection = null;

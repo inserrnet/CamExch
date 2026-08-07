@@ -53,6 +53,22 @@ public class VirtualCameraScriptTest {
                 "freezes="));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "avgDecodeMs="));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "cadenceMs="));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "totalSquaredInterFrameDelay"));
+    }
+
+    @Test
+    public void sourceReceiverUsesABoundedPacingBuffer() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "WebRTC receiver bounded pacing targetMs="));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "Math.max(35,Math.min(70,1250/fps))"));
+        assertFalse(VirtualCameraScript.SCRIPT.contains(
+                "receiver.playoutDelayHint=0"));
+        assertFalse(VirtualCameraScript.SCRIPT.contains(
+                "receiver.jitterBufferTarget=0"));
     }
 
     @Test
@@ -123,6 +139,10 @@ public class VirtualCameraScriptTest {
     public void sourceTrackRejectsImplausibleWebViewFrameRates() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "nativeFps>=1&&nativeFps<=60"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "reportedSourceFps>=1&&reportedSourceFps<=60"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "Cam Player reported source fps="));
     }
 
     @Test
