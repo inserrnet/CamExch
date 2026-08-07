@@ -29,8 +29,9 @@ test("uses stable trilinear minification for downscaling", () => {
 test("keeps an adaptive paused heartbeat so sites see a live camera", () => {
   assert.match(
     renderer,
-    /pausedFrameTimer = setInterval\(emitCurrentFrame, 1000 \/ idleFps\)/,
+    /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000 \/ idleFps\)/,
   );
+  assert.doesNotMatch(renderer, /function emitCurrentFrame\(\)/);
   assert.match(renderer, /function requestCanvasFrame\(\)/);
   assert.match(renderer, /lastCanvasFrameRequestAt < \(1000 \/ requestedFps\) \* 0\.85/);
   assert.match(renderer, /CamGeometry\.adaptiveFrameRate\([\s\S]*"idle"/);
@@ -202,6 +203,8 @@ test("recovers a stalled encoder at the same resolution before fallback", () => 
   assert.match(renderer, /Encoder restart superseded after replacement/);
   assert.match(renderer, /restartCaptureTrackAtCurrentResolution\(`offer \$\{id\}`, id\)/);
   assert.match(renderer, /Encoder same-resolution restart/);
+  assert.match(renderer, /Encoder output stalled id=/);
+  assert.match(renderer, /maintenance\.encoderStallReports >= 2/);
   assert.match(renderer, /encoderFailures\.set/);
   assert.match(renderer, /for \(const \[failedOutput, failure\] of encoderFailures\.entries\(\)\)/);
   assert.match(renderer, /Encoder codec retry/);

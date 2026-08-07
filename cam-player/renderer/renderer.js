@@ -774,10 +774,6 @@ function renderFrame(force, frameMetadata = null) {
   return true;
 }
 
-function emitCurrentFrame() {
-  return requestCanvasFrame();
-}
-
 function emitBootstrapFrames(reason, count = 4, intervalMs = 80) {
   let remaining = Math.max(1, count);
   const emit = () => {
@@ -867,7 +863,9 @@ function updatePausedFrameHeartbeat() {
     "idle",
   );
   renderFrame(true);
-  pausedFrameTimer = setInterval(emitCurrentFrame, 1000 / idleFps);
+  // Chromium can suppress requestFrame() calls when the canvas has not been
+  // painted again. A real redraw keeps a paused video or photo camera alive.
+  pausedFrameTimer = setInterval(() => renderFrame(true), 1000 / idleFps);
   log(`Paused/photo camera heartbeat fps=${idleFps} output=${canvas.width}x${canvas.height}`);
 }
 
@@ -1290,6 +1288,9 @@ function scheduleCaptureTrackRestart(reason) {
       maintenance.outputHeight = canvas.height;
       maintenance.unexpectedCodecReports = 0;
       maintenance.codecRecoveryActive = false;
+      maintenance.encoderStallReports = 0;
+      maintenance.encoderStallRecoveryActive = false;
+      maintenance.lastEncodedFrames = -1;
       log(`Capture track restarted after output change peer=${activePeerId} `
         + `output=${canvas.width}x${canvas.height} reason=${reason}`);
     } catch (error) {
@@ -1440,6 +1441,9 @@ async function handleOffer(payload) {
       outputHeight: expectedOutput.height,
       unexpectedCodecReports: 0,
       codecRecoveryActive: false,
+      lastEncodedFrames: -1,
+      encoderStallReports: 0,
+      encoderStallRecoveryActive: false,
       createdAt: performance.now(),
     });
     updateConnectionState();
@@ -1690,6 +1694,24 @@ async function handleOffer(payload) {
             maintenance.lastOutboundTimestamp = timestamp;
           }
           const encodedFrames = Number(entry.framesEncoded) || 0;
+          if (maintenance) {
+            if (encodedFrames > maintenance.lastEncodedFrames) {
+              maintenance.lastEncodedFrames = encodedFrames;
+              maintenance.encoderStallReports = 0;
+              maintenance.encoderStallRecoveryActive = false;
+            } else if (pc.connectionState === "connected" && sourceElement) {
+              maintenance.encoderStallReports += 1;
+              renderFrame(true);
+              if (maintenance.encoderStallReports >= 2
+                  && !maintenance.encoderStallRecoveryActive
+                  && !captureTrackRestartPending) {
+                maintenance.encoderStallRecoveryActive = true;
+                log(`Encoder output stalled id=${id} encoded=${encodedFrames} `
+                  + `reports=${maintenance.encoderStallReports}; restarting capture track`);
+                scheduleCaptureTrackRestart(`stalled encoder ${id}`);
+              }
+            }
+          }
           const averageQp = encodedFrames > 0 && Number.isFinite(Number(entry.qpSum))
             ? Number(entry.qpSum) / encodedFrames
             : 0;

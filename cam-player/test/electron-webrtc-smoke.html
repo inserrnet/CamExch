@@ -121,7 +121,6 @@
       stats = await outboundStats(senderPeer);
       if (stats.frames > 0 && video.videoWidth === width && video.videoHeight === height) break;
     }
-    clearInterval(bootstrapTimer);
     if (stats.frames <= 0) throw new Error(`cycle ${cycle} encoded no static frame`);
     if (stats.width !== width || stats.height !== height) {
       throw new Error(
@@ -134,6 +133,16 @@
           + `expected ${width}x${height}`,
       );
     }
+    const firstHeartbeatFrames = stats.frames;
+    const heartbeatWaitMs = width * height >= 7_000_000 ? 2500 : 700;
+    await wait(heartbeatWaitMs);
+    stats = await outboundStats(senderPeer);
+    if (stats.frames <= firstHeartbeatFrames) {
+      throw new Error(
+        `cycle ${cycle} static heartbeat stalled at ${firstHeartbeatFrames} frames`,
+      );
+    }
+    clearInterval(bootstrapTimer);
     progress(`cycle=${cycle} encoded frames=${stats.frames}`);
 
     video.srcObject = null;

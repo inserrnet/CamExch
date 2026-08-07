@@ -642,14 +642,14 @@ const directSourceController = context.__camexchForTest.proxy(
 directSourceController.route = "SOURCE";
 context.__camexchForTest.configure(directSourceController, { video: true, audio: false });
 const directSourceSettings = directSourceController.track.getSettings();
-if (directSourceController.kind !== "source-direct"
-    || directSourceController.track !== directSourceInputTrack
+if (directSourceController.kind !== "generator"
+    || directSourceController.track === directSourceInputTrack
     || canvasDrawCount !== canvasBeforeDirectSource
     || directSourceSettings.width !== TEST_SOURCE_WIDTH
     || directSourceSettings.height !== TEST_SOURCE_HEIGHT
     || directSourceSettings.deviceId !== "camexch-front-camera-4"
     || directSourceSettings.facingMode !== "user") {
-  throw new Error("Initial Source route was not exposed directly at its original resolution");
+  throw new Error("Initial Source route was not proxied at its original resolution");
 }
 directSourceController.hardStop();
 highResolutionDirect.hardStop();
@@ -1396,7 +1396,7 @@ for (let cycle = 0; cycle < 4; cycle += 1) {
   const sourceCycleSettings = sourceTrack?.getSettings?.() || {};
   if (sourceSwitch.failed !== 0 || sourceSwitch.switched < 1
       || nativeEntry.stream !== nativeStream
-      || nativeEntry.controller.kind !== (cycle === 0 ? "source-direct" : "generator")
+      || nativeEntry.controller.kind !== "generator"
       || nativeEntry.controller.route !== "SOURCE"
       || sourceCycleSettings.width !== TEST_SOURCE_WIDTH
       || sourceCycleSettings.height !== TEST_SOURCE_HEIGHT) {
@@ -1406,8 +1406,7 @@ for (let cycle = 0; cycle < 4; cycle += 1) {
   const rearTrack = nativeStream.getVideoTracks()[0];
   if (rearSwitch.failed !== 0 || rearSwitch.switched < 1
       || !rearTrack
-      || (cycle === 0 && (sourceTrack.readyState !== "ended" || rearTrack === sourceTrack))
-      || (cycle > 0 && (sourceTrack.readyState !== "live" || rearTrack !== sourceTrack))
+      || sourceTrack.readyState !== "live" || rearTrack !== sourceTrack
       || rearTrack.getSettings().facingMode !== "environment") {
     throw new Error(`Repeated F to R switch failed at cycle ${cycle}`);
   }

@@ -98,6 +98,30 @@ public class VirtualCameraScriptTest {
     }
 
     @Test
+    public void sourceUsesAFrameBackedProxyBeforeResolvingGetUserMedia() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "if(route==='SOURCE')return createStableProxy(initialStream)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "stable source proxy first frame path=generator"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "source proxy ready before getUserMedia resolve"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "source proxy startup failed"));
+        assertFalse(VirtualCameraScript.SCRIPT.contains(
+                "if(route==='SOURCE')return createSourceDirectProxy(initialStream)"));
+    }
+
+    @Test
+    public void mediaConsumerDiagnosticsReportInstallationAndAssignments() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "camera media consumer tracking installed"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "camera media consumer tracking unavailable srcObject descriptor missing"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "streamId='+(value.id||'')+' managed="));
+    }
+
+    @Test
     public void sourceTrackRejectsImplausibleWebViewFrameRates() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "nativeFps>=1&&nativeFps<=60"));
