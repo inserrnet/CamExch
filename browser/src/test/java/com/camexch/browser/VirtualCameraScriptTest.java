@@ -27,6 +27,23 @@ public class VirtualCameraScriptTest {
     }
 
     @Test
+    public void nativeInventoryFindsPrimaryRearBeforeReturningNativeDevices() {
+        int mapped = VirtualCameraScript.SCRIPT.indexOf("const mapped=list.map");
+        int nativeReturn = VirtualCameraScript.SCRIPT.indexOf("visibleList=native");
+        assertTrue(mapped >= 0);
+        assertTrue(nativeReturn > mapped);
+        assertTrue(VirtualCameraScript.SCRIPT.contains("primaryBackId='+(primaryBackId||'unresolved')"));
+    }
+
+    @Test
+    public void staleIdsAreRemovedAndRearRequestsShareOnePhysicalCamera() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains("stale camera deviceId removed"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains("primary rear lease reused"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains("primary rear lease clone"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains("rear autofocus delayed verify"));
+    }
+
+    @Test
     public void sourceStatsExposeBitrateAndStalls() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "decodedFps="));

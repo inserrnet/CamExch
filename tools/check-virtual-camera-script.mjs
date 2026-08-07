@@ -1415,14 +1415,16 @@ for (let cycle = 0; cycle < 4; cycle += 1) {
 
 await context.__camexchSwitchCamera("NATIVE");
 const focusBeforeNativeRear = continuousFocusCount;
+const nativeGetsBeforeNativeRear = nativeGetCount;
 const nativeRearStream = await context.navigator.mediaDevices.getUserMedia({
   video: { facingMode: { exact: "environment" } },
   audio: false,
 });
-if (continuousFocusCount !== focusBeforeNativeRear + 1
+if (continuousFocusCount !== focusBeforeNativeRear
+    || nativeGetCount !== nativeGetsBeforeNativeRear
     || nativeRearStream.getVideoTracks()[0].getSettings().facingMode !== "environment"
     || nativeRearStream.getVideoTracks()[0].getSettings().deviceId !== "main-rear-id") {
-  throw new Error("Native rear passthrough did not explicitly start continuous autofocus");
+  throw new Error("Native rear passthrough did not reuse the focused primary camera lease");
 }
 nativeRearStream.getTracks().forEach((track) => track.stop());
 
