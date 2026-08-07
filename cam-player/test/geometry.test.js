@@ -114,6 +114,38 @@ test("does not change an active size already inside min/max ranges", () => {
   assert.equal(resolved.height, 1600);
 });
 
+test("applies a refined exact square aspect ratio inside the original site ranges", () => {
+  const first = geometry.resolveRequestedSize({
+    video: {
+      width: { min: 720, max: 1920 },
+      height: { min: 720, max: 1080 },
+    },
+  }, "portrait", { width: 720, height: 1280 });
+  assert.deepEqual({ width: first.width, height: first.height }, { width: 720, height: 1080 });
+
+  const refined = geometry.resolveRequestedSize({
+    video: {
+      width: { min: 720, max: 1920 },
+      height: { min: 720, max: 1080 },
+      aspectRatio: { exact: 1 },
+    },
+  }, "portrait", { width: first.width, height: first.height });
+  assert.deepEqual({ width: refined.width, height: refined.height }, { width: 720, height: 720 });
+  assert.match(refined.reason, /aspect=1\.0000/);
+});
+
+test("rejects an impossible exact aspect ratio instead of silently violating it", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: {
+      width: { exact: 1280 },
+      height: { exact: 720 },
+      aspectRatio: { exact: 1 },
+    },
+  }, "landscape", { width: 720, height: 1280 });
+  assert.equal(resolved.applied, false);
+  assert.equal(resolved.unsupported, true);
+});
+
 test("uses the first complete advanced resolution in site order", () => {
   const resolved = geometry.resolveRequestedSize({
     video: {

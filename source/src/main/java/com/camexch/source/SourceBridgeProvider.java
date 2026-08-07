@@ -44,8 +44,7 @@ public class SourceBridgeProvider extends ContentProvider {
                         + " orientation=" + parsed.optString("orientation", "unknown"));
                 result.putString("value", service.answerBridgeOffer(arg, config));
             } else if ("configure".equals(method)) {
-                service.configureCamPlayer(arg);
-                result.putString("value", "OK");
+                result.putString("value", service.configureCamPlayer(arg));
             } else if ("close".equals(method)) {
                 JSONObject request = arg == null || arg.trim().isEmpty()
                         ? new JSONObject() : new JSONObject(arg);

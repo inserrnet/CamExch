@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld("camPlayer", {
   log: (message) => ipcRenderer.send("renderer-log", String(message)),
   updateState: (value) => ipcRenderer.send("player-state", value),
   answerOffer: (value) => ipcRenderer.send("webrtc-answer", value),
+  configurationApplied: (value) => ipcRenderer.send("source-config-applied", value),
   onOffer: (listener) => ipcRenderer.on("webrtc-offer", (_event, value) => listener(value)),
   onOfferCancel: (listener) => ipcRenderer.on("webrtc-cancel", (_event, value) => listener(value)),
   onSourceClose: (listener) => ipcRenderer.on("source-close", (_event, value) => listener(value)),

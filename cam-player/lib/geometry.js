@@ -65,6 +65,38 @@
     return value;
   }
 
+  function constraintBounds(spec) {
+    return {
+      min: spec.exact ?? spec.plain ?? spec.min ?? 2,
+      max: spec.exact ?? spec.plain ?? spec.max ?? Number.POSITIVE_INFINITY,
+    };
+  }
+
+  function resolveAspectSize(width, height, widthSpec, heightSpec, aspectSpec, orientation) {
+    if (!aspectSpec) return { width, height, applied: false };
+    let ratio = aspectSpec.exact ?? aspectSpec.plain ?? aspectSpec.ideal;
+    if (!Number.isFinite(ratio) || ratio <= 0) return { width, height, applied: false };
+    if (orientation === "portrait" && ratio > 1) ratio = 1 / ratio;
+    if (orientation === "landscape" && ratio < 1) ratio = 1 / ratio;
+    const wb = constraintBounds(widthSpec);
+    const hb = constraintBounds(heightSpec);
+    const candidates = [
+      { width, height: width / ratio },
+      { width: height * ratio, height },
+    ].filter((candidate) => (
+      candidate.width >= wb.min && candidate.width <= wb.max
+      && candidate.height >= hb.min && candidate.height <= hb.max
+    ));
+    if (!candidates.length) {
+      return { width, height, applied: false, unsupported: aspectSpec.exact !== undefined };
+    }
+    candidates.sort((left, right) => (
+      Math.abs(left.width - width) + Math.abs(left.height - height)
+      - Math.abs(right.width - width) - Math.abs(right.height - height)
+    ));
+    return { ...candidates[0], applied: true, ratio };
+  }
+
   function orientSize(width, height, orientation) {
     if (!width || !height) {
       return { width, height };
@@ -139,25 +171,44 @@
     }
     const widthConstraint = pair.width;
     const heightConstraint = pair.height;
-    const requestedWidth = Math.max(2, Math.round(
-      resolveConstraintDimension(widthConstraint, fallback.width) / 2,
-    ) * 2);
-    const requestedHeight = Math.max(2, Math.round(
-      resolveConstraintDimension(heightConstraint, fallback.height) / 2,
-    ) * 2);
+    const aspectConstraint = constraintSpec(video.aspectRatio);
+    const initialWidth = resolveConstraintDimension(widthConstraint, fallback.width);
+    const initialHeight = resolveConstraintDimension(heightConstraint, fallback.height);
+    const aspect = resolveAspectSize(
+      initialWidth,
+      initialHeight,
+      widthConstraint,
+      heightConstraint,
+      aspectConstraint,
+      orientation,
+    );
+    if (aspect.unsupported) {
+      return {
+        width: fallback.width,
+        height: fallback.height,
+        applied: false,
+        unsupported: true,
+        requestedWidth: initialWidth,
+        requestedHeight: initialHeight,
+        reason: `exact aspectRatio cannot be satisfied within requested dimensions`,
+      };
+    }
+    const requestedWidth = Math.max(2, Math.round(aspect.width / 2) * 2);
+    const requestedHeight = Math.max(2, Math.round(aspect.height / 2) * 2);
     const oriented = orientSize(
       requestedWidth,
       requestedHeight,
       orientation,
     );
-    const rawWidth = resolveConstraintDimension(widthConstraint, fallback.width);
-    const rawHeight = resolveConstraintDimension(heightConstraint, fallback.height);
+    const rawWidth = aspect.width;
+    const rawHeight = aspect.height;
     const normalized = requestedWidth !== Math.round(rawWidth)
       || requestedHeight !== Math.round(rawHeight);
     const widthStrength = constraintStrength(widthConstraint);
     const heightStrength = constraintStrength(heightConstraint);
     const baseReason = `${pair.source === "direct" ? "" : `${pair.source} `}`
       + `${widthStrength}/${heightStrength} ${orientation}`
+      + (aspect.applied ? ` aspect=${aspect.ratio.toFixed(4)}` : "")
       + (normalized ? " H264-even" : "");
     if (isMandatoryConstraint(pair) && isUltraHighResolution(oriented.width, oriented.height)) {
       return {

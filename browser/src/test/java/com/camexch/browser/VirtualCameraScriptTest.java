@@ -174,6 +174,12 @@ public class VirtualCameraScriptTest {
     }
 
     @Test
+    public void sourcePreflightRunsOncePerSharedConnection() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains("source preflight reused id="));
+        assertTrue(VirtualCameraScript.SCRIPT.contains("sharedRtcPreflightPromise=null"));
+    }
+
+    @Test
     public void reusedSourceSessionWaitsForRequestedGeometry() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "waitForSourceGeometry"));
@@ -181,6 +187,13 @@ public class VirtualCameraScriptTest {
                 "Source geometry confirmed"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "Source geometry retained"));
+    }
+
+    @Test
+    public void sourceGeometryFingerprintIncludesAspectRatioAndFrameRate() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains("aspectRatio:sourceConstraintKey(video.aspectRatio)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains("frameRate:sourceConstraintKey(video.frameRate)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains("resizeMode:video.resizeMode||''"));
     }
 
     @Test

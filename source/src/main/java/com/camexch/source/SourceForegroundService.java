@@ -235,14 +235,14 @@ public class SourceForegroundService extends Service {
         }
     }
 
-    void configureCamPlayer(String configJson) throws Exception {
+    String configureCamPlayer(String configJson) throws Exception {
         if (!"Cam Player".equals(mode) || camPlayerClient == null) {
-            return;
+            return "{\"applied\":false,\"reason\":\"Cam Player is not active\"}";
         }
 
         AppLog.info(this, "Forwarding live configuration to Cam Player length="
                 + (configJson == null ? 0 : configJson.length()));
-        camPlayerClient.configure(configJson);
+        return camPlayerClient.configure(configJson).toString();
     }
 
     void closeCamPlayerSession(String sessionId, String reason) throws Exception {

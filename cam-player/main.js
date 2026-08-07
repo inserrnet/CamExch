@@ -44,6 +44,7 @@ let state = {
   peerCount: 0,
 };
 const pendingOffers = new Map();
+const pendingConfigurations = new Map();
 const interfaceDescriptions = new Map();
 let pendingLogLines = [];
 let logFlushTimer = null;
@@ -354,6 +355,19 @@ async function forwardOffer(payload) {
   });
 }
 
+async function forwardConfiguration(config) {
+  if (!mainWindow || mainWindow.isDestroyed()) throw new Error("Cam Player window is unavailable");
+  const id = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingConfigurations.delete(id);
+      reject(new Error("Cam Player configuration timed out"));
+    }, 5000);
+    pendingConfigurations.set(id, { resolve, reject, timeout });
+    mainWindow.webContents.send("source-config", { id, config });
+  });
+}
+
 async function handleRequest(request, response) {
   try {
     const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
@@ -478,10 +492,11 @@ async function handleRequest(request, response) {
     }
     if (request.method === "POST" && requestUrl.pathname === "/configure") {
       const body = await readBody(request);
-      mainWindow?.webContents.send("source-config", body);
+      const applied = await forwardConfiguration(body);
       log(`Configuration received orientation=${body.orientation || "unknown"} `
-        + `preferredRoute=${body.preferredRoute || "unchanged"}`);
-      sendJson(response, 200, { ok: true });
+        + `preferredRoute=${body.preferredRoute || "unchanged"} `
+        + `applied=${applied.width || 0}x${applied.height || 0}`);
+      sendJson(response, 200, { ok: true, ...applied });
       return;
     }
     sendJson(response, 404, { error: "Not found" });
@@ -803,6 +818,13 @@ ipcMain.on("webrtc-answer", (_event, { id, sdp, error }) => {
   if (error) pending.reject(new Error(error));
   else pending.resolve(sdp);
 });
+ipcMain.on("source-config-applied", (_event, { id, ...result }) => {
+  const pending = pendingConfigurations.get(id);
+  if (!pending) return;
+  clearTimeout(pending.timeout);
+  pendingConfigurations.delete(id);
+  pending.resolve(result);
+});
 
 app.whenReady().then(() => {
   createWindow();
@@ -824,6 +846,11 @@ app.on("before-quit", () => {
     pending.reject(new Error("Cam Player is closing"));
   }
   pendingOffers.clear();
+  for (const pending of pendingConfigurations.values()) {
+    clearTimeout(pending.timeout);
+    pending.reject(new Error("Cam Player is closing"));
+  }
+  pendingConfigurations.clear();
   flushLog(true);
   try {
     publication?.stop();

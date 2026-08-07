@@ -307,6 +307,8 @@ let cadenceRenderedFrames = 0;
 let cadenceSkippedFrames = 0;
 let cadenceRenderTimeMs = 0;
 let cadenceMaxRenderTimeMs = 0;
+let detectedMediaFps = 0;
+let mediaFrameTimes = [];
 let backgroundSnapshotReady = false;
 let backgroundBlurTimer = null;
 let senderQualityRefreshTimer = null;
@@ -367,7 +369,7 @@ async function logRuntimeMetrics() {
   try {
     const memory = await window.camPlayer.getMemoryInfo();
     log(`Runtime memory workingSetMb=${memory.workingSetMb} privateMb=${memory.privateMb} `
-      + `processes=${memory.processes} peers=${peers.size} media=${currentFile?.kind || "none"} `
+      + `processes=${memory.processes} peers=${peers.size} media=${sourceKind || "none"} `
       + `output=${canvas.width}x${canvas.height} interaction=${sourceInteractionActive}`);
   } catch (error) {
     log(`Runtime memory unavailable ${error}`);
@@ -714,7 +716,7 @@ function requestCanvasFrame() {
   const requestedFps = CamGeometry.adaptiveFrameRate(
     canvas.width,
     canvas.height,
-    Number(fpsInput.value) || 30,
+    effectiveMediaFps(),
     state,
   );
   const now = performance.now();
@@ -727,7 +729,7 @@ function requestCanvasFrame() {
 function renderFrame(force, frameMetadata = null) {
   if (!sourceElement) return false;
   const now = performance.now();
-  const fps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+  const fps = effectiveMediaFps();
   const activeFps = playing ? fps : Math.min(10, fps);
   const mediaTime = Number(frameMetadata?.mediaTime);
   if (!force) {
@@ -795,6 +797,39 @@ function resetPlaybackCadence() {
   cadenceMaxRenderTimeMs = 0;
 }
 
+function configuredMaximumFps() {
+  return Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+}
+
+function effectiveMediaFps() {
+  const configured = configuredMaximumFps();
+  return sourceKind === "video" && detectedMediaFps > 0
+    ? Math.min(configured, detectedMediaFps)
+    : configured;
+}
+
+function observeMediaFrameRate(metadata) {
+  const mediaTime = Number(metadata?.mediaTime);
+  if (!Number.isFinite(mediaTime)) return;
+  const previous = mediaFrameTimes[mediaFrameTimes.length - 1];
+  if (Number.isFinite(previous) && mediaTime > previous && mediaTime - previous < 1) {
+    mediaFrameTimes.push(mediaTime);
+  } else {
+    mediaFrameTimes = [mediaTime];
+  }
+  if (mediaFrameTimes.length > 25) mediaFrameTimes.shift();
+  if (mediaFrameTimes.length < 9) return;
+  const intervals = mediaFrameTimes.slice(1).map((value, index) => value - mediaFrameTimes[index])
+    .filter((value) => value > 0).sort((a, b) => a - b);
+  const median = intervals[Math.floor(intervals.length / 2)];
+  const measured = median > 0 ? Math.max(1, Math.min(60, 1 / median)) : 0;
+  if (!measured || Math.abs(measured - detectedMediaFps) < 0.35) return;
+  detectedMediaFps = measured;
+  log(`Source frame rate detected fps=${detectedMediaFps.toFixed(3)} `
+    + `effective=${effectiveMediaFps().toFixed(3)} samples=${intervals.length}`);
+  scheduleSenderQualityRefresh("source frame rate detected");
+}
+
 function reportPlaybackCadence() {
   const now = performance.now();
   const elapsedMs = now - cadenceStartedAt;
@@ -831,6 +866,7 @@ function scheduleVideoFrame() {
     videoFrameCallbackId = null;
     if (!playing) return;
     cadenceDecodedFrames += 1;
+    observeMediaFrameRate(metadata);
     sourceTextureDirty = true;
     if (renderFrame(false, metadata)) {
       cadenceRenderedFrames += 1;
@@ -843,7 +879,7 @@ function scheduleVideoFrame() {
   if (typeof video.requestVideoFrameCallback === "function") {
     videoFrameCallbackId = video.requestVideoFrameCallback(callback);
   } else {
-    const fps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+    const fps = effectiveMediaFps();
     videoFrameCallbackId = setTimeout(callback, 1000 / fps);
   }
 }
@@ -1072,6 +1108,8 @@ async function loadMedia(file) {
     video.pause();
     playing = false;
     lastRenderedMediaTime = null;
+    detectedMediaFps = 0;
+    mediaFrameTimes = [];
     uploadedTextureWidth = 0;
     uploadedTextureHeight = 0;
     detailMinificationEnabled = null;
@@ -1304,7 +1342,7 @@ function scheduleCaptureTrackRestart(reason) {
 }
 
 async function lockSenderQuality(sender, width, height) {
-  const configuredFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+  const configuredFps = effectiveMediaFps();
   const senderState = sourceKind === "video" && playing
     ? "motion"
     : sourceInteractionActive
@@ -1356,9 +1394,10 @@ function scheduleSenderQualityRefresh(reason) {
       if (!maintenance?.sender || !peers.has(id)) continue;
       active.push(
         lockSenderQuality(maintenance.sender, canvas.width, canvas.height)
-          .then(() => {
+          .then((profile) => {
             maintenance.outputWidth = canvas.width;
             maintenance.outputHeight = canvas.height;
+            if (profile) maintenance.bitrateProfile = profile;
           }),
       );
     }
@@ -1444,6 +1483,7 @@ async function handleOffer(payload) {
       lastEncodedFrames: -1,
       encoderStallReports: 0,
       encoderStallRecoveryActive: false,
+      bitrateProfile: null,
       createdAt: performance.now(),
     });
     updateConnectionState();
@@ -1557,6 +1597,7 @@ async function handleOffer(payload) {
       expectedOutput.width,
       expectedOutput.height,
     );
+    if (senderMaintenance) senderMaintenance.bitrateProfile = appliedBitrateProfile;
     await waitForIce(pc, 3500);
     ensureOfferActive(id);
     const answerFirstCodec = CamGeometry.negotiatedVideoCodec(pc.localDescription.sdp);
@@ -1719,12 +1760,13 @@ async function handleOffer(payload) {
               && Number.isFinite(Number(entry.totalEncodeTime))
             ? (Number(entry.totalEncodeTime) * 1000) / encodedFrames
             : 0;
+          const currentBitrateProfile = maintenance?.bitrateProfile || appliedBitrateProfile;
           log(`WebRTC outbound id=${id} codec=${actualCodec} `
             + `size=${entry.frameWidth || 0}x${entry.frameHeight || 0} `
             + `fps=${entry.framesPerSecond || 0} encoded=${entry.framesEncoded || 0} `
             + `bytes=${bytes} bitrateMbps=${bitrateMbps.toFixed(2)} `
-            + `minMbps=${(appliedBitrateProfile.minimum / 1_000_000).toFixed(2)} `
-            + `targetMbps=${(appliedBitrateProfile.maximum / 1_000_000).toFixed(2)} `
+            + `minMbps=${(currentBitrateProfile.minimum / 1_000_000).toFixed(2)} `
+            + `targetMbps=${(currentBitrateProfile.maximum / 1_000_000).toFixed(2)} `
             + `avgQp=${averageQp.toFixed(1)} avgEncodeMs=${averageEncodeMs.toFixed(2)} `
             + `quality=${entry.qualityLimitationReason || "none"} `
             + `sourceUploads=${sourceUploadCount} peers=${peers.size}`);
@@ -1759,7 +1801,9 @@ function waitForIce(pc, timeoutMs) {
 }
 
 function applySiteConfiguration(config, reason) {
-  if (!followSiteToggle.checked || !config) return;
+  if (!followSiteToggle.checked || !config) {
+    return { applied: false, width: canvas.width, height: canvas.height, reason: "follow site disabled" };
+  }
   const fallback = { width: canvas.width, height: canvas.height };
   const resolved = CamGeometry.resolveRequestedSize(
     config.constraints,
@@ -1771,7 +1815,7 @@ function applySiteConfiguration(config, reason) {
       + (resolved.unsupported
         ? ` requested=${resolved.requestedWidth}x${resolved.requestedHeight}`
         : ""));
-    return;
+    return { ...resolved, width: canvas.width, height: canvas.height };
   }
   if (resolved.clamped) {
     log(`Site size normalized requested=${resolved.requestedWidth}x`
@@ -1781,7 +1825,7 @@ function applySiteConfiguration(config, reason) {
   if (resolved.width === canvas.width && resolved.height === canvas.height) {
     log(`Site size already active=${canvas.width}x${canvas.height} `
       + `reason=${reason} ${resolved.reason}`);
-    return;
+    return { ...resolved, width: canvas.width, height: canvas.height };
   }
   applyOutputSize(
     resolved.width,
@@ -1789,6 +1833,7 @@ function applySiteConfiguration(config, reason) {
     `site ${reason} ${resolved.reason}`,
     { origin: "site" },
   );
+  return { ...resolved, width: canvas.width, height: canvas.height };
 }
 
 function scheduleSiteConfiguration(config, reason) {
@@ -2525,7 +2570,23 @@ window.camPlayer.onSourceClose(({ sessionId, reason }) => {
   for (const id of matches) closePeer(id, reason || "Source requested close");
   log(`Source close applied sessionId=${sessionId || "all"} peers=${matches.length}`);
 });
-window.camPlayer.onConfig((config) => scheduleSiteConfiguration(config, "live configuration"));
+window.camPlayer.onConfig((message) => {
+  const id = message?.id || "";
+  const config = message?.config || message;
+  try {
+    const result = applySiteConfiguration(config, "live configuration");
+    window.camPlayer.configurationApplied({ id, ...result, fps: effectiveMediaFps() });
+  } catch (error) {
+    window.camPlayer.configurationApplied({
+      id,
+      applied: false,
+      width: canvas.width,
+      height: canvas.height,
+      fps: effectiveMediaFps(),
+      reason: error.message || String(error),
+    });
+  }
+});
 function applyServerInfo(info) {
   currentServerInfo = info;
   document.getElementById("networkValue").textContent =
