@@ -13,7 +13,7 @@ public class VirtualCameraScriptTest {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "openPrimaryRear(nativeConstraints,authorize,'NATIVE')"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "native passthrough resolved primary="));
+                "native passthrough resolved physicalId="));
     }
 
     @Test
