@@ -88,6 +88,32 @@ test("keeps manual size when site omits dimensions", () => {
   assert.equal(resolved.height, 3200);
 });
 
+test("keeps the active size inside min/max ranges instead of selecting min/min", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: {
+      width: { min: 720, max: 1920 },
+      height: { min: 720, max: 1080 },
+    },
+  }, "portrait", { width: 720, height: 1280 });
+
+  assert.equal(resolved.applied, true);
+  assert.equal(resolved.width, 720);
+  assert.equal(resolved.height, 1080);
+  assert.match(resolved.reason, /range\/range/);
+});
+
+test("does not change an active size already inside min/max ranges", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: {
+      width: { min: 640, max: 1920 },
+      height: { min: 480, max: 1920 },
+    },
+  }, "portrait", { width: 1200, height: 1600 });
+
+  assert.equal(resolved.width, 1200);
+  assert.equal(resolved.height, 1600);
+});
+
 test("uses the first complete advanced resolution in site order", () => {
   const resolved = geometry.resolveRequestedSize({
     video: {

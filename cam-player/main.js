@@ -51,6 +51,7 @@ let activeQrScan = null;
 let pendingMotionSample = null;
 let motionDispatchScheduled = false;
 let liveMotionRequested = false;
+let motionCaptureRequested = false;
 
 function dispatchLatestMotionSample(sample) {
   pendingMotionSample = sample;
@@ -392,6 +393,9 @@ async function handleRequest(request, response) {
     if (request.method === "GET" && requestUrl.pathname === "/motion-config") {
       sendJson(response, 200, {
         liveMotion: liveMotionRequested,
+        captureMotion: motionCaptureRequested,
+        streamMotion: liveMotionRequested || motionCaptureRequested,
+        sampleIntervalMs: liveMotionRequested || motionCaptureRequested ? 33 : 500,
         tracking: "arcore",
       });
       return;
@@ -707,6 +711,10 @@ ipcMain.handle("set-live-motion-requested", (_event, enabled) => {
   }
   return liveMotionRequested;
 });
+ipcMain.handle("set-motion-capture-requested", (_event, enabled) => {
+  motionCaptureRequested = enabled === true;
+  return motionCaptureRequested;
+});
 ipcMain.handle("get-memory-info", () => {
   const metrics = app.getAppMetrics();
   const totals = metrics.reduce((result, metric) => {
@@ -809,6 +817,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   liveMotionRequested = false;
+  motionCaptureRequested = false;
   if (activeQrScan) settleQrScan({ status: "cancelled" });
   for (const pending of pendingOffers.values()) {
     clearTimeout(pending.timeout);

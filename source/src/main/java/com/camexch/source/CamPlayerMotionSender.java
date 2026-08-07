@@ -40,6 +40,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
     private volatile Sample latestSensor;
     private volatile Sample latestArCore;
     private volatile boolean arCoreRequested;
+    private volatile long sendIntervalMs = 500L;
     private volatile long nextArCoreStartMs;
     private volatile float[] gyro = new float[]{0f, 0f, 0f};
     private volatile float[] acceleration = new float[]{0f, 0f, 0f};
@@ -179,7 +180,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
                             sentCount = 0L;
                             metricsStartedMs = nowMs;
                         }
-                        Thread.sleep(SEND_INTERVAL_MS);
+                        Thread.sleep(sendIntervalMs);
                     }
                 }
             } catch (Throwable error) {
@@ -200,7 +201,11 @@ final class CamPlayerMotionSender implements SensorEventListener {
     private void refreshMotionConfig() {
         if (!running.get()) return;
         try {
-            boolean requested = client.motionConfig().optBoolean("liveMotion", false);
+            JSONObject config = client.motionConfig();
+            boolean requested = config.optBoolean("liveMotion", false);
+            long requestedInterval = config.optLong("sampleIntervalMs",
+                    config.optBoolean("streamMotion", false) ? SEND_INTERVAL_MS : 500L);
+            sendIntervalMs = Math.max(SEND_INTERVAL_MS, Math.min(1_000L, requestedInterval));
             if (requested != arCoreRequested) {
                 arCoreRequested = requested;
                 latestArCore = null;

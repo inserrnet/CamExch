@@ -2296,6 +2296,7 @@ function resetMotionRecordingUi() {
 
 function cancelMotionRecording(reason = "cancelled") {
   if (!motionRecording) return;
+  window.camPlayer.setMotionCaptureRequested(false).catch(() => {});
   resetMotionRecordingUi();
   motionRecordingStatus.hidden = true;
   handheldStatus.textContent = "Motion recording cancelled";
@@ -2331,6 +2332,7 @@ async function finishMotionRecording() {
     showToast(error.message || String(error));
     log(`Motion recording failed ${error.stack || error}`);
   } finally {
+    await window.camPlayer.setMotionCaptureRequested(false).catch(() => {});
     resetMotionRecordingUi();
   }
 }
@@ -2364,11 +2366,12 @@ function updateMotionRecordingClock() {
   if (now >= motionRecording.endsAt) finishMotionRecording();
 }
 
-recordMotionButton.addEventListener("click", () => {
+recordMotionButton.addEventListener("click", async () => {
   if (performance.now() - latestPhoneMotionAt > 2000) {
     showToast("Connect Source and start Cam Player mode first");
     return;
   }
+  await window.camPlayer.setMotionCaptureRequested(true);
   motionRecording = {
     phase: "countdown",
     startsAt: performance.now() + 3000,

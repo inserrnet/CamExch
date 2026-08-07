@@ -86,6 +86,16 @@ test("coalesces phone motion before renderer IPC delivery", () => {
   assert.match(main, /sequence <= latestSequence/);
 });
 
+test("throttles idle phone motion while preserving full-rate live and recording modes", () => {
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  assert.match(main, /streamMotion: liveMotionRequested \|\| motionCaptureRequested/);
+  assert.match(main, /sampleIntervalMs: liveMotionRequested \|\| motionCaptureRequested \? 33 : 500/);
+  assert.match(main, /set-motion-capture-requested/);
+  assert.match(preload, /setMotionCaptureRequested/);
+  assert.match(renderer, /setMotionCaptureRequested\(true\)/);
+  assert.match(renderer, /setMotionCaptureRequested\(false\)/);
+});
+
 test("opens dropped media through the same preparation pipeline", () => {
   assert.match(preload, /webUtils\.getPathForFile\(file\)/);
   assert.match(renderer, /prepareAndLoadMediaPath\(filePath, "drop"\)/);

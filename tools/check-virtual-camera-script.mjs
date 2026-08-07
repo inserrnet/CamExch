@@ -781,8 +781,8 @@ if (mapped.find((device) => device.deviceId === "rear-id")?.label !== "camera 2,
 if (mapped.find((device) => device.kind === "videoinput")?.deviceId !== "main-rear-id") {
   throw new Error("The primary camera 0 was not preferred over secondary rear modules");
 }
-if (mapped.find((device) => device.deviceId === "front-id")?.label !== "camera 1, facing front") {
-  throw new Error("Native front camera label was not preserved");
+if (mapped.find((device) => device.deviceId === "camexch-front-camera-4")?.label !== "camera 1, facing front") {
+  throw new Error("Stable source front camera identity was not exposed");
 }
 if (mapped.some((device) => device.deviceId === "camexch-back-camera")) {
   throw new Error("Synthetic back camera duplicated a visible physical back camera");
@@ -1106,7 +1106,7 @@ if (onlineSourceSwitch.switched !== 1 || onlineSourceSwitch.failed !== 0
 }
 const sourceSettings = onlineSourceTrack.getSettings();
 if (sourceSettings.facingMode !== "environment"
-    || sourceSettings.deviceId !== "main-rear-id"
+    || sourceSettings.deviceId !== "camexch-back-camera"
     || sourceSettings.width !== TEST_SOURCE_WIDTH
     || sourceSettings.height !== TEST_SOURCE_HEIGHT
     || nativeGetCount !== nativeCountBeforeOnlineSwitch) {

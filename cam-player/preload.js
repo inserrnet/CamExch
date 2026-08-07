@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("camPlayer", {
   getServerInfo: () => ipcRenderer.invoke("get-server-info"),
   getMemoryInfo: () => ipcRenderer.invoke("get-memory-info"),
   setLiveMotionRequested: (enabled) => ipcRenderer.invoke("set-live-motion-requested", enabled),
+  setMotionCaptureRequested: (enabled) => ipcRenderer.invoke("set-motion-capture-requested", enabled),
   writePreferences: (value) => ipcRenderer.invoke("write-preferences", value),
   listMotionProfiles: () => ipcRenderer.invoke("list-motion-profiles"),
   readMotionProfile: (id) => ipcRenderer.invoke("read-motion-profile", id),

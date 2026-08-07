@@ -35,6 +35,36 @@
     return null;
   }
 
+  function constraintSpec(value) {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return { plain: value };
+    }
+    if (!value || typeof value !== "object") return null;
+    const result = {};
+    for (const name of ["exact", "ideal", "min", "max"]) {
+      const candidate = Number(value[name]);
+      if (Number.isFinite(candidate) && candidate > 0) result[name] = candidate;
+    }
+    return Object.keys(result).length ? result : null;
+  }
+
+  function constraintStrength(spec) {
+    if (!spec) return "none";
+    for (const name of ["exact", "plain", "ideal", "range"]) {
+      if (name === "range" ? spec.min !== undefined || spec.max !== undefined : spec[name] !== undefined) {
+        return name;
+      }
+    }
+    return "none";
+  }
+
+  function resolveConstraintDimension(spec, fallback) {
+    let value = spec.exact ?? spec.plain ?? spec.ideal ?? fallback;
+    if (spec.min !== undefined) value = Math.max(value, spec.min);
+    if (spec.max !== undefined) value = Math.min(value, spec.max);
+    return value;
+  }
+
   function orientSize(width, height, orientation) {
     if (!width || !height) {
       return { width, height };
@@ -48,8 +78,8 @@
   }
 
   function requestedConstraintPair(video) {
-    const directWidth = constraintValue(video.width);
-    const directHeight = constraintValue(video.height);
+    const directWidth = constraintSpec(video.width);
+    const directHeight = constraintSpec(video.height);
     if (directWidth && directHeight) {
       return { width: directWidth, height: directHeight, source: "direct" };
     }
@@ -57,8 +87,8 @@
     for (let index = 0; index < advanced.length; index += 1) {
       const candidate = advanced[index];
       if (!candidate || typeof candidate !== "object") continue;
-      const width = constraintValue(candidate.width);
-      const height = constraintValue(candidate.height);
+      const width = constraintSpec(candidate.width);
+      const height = constraintSpec(candidate.height);
       if (width && height) {
         return { width, height, source: `advanced[${index}]` };
       }
@@ -72,8 +102,8 @@
   const SAFE_SITE_MAX_PIXELS = 1920 * 1440;
 
   function isMandatoryConstraint(pair) {
-    return [pair.width.strength, pair.height.strength]
-      .some((strength) => strength === "exact" || strength === "min");
+    return [pair.width, pair.height]
+      .some((constraint) => constraint.exact !== undefined || constraint.min !== undefined);
   }
 
   function fitOptionalSiteSize(width, height) {
@@ -109,17 +139,25 @@
     }
     const widthConstraint = pair.width;
     const heightConstraint = pair.height;
-    const requestedWidth = Math.max(2, Math.round(widthConstraint.value / 2) * 2);
-    const requestedHeight = Math.max(2, Math.round(heightConstraint.value / 2) * 2);
+    const requestedWidth = Math.max(2, Math.round(
+      resolveConstraintDimension(widthConstraint, fallback.width) / 2,
+    ) * 2);
+    const requestedHeight = Math.max(2, Math.round(
+      resolveConstraintDimension(heightConstraint, fallback.height) / 2,
+    ) * 2);
     const oriented = orientSize(
       requestedWidth,
       requestedHeight,
       orientation,
     );
-    const normalized = requestedWidth !== Math.round(widthConstraint.value)
-      || requestedHeight !== Math.round(heightConstraint.value);
+    const rawWidth = resolveConstraintDimension(widthConstraint, fallback.width);
+    const rawHeight = resolveConstraintDimension(heightConstraint, fallback.height);
+    const normalized = requestedWidth !== Math.round(rawWidth)
+      || requestedHeight !== Math.round(rawHeight);
+    const widthStrength = constraintStrength(widthConstraint);
+    const heightStrength = constraintStrength(heightConstraint);
     const baseReason = `${pair.source === "direct" ? "" : `${pair.source} `}`
-      + `${widthConstraint.strength}/${heightConstraint.strength} ${orientation}`
+      + `${widthStrength}/${heightStrength} ${orientation}`
       + (normalized ? " H264-even" : "");
     if (isMandatoryConstraint(pair) && isUltraHighResolution(oriented.width, oriented.height)) {
       return {
@@ -434,6 +472,7 @@
   return {
     positiveInteger,
     constraintValue,
+    constraintSpec,
     orientSize,
     resolveRequestedSize,
     fitTransform,
