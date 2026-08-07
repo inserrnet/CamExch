@@ -11,7 +11,7 @@ public class VirtualCameraScriptTest {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "native passthrough replacing secondary rear"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "nativeConstraints=constraintsForPrimaryRear(c)"));
+                "openPrimaryRear(nativeConstraints,authorize,'NATIVE')"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "native passthrough resolved primary="));
     }
