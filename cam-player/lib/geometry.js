@@ -331,6 +331,12 @@
     return Math.min(configured, 20);
   }
 
+  function senderFrameRateLimit(configuredFps, adaptiveFps, state) {
+    const configured = Math.max(1, Math.min(60, Number(configuredFps) || 30));
+    if (state === "motion" && configured >= 60) return null;
+    return Math.max(1, Math.min(configured, Number(adaptiveFps) || configured));
+  }
+
   function isHighResolution(width, height) {
     const w = Number(width) || 0;
     const h = Number(height) || 0;
@@ -535,6 +541,7 @@
     targetVideoBitrate,
     videoBitrateProfile,
     adaptiveFrameRate,
+    senderFrameRateLimit,
     isHighResolution,
     isUltraHighResolution,
     preferredVideoCodecs,

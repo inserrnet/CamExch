@@ -1342,7 +1342,10 @@ function scheduleCaptureTrackRestart(reason) {
 }
 
 async function lockSenderQuality(sender, width, height) {
-  const configuredFps = effectiveMediaFps();
+  // Keep the encoder ceiling above the measured media cadence. Chromium's
+  // sender limiter drops frames when maxFramerate is equal to a fractional
+  // source rate (for example 23.9998), even though canvas supplies all frames.
+  const configuredFps = configuredMaximumFps();
   const senderState = sourceKind === "video" && playing
     ? "motion"
     : sourceInteractionActive
@@ -1354,7 +1357,13 @@ async function lockSenderQuality(sender, width, height) {
     configuredFps,
     senderState,
   );
-  const bitrateProfile = CamGeometry.videoBitrateProfile(width, height, maximumFps);
+  const contentFps = senderState === "motion" ? effectiveMediaFps() : maximumFps;
+  const senderFpsLimit = CamGeometry.senderFrameRateLimit(
+    configuredFps,
+    maximumFps,
+    senderState,
+  );
+  const bitrateProfile = CamGeometry.videoBitrateProfile(width, height, contentFps);
   try {
     const parameters = sender.getParameters();
     if (!parameters.encodings?.length) {
@@ -1363,7 +1372,8 @@ async function lockSenderQuality(sender, width, height) {
     }
     const encoding = parameters.encodings[0];
     encoding.scaleResolutionDownBy = 1;
-    encoding.maxFramerate = maximumFps;
+    if (senderFpsLimit == null) delete encoding.maxFramerate;
+    else encoding.maxFramerate = senderFpsLimit;
     encoding.maxBitrate = bitrateProfile.maximum;
     encoding.priority = "high";
     encoding.networkPriority = "high";
@@ -1372,7 +1382,8 @@ async function lockSenderQuality(sender, width, height) {
     const applied = sender.getParameters();
     const active = applied.encodings?.[0] || {};
     log(`Sender quality lock applied scale=${active.scaleResolutionDownBy || 1} `
-      + `maxFps=${active.maxFramerate || "default"} `
+      + `maxFps=${active.maxFramerate || "unlimited"} `
+      + `contentFps=${contentFps.toFixed(3)} `
       + `state=${senderState} `
       + `minMbps=${(bitrateProfile.minimum / 1_000_000).toFixed(2)} `
       + `startMbps=${(bitrateProfile.start / 1_000_000).toFixed(2)} `

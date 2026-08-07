@@ -295,6 +295,18 @@ test("uses adaptive frame rates without reducing source resolution", () => {
   assert.equal(geometry.adaptiveFrameRate(2400, 3200, 24, "motion"), 24);
 });
 
+test("does not throttle 24, 30, or 60 FPS media when maximum FPS is 60", () => {
+  for (const mediaFps of [24, 30, 60]) {
+    assert.equal(geometry.senderFrameRateLimit(60, mediaFps, "motion"), null);
+  }
+});
+
+test("retains explicit lower limits and adaptive static limits", () => {
+  assert.equal(geometry.senderFrameRateLimit(30, 30, "motion"), 30);
+  assert.equal(geometry.senderFrameRateLimit(60, 15, "idle"), 15);
+  assert.equal(geometry.senderFrameRateLimit(60, 20, "interaction"), 20);
+});
+
 test("prefers interoperable H264 at every resolution when available", () => {
   const codecs = [
     { mimeType: "video/H264" },

@@ -232,3 +232,11 @@ test("migrates the output ceiling to 60 FPS without duplicating media frames", (
   assert.match(renderer, /preferencesVersion: 2/);
   assert.match(renderer, /preferences\.preferencesVersion\) >= 2 \? preferences\.fps \|\| 60 : 60/);
 });
+
+test("keeps sender FPS ceiling above fractional media cadence", () => {
+  assert.match(renderer, /const configuredFps = configuredMaximumFps\(\)/);
+  assert.match(renderer, /const contentFps = senderState === "motion" \? effectiveMediaFps\(\) : maximumFps/);
+  assert.match(renderer, /CamGeometry\.senderFrameRateLimit/);
+  assert.match(renderer, /delete encoding\.maxFramerate/);
+  assert.doesNotMatch(renderer, /const configuredFps = effectiveMediaFps\(\)/);
+});
