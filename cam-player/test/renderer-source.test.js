@@ -26,14 +26,17 @@ test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("keeps an adaptive paused heartbeat so sites see a live camera", () => {
+test("keeps stable photo and video heartbeats so sites see a live camera", () => {
   assert.match(
     renderer,
     /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000 \/ idleFps\)/,
   );
   assert.doesNotMatch(renderer, /function emitCurrentFrame\(\)/);
-  assert.match(renderer, /function requestCanvasFrame\(\)/);
-  assert.match(renderer, /lastCanvasFrameRequestAt < \(1000 \/ requestedFps\) \* 0\.85/);
+  assert.match(renderer, /function requestCanvasFrame\(force = false\)/);
+  assert.match(renderer, /!force && now - lastCanvasFrameRequestAt < \(1000 \/ requestedFps\) \* 0\.85/);
+  assert.match(renderer, /function startVideoTransportScheduler\(\)/);
+  assert.match(renderer, /CamFrameCadence\.advanceDeadline/);
+  assert.match(renderer, /requestCanvasFrame\(true\)/);
   assert.match(renderer, /CamGeometry\.adaptiveFrameRate\([\s\S]*"idle"/);
   assert.match(renderer, /!canvasTrack \|\| peers\.size === 0/);
   assert.match(

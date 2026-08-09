@@ -298,6 +298,12 @@ let backgroundSnapshotRotation = 0;
 let backgroundSnapshotMirrored = false;
 let videoFrameCallbackId = null;
 let pausedFrameTimer = null;
+let videoTransportTimer = null;
+let videoTransportDeadline = 0;
+let videoTransportGeneration = 0;
+let latestVideoFrameMetadata = null;
+let latestDecodedSequence = 0;
+let lastSubmittedDecodedSequence = -1;
 let timelineTimer = null;
 let cadenceStartedAt = 0;
 let cadenceDecodedFrames = 0;
@@ -308,6 +314,10 @@ let cadenceMaxRenderTimeMs = 0;
 let cadenceFrameIntervalsMs = [];
 let cadenceRequestIntervalsMs = [];
 let cadenceLastDecodedAt = 0;
+let cadenceScheduledFrames = 0;
+let cadenceSubmittedFrames = 0;
+let cadenceRepeatedFrames = 0;
+let cadenceLateSlots = 0;
 let detectedMediaFps = 0;
 let mediaFrameTimes = [];
 let backgroundSnapshotReady = false;
@@ -706,7 +716,7 @@ function uploadSource() {
   }
 }
 
-function requestCanvasFrame() {
+function requestCanvasFrame(force = false) {
   if (captureTrackRestartPending
       || !canvasTrack
       || typeof canvasTrack.requestFrame !== "function") return false;
@@ -724,7 +734,7 @@ function requestCanvasFrame() {
     state,
   );
   const now = performance.now();
-  if (now - lastCanvasFrameRequestAt < (1000 / requestedFps) * 0.85) return false;
+  if (!force && now - lastCanvasFrameRequestAt < (1000 / requestedFps) * 0.85) return false;
   if (lastCanvasFrameRequestAt > 0) {
     cadenceRequestIntervalsMs.push(now - lastCanvasFrameRequestAt);
     if (cadenceRequestIntervalsMs.length > 600) cadenceRequestIntervalsMs.shift();
@@ -734,7 +744,7 @@ function requestCanvasFrame() {
   return true;
 }
 
-function renderFrame(force, frameMetadata = null) {
+function renderFrame(force, frameMetadata = null, options = {}) {
   if (mediaLoading || !sourceElement) return false;
   const now = performance.now();
   const fps = effectiveMediaFps();
@@ -773,7 +783,7 @@ function renderFrame(force, frameMetadata = null) {
   gl.uniform1i(uniforms.mirrored, sourceMirrored ? 1 : 0);
   gl.uniform1f(uniforms.handheldRoll, handheld.roll);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
-  requestCanvasFrame();
+  if (options.submit !== false) requestCanvasFrame(Boolean(options.forceSubmit));
   const renderTimeMs = performance.now() - renderStartedAt;
   cadenceRenderTimeMs += renderTimeMs;
   cadenceMaxRenderTimeMs = Math.max(cadenceMaxRenderTimeMs, renderTimeMs);
@@ -806,6 +816,10 @@ function resetPlaybackCadence() {
   cadenceFrameIntervalsMs = [];
   cadenceRequestIntervalsMs = [];
   cadenceLastDecodedAt = 0;
+  cadenceScheduledFrames = 0;
+  cadenceSubmittedFrames = 0;
+  cadenceRepeatedFrames = 0;
+  cadenceLateSlots = 0;
 }
 
 function configuredMaximumFps() {
@@ -813,10 +827,10 @@ function configuredMaximumFps() {
 }
 
 function effectiveMediaFps() {
-  const configured = configuredMaximumFps();
-  return sourceKind === "video" && detectedMediaFps > 0
-    ? Math.min(configured, detectedMediaFps)
-    : configured;
+  return CamFrameCadence.effectiveFrameRate(
+    sourceKind === "video" ? detectedMediaFps : 0,
+    configuredMaximumFps(),
+  );
 }
 
 function observeMediaFrameRate(metadata) {
@@ -838,6 +852,7 @@ function observeMediaFrameRate(metadata) {
   detectedMediaFps = measured;
   log(`Source frame rate detected fps=${detectedMediaFps.toFixed(3)} `
     + `effective=${effectiveMediaFps().toFixed(3)} samples=${intervals.length}`);
+  updateVideoTransportScheduler();
 }
 
 function reportPlaybackCadence() {
@@ -854,6 +869,9 @@ function reportPlaybackCadence() {
   log(
     `Playback cadence decodedFps=${(cadenceDecodedFrames / elapsedSeconds).toFixed(1)} `
       + `renderedFps=${(cadenceRenderedFrames / elapsedSeconds).toFixed(1)} `
+      + `scheduledFps=${(cadenceScheduledFrames / elapsedSeconds).toFixed(1)} `
+      + `submittedFps=${(cadenceSubmittedFrames / elapsedSeconds).toFixed(1)} `
+      + `repeated=${cadenceRepeatedFrames} lateSlots=${cadenceLateSlots} `
       + `skipped=${cadenceSkippedFrames} `
       + `renderAvgMs=${averageRenderMs.toFixed(2)} `
       + `renderMaxMs=${cadenceMaxRenderTimeMs.toFixed(2)} `
@@ -889,12 +907,13 @@ function scheduleVideoFrame() {
     }
     cadenceLastDecodedAt = _now;
     observeMediaFrameRate(metadata);
-    sourceTextureDirty = true;
-    if (renderFrame(false, metadata)) {
-      cadenceRenderedFrames += 1;
-    } else {
+    if (latestDecodedSequence > 0
+        && latestDecodedSequence !== lastSubmittedDecodedSequence) {
       cadenceSkippedFrames += 1;
     }
+    sourceTextureDirty = true;
+    latestVideoFrameMetadata = metadata;
+    latestDecodedSequence += 1;
     reportPlaybackCadence();
     scheduleVideoFrame();
   };
@@ -906,6 +925,58 @@ function scheduleVideoFrame() {
   }
 }
 
+function stopVideoTransportScheduler() {
+  videoTransportGeneration += 1;
+  clearTimeout(videoTransportTimer);
+  videoTransportTimer = null;
+  videoTransportDeadline = 0;
+}
+
+function startVideoTransportScheduler() {
+  stopVideoTransportScheduler();
+  if (sourceKind !== "video" || !sourceElement || !canvasTrack || peers.size === 0) return;
+  const generation = videoTransportGeneration;
+  videoTransportDeadline = performance.now();
+  const tick = () => {
+    if (generation !== videoTransportGeneration
+        || sourceKind !== "video" || !canvasTrack || peers.size === 0) return;
+    const timing = CamFrameCadence.advanceDeadline(
+      videoTransportDeadline,
+      performance.now(),
+      effectiveMediaFps(),
+    );
+    videoTransportDeadline = timing.nextDeadlineMs;
+    cadenceScheduledFrames += 1;
+    cadenceLateSlots += timing.lateSlots;
+    if (lastSubmittedDecodedSequence === latestDecodedSequence) {
+      cadenceRepeatedFrames += 1;
+    }
+    if (renderFrame(true, latestVideoFrameMetadata, { submit: false })) {
+      cadenceRenderedFrames += 1;
+    }
+    if (requestCanvasFrame(true)) {
+      cadenceSubmittedFrames += 1;
+      lastSubmittedDecodedSequence = latestDecodedSequence;
+    }
+    reportPlaybackCadence();
+    videoTransportTimer = setTimeout(
+      tick,
+      Math.max(0, videoTransportDeadline - performance.now()),
+    );
+  };
+  tick();
+  log(`Video transport scheduler started fps=${effectiveMediaFps().toFixed(3)} `
+    + `playing=${playing} output=${canvas.width}x${canvas.height}`);
+}
+
+function updateVideoTransportScheduler() {
+  if (sourceKind === "video" && sourceElement && canvasTrack && peers.size > 0) {
+    startVideoTransportScheduler();
+  } else {
+    stopVideoTransportScheduler();
+  }
+}
+
 function stopPausedFrameHeartbeat() {
   clearInterval(pausedFrameTimer);
   pausedFrameTimer = null;
@@ -913,6 +984,10 @@ function stopPausedFrameHeartbeat() {
 
 function updatePausedFrameHeartbeat() {
   stopPausedFrameHeartbeat();
+  if (sourceKind === "video") {
+    updateVideoTransportScheduler();
+    return;
+  }
   if (playing || !sourceElement || !canvasTrack || peers.size === 0) return;
   const state = motionMode.value === "off" ? "idle" : "motion";
   const idleFps = CamGeometry.adaptiveFrameRate(
@@ -1140,15 +1215,21 @@ async function loadMedia(file) {
   try {
     stopVideoFrameLoop();
     stopPausedFrameHeartbeat();
+    stopVideoTransportScheduler();
     video.pause();
+    video.removeAttribute("src");
+    video.load();
     playing = false;
     sourceElement = null;
     sourceWidth = 0;
     sourceHeight = 0;
     sourceKind = "";
     lastRenderedMediaTime = null;
-    detectedMediaFps = 0;
+    detectedMediaFps = Number.isFinite(Number(file.fps)) ? Number(file.fps) : 0;
     mediaFrameTimes = [];
+    latestVideoFrameMetadata = null;
+    latestDecodedSequence = 0;
+    lastSubmittedDecodedSequence = -1;
     uploadedTextureWidth = 0;
     uploadedTextureHeight = 0;
     detailMinificationEnabled = null;
@@ -1195,6 +1276,8 @@ async function loadMedia(file) {
       sourceWidth = video.videoWidth;
       sourceHeight = video.videoHeight;
       sourceKind = "video";
+      log(`Source frame rate metadata fps=${detectedMediaFps || "unknown"} `
+        + `maximum=${configuredMaximumFps()} effective=${effectiveMediaFps().toFixed(3)}`);
       firstFramePresented = await Promise.race([
         decodedFrame,
         new Promise((resolve) => setTimeout(() => resolve(false), 4000)),
@@ -1259,6 +1342,7 @@ async function play() {
     updateTrackContentHint("playback started");
     scheduleKeyFrame("playback started", 0);
     scheduleVideoFrame();
+    updateVideoTransportScheduler();
     updateOutputLabel();
     log("Playback started");
   } catch (error) {
@@ -2541,7 +2625,10 @@ for (const input of [fpsInput, followSiteToggle]) {
     }
     updateOutputLabel();
     renderFrame(true);
-    if (input === fpsInput) scheduleSenderQualityRefresh("maximum FPS changed");
+    if (input === fpsInput) {
+      updateVideoTransportScheduler();
+      scheduleSenderQualityRefresh("maximum FPS changed");
+    }
     savePreferences();
   });
 }

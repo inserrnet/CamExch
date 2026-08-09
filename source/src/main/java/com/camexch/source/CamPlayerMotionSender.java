@@ -41,6 +41,8 @@ final class CamPlayerMotionSender implements SensorEventListener {
     private volatile Sample latestSensor;
     private volatile Sample latestArCore;
     private volatile boolean arCoreRequested;
+    private volatile boolean streamRequested;
+    private volatile boolean sensorsActive;
     private volatile long sendIntervalMs = 500L;
     private volatile long nextArCoreStartMs;
     private volatile float[] gyro = new float[]{0f, 0f, 0f};
@@ -61,42 +63,10 @@ final class CamPlayerMotionSender implements SensorEventListener {
         if (!running.compareAndSet(false, true)) {
             return false;
         }
-        if (sensorManager == null) {
-            running.set(false);
-            return false;
-        }
-        Sensor rotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
-        if (rotation == null) {
-            rotation = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
-        }
-        if (rotation == null) {
-            running.set(false);
-            AppLog.info(context, "Cam Player motion unavailable: rotation sensor missing");
-            return false;
-        }
-        sensorThread = new HandlerThread("CamExchMotionSensors");
-        sensorThread.start();
-        Handler handler = new Handler(sensorThread.getLooper());
-        sensorManager.registerListener(this, rotation, SensorManager.SENSOR_DELAY_GAME, handler);
-        Sensor gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
-        if (gyroSensor != null) {
-            sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_GAME, handler);
-        }
-        Sensor accelerationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
-        if (accelerationSensor != null) {
-            sensorManager.registerListener(
-                    this,
-                    accelerationSensor,
-                    SensorManager.SENSOR_DELAY_GAME,
-                    handler
-            );
-        }
         networkExecutor.execute(this::streamLoop);
         controlExecutor.scheduleWithFixedDelay(this::refreshMotionConfig,
                 0L, 500L, TimeUnit.MILLISECONDS);
-        AppLog.info(context, "Cam Player motion sensors started rotation=" + rotation.getName()
-                + " gyro=" + (gyroSensor != null)
-                + " linearAcceleration=" + (accelerationSensor != null));
+        AppLog.info(context, "Cam Player motion controller started sensors=on-demand");
         return true;
     }
 
@@ -104,11 +74,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
         if (!running.getAndSet(false)) {
             return;
         }
-        sensorManager.unregisterListener(this);
-        if (sensorThread != null) {
-            sensorThread.quitSafely();
-            sensorThread = null;
-        }
+        stopSensors();
         networkExecutor.shutdownNow();
         controlExecutor.shutdownNow();
         stopArCore();
@@ -117,12 +83,12 @@ final class CamPlayerMotionSender implements SensorEventListener {
         if (connection != null) {
             connection.disconnect();
         }
-        AppLog.info(context, "Cam Player motion sensors stopped");
+        AppLog.info(context, "Cam Player motion controller stopped");
     }
 
     @Override
     public void onSensorChanged(SensorEvent event) {
-        if (!running.get()) {
+        if (!running.get() || !sensorsActive) {
             return;
         }
         if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
@@ -159,13 +125,19 @@ final class CamPlayerMotionSender implements SensorEventListener {
         long metricsStartedMs = android.os.SystemClock.elapsedRealtime();
         long reconnectDelayMs = RECONNECT_DELAY_MS;
         while (running.get() && !Thread.currentThread().isInterrupted()) {
+            if (!streamRequested) {
+                sleepQuietly(100L);
+                sentSequence = -1L;
+                continue;
+            }
             HttpURLConnection connection = null;
             boolean sentOnConnection = false;
             try {
                 connection = client.openMotionStream();
                 activeConnection = connection;
                 try (OutputStream output = connection.getOutputStream()) {
-                    while (running.get() && !Thread.currentThread().isInterrupted()) {
+                    while (running.get() && streamRequested
+                            && !Thread.currentThread().isInterrupted()) {
                         Sample sample = arCoreRequested ? latestArCore : latestSensor;
                         if (sample != null && sample.sequence != sentSequence) {
                             byte[] payload = (sample.toJson().toString() + "\n")
@@ -189,7 +161,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
                     }
                 }
             } catch (Throwable error) {
-                if (running.get()) {
+                if (running.get() && streamRequested) {
                     AppLog.info(context, "Cam Player motion stream reconnecting reason="
                             + error.getClass().getSimpleName() + ": " + error.getMessage()
                             + " retryMs=" + reconnectDelayMs);
@@ -213,6 +185,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
         try {
             JSONObject config = client.motionConfig();
             boolean requested = config.optBoolean("liveMotion", false);
+            boolean requestedStream = config.optBoolean("streamMotion", false);
             long requestedInterval = config.optLong("sampleIntervalMs",
                     config.optBoolean("streamMotion", false) ? SEND_INTERVAL_MS : 500L);
             sendIntervalMs = Math.max(SEND_INTERVAL_MS, Math.min(1_000L, requestedInterval));
@@ -221,6 +194,18 @@ final class CamPlayerMotionSender implements SensorEventListener {
                 latestArCore = null;
                 AppLog.info(context, "Cam Player ARCore requested=" + requested);
             }
+            if (requestedStream != streamRequested) {
+                streamRequested = requestedStream;
+                AppLog.info(context, "Cam Player motion stream requested=" + requestedStream);
+                if (requestedStream) {
+                    startSensorsIfNeeded();
+                } else {
+                    stopSensors();
+                    HttpURLConnection connection = activeConnection;
+                    if (connection != null) connection.disconnect();
+                }
+            }
+            if (requestedStream) startSensorsIfNeeded();
             if (requested) {
                 startArCoreIfNeeded();
             } else {
@@ -232,6 +217,50 @@ final class CamPlayerMotionSender implements SensorEventListener {
                         + error.getClass().getSimpleName() + ": " + error.getMessage());
             }
         }
+    }
+
+    private synchronized void startSensorsIfNeeded() {
+        if (sensorsActive || !running.get()) return;
+        if (sensorManager == null) {
+            AppLog.info(context, "Cam Player motion unavailable: sensor manager missing");
+            return;
+        }
+        Sensor rotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+        if (rotation == null) rotation = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        if (rotation == null) {
+            AppLog.info(context, "Cam Player motion unavailable: rotation sensor missing");
+            return;
+        }
+        sensorThread = new HandlerThread("CamExchMotionSensors");
+        sensorThread.start();
+        Handler handler = new Handler(sensorThread.getLooper());
+        sensorManager.registerListener(this, rotation, SensorManager.SENSOR_DELAY_GAME, handler);
+        Sensor gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+        if (gyroSensor != null) {
+            sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_GAME, handler);
+        }
+        Sensor accelerationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
+        if (accelerationSensor != null) {
+            sensorManager.registerListener(this, accelerationSensor,
+                    SensorManager.SENSOR_DELAY_GAME, handler);
+        }
+        sensorsActive = true;
+        AppLog.info(context, "Cam Player motion sensors started rotation=" + rotation.getName()
+                + " gyro=" + (gyroSensor != null)
+                + " linearAcceleration=" + (accelerationSensor != null));
+    }
+
+    private synchronized void stopSensors() {
+        if (sensorManager != null) sensorManager.unregisterListener(this);
+        if (sensorThread != null) {
+            sensorThread.quitSafely();
+            sensorThread = null;
+        }
+        latestSensor = null;
+        gyro = new float[]{0f, 0f, 0f};
+        acceleration = new float[]{0f, 0f, 0f};
+        if (sensorsActive) AppLog.info(context, "Cam Player motion sensors stopped idle=true");
+        sensorsActive = false;
     }
 
     private synchronized void startArCoreIfNeeded() {

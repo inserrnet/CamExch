@@ -267,6 +267,43 @@ function runFfmpeg(args, label) {
   });
 }
 
+function probeVideoFrameRate(filePath) {
+  if (!/\.(mp4|m4v|mov|webm|mkv|avi)$/i.test(filePath)) {
+    return Promise.resolve(0);
+  }
+  return new Promise((resolve) => {
+    const child = spawn(executableFfmpegPath(), ["-hide_banner", "-i", filePath], {
+      windowsHide: true,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let errorText = "";
+    child.stderr.on("data", (chunk) => {
+      errorText = `${errorText}${chunk}`.slice(-32_000);
+    });
+    const finish = () => {
+      const videoLine = errorText.split(/\r?\n/).find((line) => /Video:/i.test(line)) || "";
+      const match = /(?:,|\s)(\d+(?:\.\d+)?)\s+fps(?:,|\s)/i.exec(videoLine);
+      const fps = match ? Number(match[1]) : 0;
+      const normalized = Number.isFinite(fps) && fps >= 1 && fps <= 240 ? fps : 0;
+      log(`Media frame rate probe fps=${normalized || "unknown"} path=${filePath}`);
+      resolve(normalized);
+    };
+    child.on("error", () => resolve(0));
+    child.on("exit", finish);
+  });
+}
+
+async function preparedMediaDescriptor(originalPath) {
+  const playablePath = await prepareMedia(originalPath);
+  const fps = await probeVideoFrameRate(playablePath);
+  return {
+    path: originalPath,
+    playablePath,
+    url: pathToFileURL(playablePath).href,
+    fps,
+  };
+}
+
 async function prepareMedia(filePath) {
   if (/\.(jpe?g|png|bmp|webp|mp4|m4v|mov|webm)$/i.test(filePath)) {
     return filePath;
@@ -668,12 +705,7 @@ ipcMain.handle("open-media", async () => {
   });
   if (result.canceled || !result.filePaths[0]) return null;
   const filePath = result.filePaths[0];
-  const playablePath = await prepareMedia(filePath);
-  return {
-    path: filePath,
-    playablePath,
-    url: pathToFileURL(playablePath).href,
-  };
+  return preparedMediaDescriptor(filePath);
 });
 
 ipcMain.handle("read-preferences", () => readJson("preferences.json", {}));
@@ -718,12 +750,7 @@ ipcMain.handle("prepare-media", async (_event, filePath) => {
   if (!originalPath || !fs.existsSync(originalPath)) {
     throw new Error("Media file is unavailable");
   }
-  const playablePath = await prepareMedia(originalPath);
-  return {
-    path: originalPath,
-    playablePath,
-    url: pathToFileURL(playablePath).href,
-  };
+  return preparedMediaDescriptor(originalPath);
 });
 ipcMain.handle("get-server-info", () => serverInfo());
 ipcMain.handle("set-live-motion-requested", (_event, enabled) => {
