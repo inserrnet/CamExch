@@ -58,7 +58,7 @@ public class VirtualCameraScriptTest {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "freezes="));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "avgDecodeMs="));
+                "decodeMs="));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "cadenceMs="));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
