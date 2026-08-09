@@ -38,9 +38,13 @@ schedulers, sessions, or routes can conflict in the complete pipeline.
 
 These rules are release blockers.
 
-- While a video is playing, decoded-frame presentation is the master clock.
-- Use `requestVideoFrameCallback` and `metadata.mediaTime` when available.
-- Do not drive playing video with an independent periodic transport timer.
+- While a video is playing, `metadata.mediaTime` is the master clock for which
+  source frame is current; callback arrival time must not become the WebRTC
+  capture timestamp.
+- Use `requestVideoFrameCallback` to replace one latest decoded-frame slot.
+- Submit the latest slot on a deadline-corrected transport clock at the source
+  cadence. A late callback may repeat the current frame for one deadline, but
+  must never enqueue or replay obsolete frames afterward.
 - Maximum FPS is a ceiling, not a forced output rate.
 - A source below the ceiling keeps its native cadence: `24 -> 24`, `30 -> 30`,
   and `60 -> 60`.
@@ -48,17 +52,18 @@ These rules are release blockers.
   example `60 -> 30`; it must not use callback arrival time for frame selection.
 - Do not accumulate decoded frames in a queue. Keep the newest usable frame and
   discard obsolete work without replaying delayed motion.
-- A fresh decoded frame must not be both skipped and followed by a repeat caused
-  by two competing clocks.
+- The decoded-frame callback updates content only. The transport scheduler owns
+  playing-video `requestFrame()` calls; no second playing scheduler may submit.
 - GPU texture storage is allocated only when dimensions change. Ordinary frames
   update existing texture storage.
 - Decide whether a frame is needed before expensive upload, composition, and
   encoding work whenever possible.
 - Rendering, canvas submission, and WebRTC delivery must preserve monotonically
   increasing media time while playing.
-- Canvas capture assigns capture-clock timestamps and cannot retain the MP4
-  `mediaTime`; one accepted decoded frame therefore owns exactly one canvas
-  submission.
+- Canvas capture assigns capture-clock timestamps and cannot retain MP4
+  `mediaTime`. Regular transport deadlines prevent irregular callback arrival
+  from becoming irregular RTP pacing while still retaining only the newest
+  decoded content.
 - Receiver delay overrides are disabled by default. A non-null
   `playoutDelayHint` or `jitterBufferTarget` requires a measured runtime-specific
   A/B test because buffer adjustment may repeat or drop video frames.

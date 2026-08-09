@@ -154,10 +154,74 @@
     return { cycle, width, height, frames: stats.frames };
   }
 
+  async function runLatestFrameCadenceCycle() {
+    progress("latest-frame cadence begin fps=24");
+    canvas.width = 640;
+    canvas.height = 480;
+    const stream = canvas.captureStream(0);
+    const track = stream.getVideoTracks()[0];
+    const senderPeer = new RTCPeerConnection({ iceServers: [] });
+    const receiverPeer = new RTCPeerConnection({ iceServers: [] });
+    const remoteTrackPromise = new Promise((resolve) => {
+      receiverPeer.ontrack = (event) => resolve(event.track);
+    });
+    receiverPeer.addTransceiver("video", { direction: "recvonly" });
+    await receiverPeer.setLocalDescription(await receiverPeer.createOffer());
+    await waitForIce(receiverPeer);
+    await senderPeer.setRemoteDescription(receiverPeer.localDescription);
+    senderPeer.addTrack(track, stream);
+    await senderPeer.setLocalDescription(await senderPeer.createAnswer());
+    await waitForIce(senderPeer);
+    await receiverPeer.setRemoteDescription(senderPeer.localDescription);
+    for (let attempt = 0; attempt < 50
+        && senderPeer.connectionState !== "connected"; attempt += 1) await wait(100);
+    const remoteTrack = await remoteTrackPromise;
+    video.srcObject = new MediaStream([remoteTrack]);
+    let latestFrame = 0;
+    const paintLatest = () => {
+      context.fillStyle = `rgb(${latestFrame % 255},40,80)`;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      track.requestFrame();
+    };
+    const bootstrap = setInterval(paintLatest, 40);
+    await video.play();
+    clearInterval(bootstrap);
+    const presentedAt = [];
+    let observing = true;
+    const observe = (now) => {
+      if (!observing) return;
+      presentedAt.push(now);
+      video.requestVideoFrameCallback(observe);
+    };
+    video.requestVideoFrameCallback(observe);
+    const transport = setInterval(paintLatest, 1000 / 24);
+    for (let index = 1; index <= 72; index += 1) {
+      latestFrame = index;
+      await wait(index % 2 === 0 ? 10 : 73);
+    }
+    await wait(500);
+    clearInterval(transport);
+    observing = false;
+    const intervals = presentedAt.slice(1).map((value, index) => value - presentedAt[index])
+      .sort((a, b) => a - b);
+    const p95 = intervals[Math.floor(intervals.length * 0.95)] || 0;
+    progress(`latest-frame cadence frames=${presentedAt.length} p95Ms=${p95.toFixed(1)}`);
+    if (presentedAt.length < 55 || p95 > 70) {
+      throw new Error(`latest-frame cadence unstable frames=${presentedAt.length} p95Ms=${p95}`);
+    }
+    video.srcObject = null;
+    remoteTrack.stop();
+    senderPeer.close();
+    receiverPeer.close();
+    stream.getTracks().forEach((candidate) => candidate.stop());
+    return { cycle: "latest-frame-24", frames: presentedAt.length, p95Ms: p95 };
+  }
+
   (async () => {
     try {
       progress("renderer started");
       const cycles = [];
+      cycles.push(await runLatestFrameCadenceCycle());
       cycles.push(await runCycle(640, 480, 1));
       cycles.push(await runCycle(640, 480, 2));
       cycles.push(await runCycle(480, 640, 3));

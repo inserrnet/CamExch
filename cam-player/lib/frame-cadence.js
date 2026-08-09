@@ -14,5 +14,23 @@
     return Number.isFinite(source) && source > 0 ? Math.min(maximum, source) : maximum;
   }
 
-  return { effectiveFrameRate };
+  function nextDeadline(previousDeadline, now, framesPerSecond) {
+    const current = Number(now) || 0;
+    const fps = Math.max(1, Math.min(60, Number(framesPerSecond) || 30));
+    const interval = 1000 / fps;
+    const previous = Number(previousDeadline);
+    const base = Number.isFinite(previous)
+        && previous > 0
+        && current - previous <= interval
+      ? previous
+      : current;
+    const deadline = base + interval;
+    return {
+      deadline,
+      delay: Math.max(0, deadline - current),
+      interval,
+    };
+  }
+
+  return { effectiveFrameRate, nextDeadline };
 }));

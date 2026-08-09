@@ -299,6 +299,11 @@ let backgroundSnapshotHeight = 0;
 let backgroundSnapshotRotation = 0;
 let backgroundSnapshotMirrored = false;
 let videoFrameCallbackId = null;
+let videoTransportTimer = null;
+let videoTransportDeadline = 0;
+let latestDecodedFrameMetadata = null;
+let latestDecodedFrameSequence = 0;
+let lastSubmittedFrameSequence = 0;
 let pausedFrameTimer = null;
 let timelineTimer = null;
 let cadenceStartedAt = 0;
@@ -312,6 +317,7 @@ let cadenceFrameIntervalsMs = [];
 let cadenceRequestIntervalsMs = [];
 let cadenceLastDecodedAt = 0;
 let cadenceSubmittedFrames = 0;
+let cadenceRepeatedFrames = 0;
 let cadenceMediaIntervalsMs = [];
 let cadenceLastMediaTime = null;
 let cadenceProcessingTimeMs = 0;
@@ -787,8 +793,10 @@ function renderFrame(force, frameMetadata = null, options = {}) {
   gl.drawArrays(gl.TRIANGLES, 0, 6);
   if (options.submit !== false) requestCanvasFrame(Boolean(options.forceSubmit));
   const renderTimeMs = performance.now() - renderStartedAt;
-  cadenceRenderTimeMs += renderTimeMs;
-  cadenceMaxRenderTimeMs = Math.max(cadenceMaxRenderTimeMs, renderTimeMs);
+  if (options.measureCadence !== false) {
+    cadenceRenderTimeMs += renderTimeMs;
+    cadenceMaxRenderTimeMs = Math.max(cadenceMaxRenderTimeMs, renderTimeMs);
+  }
   lastRenderAt = now;
   if (Number.isFinite(mediaTime)) {
     lastRenderedMediaTime = mediaTime;
@@ -824,6 +832,7 @@ function resetPlaybackCadence(state = playing ? "playing" : "idle") {
   cadenceRequestIntervalsMs = [];
   cadenceLastDecodedAt = 0;
   cadenceSubmittedFrames = 0;
+  cadenceRepeatedFrames = 0;
   cadenceMediaIntervalsMs = [];
   cadenceLastMediaTime = null;
   cadenceProcessingTimeMs = 0;
@@ -885,7 +894,7 @@ function reportPlaybackCadence(reason = "periodic", force = false) {
       + `decodedFps=${(cadenceDecodedFrames / elapsedSeconds).toFixed(1)} `
       + `renderedFps=${(cadenceRenderedFrames / elapsedSeconds).toFixed(1)} `
       + `submittedFps=${(cadenceSubmittedFrames / elapsedSeconds).toFixed(1)} `
-      + `filtered=${cadenceSkippedFrames} repeated=0 `
+      + `filtered=${cadenceSkippedFrames} repeated=${cadenceRepeatedFrames} `
       + `renderAvgMs=${averageRenderMs.toFixed(2)} `
       + `renderMaxMs=${cadenceMaxRenderTimeMs.toFixed(2)} `
       + `decodedIntervalMs=${decodedTiming.p50.toFixed(1)}/${decodedTiming.p95.toFixed(1)}/${decodedTiming.maximum.toFixed(1)} `
@@ -908,6 +917,40 @@ function stopVideoFrameLoop() {
     clearTimeout(videoFrameCallbackId);
   }
   videoFrameCallbackId = null;
+}
+
+function stopVideoTransportScheduler() {
+  clearTimeout(videoTransportTimer);
+  videoTransportTimer = null;
+  videoTransportDeadline = 0;
+  latestDecodedFrameMetadata = null;
+  latestDecodedFrameSequence = 0;
+  lastSubmittedFrameSequence = 0;
+}
+
+function startVideoTransportScheduler() {
+  stopVideoTransportScheduler();
+  if (!playing || sourceKind !== "video") return;
+  const tick = () => {
+    videoTransportTimer = null;
+    if (!playing || sourceKind !== "video") return;
+    const fps = effectiveMediaFps();
+    const now = performance.now();
+    renderFrame(true, latestDecodedFrameMetadata, { submit: false, measureCadence: false });
+    if (requestCanvasFrame(true)) {
+      if (latestDecodedFrameSequence === lastSubmittedFrameSequence) {
+        cadenceRepeatedFrames += 1;
+      }
+      lastSubmittedFrameSequence = latestDecodedFrameSequence;
+    }
+    const timing = CamFrameCadence.nextDeadline(videoTransportDeadline, now, fps);
+    videoTransportDeadline = timing.deadline;
+    videoTransportTimer = setTimeout(tick, timing.delay);
+  };
+  videoTransportDeadline = performance.now();
+  videoTransportTimer = setTimeout(tick, 0);
+  log(`Playback transport scheduler started fps=${effectiveMediaFps().toFixed(3)} `
+    + "queue=latest-frame-only");
 }
 
 function scheduleVideoFrame() {
@@ -943,7 +986,9 @@ function scheduleVideoFrame() {
     }
     observeMediaFrameRate(metadata);
     sourceTextureDirty = true;
-    if (renderFrame(false, metadata, { forceSubmit: true })) {
+    latestDecodedFrameMetadata = metadata;
+    latestDecodedFrameSequence += 1;
+    if (renderFrame(false, metadata, { submit: false })) {
       cadenceRenderedFrames += 1;
       if (playbackNeedsKeyFrame) {
         playbackNeedsKeyFrame = false;
@@ -1231,6 +1276,7 @@ async function loadMedia(file) {
   mediaLoading = true;
   try {
     stopVideoFrameLoop();
+    stopVideoTransportScheduler();
     stopPausedFrameHeartbeat();
     video.pause();
     video.removeAttribute("src");
@@ -1348,6 +1394,7 @@ async function play() {
   const generation = ++playbackGeneration;
   stopPausedFrameHeartbeat();
   stopVideoFrameLoop();
+  stopVideoTransportScheduler();
   playing = true;
   playbackNeedsKeyFrame = true;
   lastRenderAt = 0;
@@ -1357,6 +1404,7 @@ async function play() {
     if (generation !== playbackGeneration || !playing) return;
     updateTrackContentHint("playback started");
     scheduleVideoFrame();
+    startVideoTransportScheduler();
     updateOutputLabel();
     log("Playback started");
   } catch (error) {
@@ -1373,6 +1421,7 @@ function pause() {
   if (sourceKind !== "video") return;
   playbackGeneration += 1;
   video.pause();
+  stopVideoTransportScheduler();
   reportPlaybackCadence("pause", true);
   playing = false;
   playbackNeedsKeyFrame = false;
@@ -2603,6 +2652,21 @@ video.addEventListener("seeked", () => {
   renderFrame(true);
   scheduleKeyFrame("video seek", 0);
 });
+video.addEventListener("ended", () => {
+  if (video.loop || sourceKind !== "video") return;
+  playbackGeneration += 1;
+  stopVideoFrameLoop();
+  stopVideoTransportScheduler();
+  playing = false;
+  playbackNeedsKeyFrame = false;
+  resetPlaybackCadence("ended");
+  sourceTextureDirty = true;
+  renderFrame(true);
+  updateTrackContentHint("playback ended");
+  updatePausedFrameHeartbeat();
+  updateOutputLabel();
+  log(`Playback ended positionMs=${Math.round(video.currentTime * 1000)}`);
+});
 recentFiles.addEventListener("change", () => {
   const selected = recent.find((item) => item.path === recentFiles.value);
   if (selected) {
@@ -2870,6 +2934,7 @@ window.addEventListener("beforeunload", () => {
   clearInterval(motionRecordingTimer);
   clearTimeout(motionProfileSaveTimer);
   stopVideoFrameLoop();
+  stopVideoTransportScheduler();
   stopPausedFrameHeartbeat();
   clearInterval(timelineTimer);
   clearInterval(memoryTimer);

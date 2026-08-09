@@ -26,7 +26,7 @@ test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("uses decoded video cadence and keeps paused or photo sources alive", () => {
+test("paces the latest decoded video frame and keeps paused or photo sources alive", () => {
   assert.match(
     renderer,
     /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000 \/ idleFps\)/,
@@ -35,11 +35,18 @@ test("uses decoded video cadence and keeps paused or photo sources alive", () =>
   assert.match(renderer, /function requestCanvasFrame\(force = false\)/);
   assert.match(renderer, /!force && now - lastCanvasFrameRequestAt < \(1000 \/ requestedFps\) \* 0\.85/);
   assert.match(renderer, /video\.requestVideoFrameCallback\(callback\)/);
-  assert.match(renderer, /renderFrame\(false, metadata, \{ forceSubmit: true \}\)/);
-  assert.match(renderer, /stopPausedFrameHeartbeat\(\);[\s\S]*playing = true;[\s\S]*await video\.play\(\)/);
+  assert.match(renderer, /renderFrame\(false, metadata, \{ submit: false \}\)/);
+  assert.match(renderer, /function startVideoTransportScheduler\(\)/);
+  assert.match(renderer, /queue=latest-frame-only/);
+  assert.match(renderer, /renderFrame\(true, latestDecodedFrameMetadata, \{ submit: false, measureCadence: false \}\)/);
+  assert.match(renderer, /requestCanvasFrame\(true\)/);
+  assert.match(renderer, /latestDecodedFrameSequence === lastSubmittedFrameSequence/);
+  assert.match(renderer, /stopPausedFrameHeartbeat\(\);[\s\S]*stopVideoTransportScheduler\(\);[\s\S]*playing = true;[\s\S]*await video\.play\(\)/);
+  assert.match(renderer, /video\.pause\(\);[\s\S]*stopVideoTransportScheduler\(\);[\s\S]*reportPlaybackCadence\("pause"/);
+  assert.match(renderer, /stopVideoFrameLoop\(\);[\s\S]*stopVideoTransportScheduler\(\);[\s\S]*stopPausedFrameHeartbeat\(\)/);
+  assert.match(renderer, /video\.addEventListener\("ended"[\s\S]*stopVideoTransportScheduler\(\)/);
   assert.doesNotMatch(renderer, /lastRenderedMediaTime = null;[\s\S]{0,160}resetPlaybackCadence\("playing"\)/);
-  assert.doesNotMatch(renderer, /function startVideoTransportScheduler\(\)/);
-  assert.doesNotMatch(renderer, /CamFrameCadence\.advanceDeadline/);
+  assert.match(renderer, /CamFrameCadence\.nextDeadline/);
   assert.match(renderer, /CamGeometry\.adaptiveFrameRate\([\s\S]*"idle"/);
   assert.match(renderer, /!canvasTrack \|\| peers\.size === 0/);
   assert.match(
@@ -49,7 +56,7 @@ test("uses decoded video cadence and keeps paused or photo sources alive", () =>
   assert.match(renderer, /function renderFrame\(force/);
   assert.match(renderer, /decodedIntervalMs=/);
   assert.match(renderer, /requestIntervalMs=/);
-  assert.match(renderer, /filtered=\$\{cadenceSkippedFrames\} repeated=0/);
+  assert.match(renderer, /filtered=\$\{cadenceSkippedFrames\} repeated=\$\{cadenceRepeatedFrames\}/);
   assert.match(renderer, /cadence reason=\$\{reason\}/);
   assert.match(
     renderer,

@@ -64,9 +64,12 @@ MP4 `mediaTime` is therefore not carried through the canvas track.
 
 Consequences for Cam Player:
 
-- Submit exactly once for each accepted fresh decoded frame while playing.
-- Do not add an independent playing-video timer to make the output look like a
-  requested FPS; that creates new wall-clock frames containing old pixels.
+- Use decoded `mediaTime` to replace a single latest-frame slot; never enqueue
+  decoded frames.
+- Submit that latest slot on a deadline-corrected clock at the effective source
+  FPS. If decode presentation is late, hold the latest image for one deadline
+  and replace it with the newest image without replaying skipped content.
+- The deadline scheduler is the only playing-video caller of `requestFrame()`.
 - Do not submit a paused heartbeat frame after playback startup begins.
 - Do not use an immediate redraw of the pause frame as a substitute for an
   unavailable encoder keyframe request.
