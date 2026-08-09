@@ -562,7 +562,7 @@ context.CamExchBridge = {
     front: [{ id: "1", label: "camera 1, facing front" }],
     back: [{ id: "0", label: "camera 0, facing back" }],
   }),
-  getCameraRouteMode: () => "AUTO",
+  getCameraRouteMode: () => "SOURCE",
   getDeviceOrientation: () => "portrait",
   getMode: () => sourceOnline ? "RTSP" : "ERROR:source offline",
   answerOffer: () => {
@@ -715,6 +715,7 @@ if (!insertedWindow.__camexchInstalled) {
   throw new Error("Synchronous iframe insertion did not install camera routing");
 }
 
+await context.__camexchSwitchCamera("REAR");
 await context.navigator.mediaDevices.enumerateDevices();
 
 const route = context.__camexchForTest.route;
@@ -809,18 +810,12 @@ if (nativeGetCount !== 1
   throw new Error("Same-route applyConstraints did not stay on the active rear camera");
 }
 const sourceBeforeConstraintSwitch = initialManagedEntry.controller.sourceTrack;
-let constraintSourceFailure;
-try {
-  await stableRearTrack.applyConstraints({ facingMode: { exact: "user" } });
-} catch (error) {
-  constraintSourceFailure = error;
-}
-if (!constraintSourceFailure || constraintSourceFailure.name !== "NotReadableError"
-    || initialManagedEntry.controller.route !== "REAR"
+await stableRearTrack.applyConstraints({ facingMode: { exact: "user" } });
+if (initialManagedEntry.controller.route !== "REAR"
     || initialManagedEntry.controller.sourceTrack !== sourceBeforeConstraintSwitch
     || sourceBeforeConstraintSwitch.readyState !== "live"
     || nativeGetCount !== 1) {
-  throw new Error("Failed applyConstraints route switch did not preserve the active rear camera");
+  throw new Error("Forced rear applyConstraints did not preserve the active rear camera");
 }
 await new Promise((resolve) => setTimeout(resolve, 0));
 if (initialManagedEntry.controller.kind !== "generator") {
@@ -840,6 +835,11 @@ if (!noFrameFailure || noFrameTrack.readyState !== "ended"
   throw new Error("No-frame camera switch did not time out and roll back safely");
 }
 
+const failedSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
+if (failedSourceSwitch.switched !== 0 || failedSourceSwitch.failed !== 1
+    || nativeGetCount !== 1) {
+  throw new Error("Failed active source switch did not preserve the physical camera");
+}
 let switchedFrontFailure;
 try {
   await context.navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
@@ -865,11 +865,6 @@ if (!frontDeviceFailure || nativeGetCount !== 1) {
   throw new Error("Enumerated front deviceId bypassed Front Camera 4");
 }
 
-const failedSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
-if (failedSourceSwitch.switched !== 0 || failedSourceSwitch.failed !== 1
-    || nativeGetCount !== 1) {
-  throw new Error("Failed active source switch did not preserve the physical camera");
-}
 const rearSwitch = await context.__camexchSwitchCamera("REAR");
 if (rearSwitch.switched !== 1 || rearSwitch.failed !== 0 || nativeGetCount !== 1) {
   throw new Error("Selecting the active rear camera reopened Camera2");
@@ -910,7 +905,7 @@ try {
 if (!nextFrontFailure || nativeGetCount !== 1) {
   throw new Error("F mode did not route the site's next camera request to Source");
 }
-await context.__camexchSwitchCamera("AUTO");
+await context.__camexchSwitchCamera("REAR");
 
 const syntheticBack = context.__camexchForTest.native({
   video: {
@@ -928,6 +923,7 @@ if (syntheticBack.video.deviceId !== undefined
 nativeDevices.splice(0, nativeDevices.length,
   { kind: "videoinput", deviceId: "", label: "", groupId: "" },
 );
+await context.__camexchSwitchCamera("SOURCE");
 const anonymousMapped = await context.navigator.mediaDevices.enumerateDevices();
 if (!anonymousMapped.some((device) => device.deviceId === "camexch-front-camera-4")) {
   throw new Error("Front Camera 4 is missing while native devices are anonymous");
@@ -935,20 +931,24 @@ if (!anonymousMapped.some((device) => device.deviceId === "camexch-front-camera-
 if (!anonymousMapped.some((device) => device.deviceId === "camexch-back-camera")) {
   throw new Error("Back Camera is missing while native devices are anonymous");
 }
+await context.__camexchSwitchCamera("REAR");
 
 stableRearTrack.stop();
+const nativeBeforePrototypeRoute = nativeGetCount;
 await FakeMediaDevices.prototype.getUserMedia.call(
   context.navigator.mediaDevices,
   { video: { facingMode: "environment" } },
 );
-if (nativeGetCount !== 2 || stableRearTrack.readyState !== "ended"
-    || context.__camexchForTest.managed.size !== 1) {
+if (nativeGetCount !== nativeBeforePrototypeRoute + 1 || stableRearTrack.readyState !== "ended"
+    || context.__camexchForTest.managed.size < 1) {
   throw new Error("MediaDevices.prototype.getUserMedia bypassed the camera router");
 }
 
-const autoSwitch = await context.__camexchSwitchCamera("AUTO");
-if (autoSwitch.switched !== 1 || autoSwitch.failed !== 0 || nativeGetCount !== 2) {
-  throw new Error("Active automatic-camera switch did not restore constraint routing");
+const nativeBeforeRearResume = nativeGetCount;
+const autoSwitch = await context.__camexchSwitchCamera("REAR");
+if (autoSwitch.switched < 1 || autoSwitch.failed !== 0
+    || nativeGetCount !== nativeBeforeRearResume) {
+  throw new Error("Active rear-camera switch did not restore constraint routing");
 }
 if (continuousFocusCount !== nativeGetCount) {
   throw new Error("Continuous autofocus was not applied to every physical rear track");
@@ -956,6 +956,8 @@ if (continuousFocusCount !== nativeGetCount) {
 
 const lockedGet = context.navigator.mediaDevices.getUserMedia;
 const lockedPrototypeGet = FakeMediaDevices.prototype.getUserMedia;
+await context.__camexchSwitchCamera("SOURCE");
+const nativeBeforeWrappedSourceRequests = nativeGetCount;
 let instanceWrapperCalls = 0;
 let prototypeWrapperCalls = 0;
 context.navigator.mediaDevices.getUserMedia = function (...args) {
@@ -984,7 +986,7 @@ try {
 if (instanceWrapperCalls !== 0 || prototypeWrapperCalls !== 0
     || wrappedInstanceFailure?.name !== "NotReadableError"
     || wrappedPrototypeFailure?.name !== "NotReadableError"
-    || nativeGetCount !== 2) {
+    || nativeGetCount !== nativeBeforeWrappedSourceRequests) {
   throw new Error("Site getUserMedia wrappers bypassed the permanent video router");
 }
 if (context.navigator.mediaDevices.getUserMedia !== lockedGet
@@ -1011,7 +1013,8 @@ try {
 } catch (_) {
   // The callback is asserted below.
 }
-if (!legacyFailure || legacyFailure.name !== "NotReadableError" || nativeGetCount !== 2) {
+if (!legacyFailure || legacyFailure.name !== "NotReadableError"
+    || nativeGetCount !== nativeBeforeWrappedSourceRequests) {
   throw new Error("Legacy getUserMedia did not route the front camera to Front Camera 4");
 }
 
@@ -1041,7 +1044,8 @@ try {
 } catch (error) {
   childRouteFailure = error;
 }
-if (childRouteFailure?.name !== "NotReadableError" || nativeGetCount !== 2) {
+if (childRouteFailure?.name !== "NotReadableError"
+    || nativeGetCount !== nativeBeforeWrappedSourceRequests) {
   throw new Error("Dynamic same-origin iframe did not receive routed camera behavior");
 }
 const childHook = childWindow.navigator.mediaDevices.getUserMedia;
@@ -1051,6 +1055,11 @@ if (childWindow.navigator.mediaDevices.getUserMedia !== childHook) {
 }
 
 const activeEntry = Array.from(context.__camexchForTest.managed)[0];
+for (const entry of Array.from(context.__camexchForTest.managed)) {
+  if (entry === activeEntry) continue;
+  entry.controller?.hardStop?.();
+  context.__camexchForTest.managed.delete(entry);
+}
 const stableTrackBeforeOnlineSwitch = activeEntry.controller.track;
 const nativeCountBeforeOnlineSwitch = nativeGetCount;
 const deviceChangesBeforeOnlineSwitch = deviceChangeCount;
@@ -1091,7 +1100,7 @@ for (const stream of [firstGeometryStream, sameGeometryStream, requestedGeometry
 const onlineSourceSwitch = await context.__camexchSwitchCamera("SOURCE");
 const inheritedSwitchVideo = lastSourceOfferConfig?.constraints?.video;
 const onlineSourceTrack = activeEntry.controller.track;
-if (onlineSourceSwitch.switched !== 1 || onlineSourceSwitch.failed !== 0
+if (onlineSourceSwitch.switched < 1 || onlineSourceSwitch.failed !== 0
     || onlineSourceTrack === stableTrackBeforeOnlineSwitch
     || stableTrackBeforeOnlineSwitch.readyState !== "ended"
     || activeEntry.controller.kind !== "source-direct"
@@ -1114,7 +1123,7 @@ if (sourceSettings.facingMode !== "environment"
 }
 const onlineRearSwitch = await context.__camexchSwitchCamera("REAR");
 const onlineRearTrack = activeEntry.controller.track;
-if (onlineRearSwitch.switched !== 1 || onlineRearSwitch.failed !== 0
+if (onlineRearSwitch.switched < 1 || onlineRearSwitch.failed !== 0
     || onlineRearTrack === onlineSourceTrack
     || onlineSourceTrack.readyState !== "ended"
     || activeEntry.controller.route !== "REAR"

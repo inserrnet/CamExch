@@ -268,27 +268,27 @@ test("renders immediately when a looping video's media timestamp resets", () => 
 });
 
 test("allocates detail-preserving WebRTC bitrate by output size", () => {
-  assert.equal(geometry.targetVideoBitrate(480, 640, 30), 4_000_000);
-  assert.equal(geometry.targetVideoBitrate(720, 1280, 30), 11_059_200);
-  assert.equal(geometry.targetVideoBitrate(1200, 1600, 30), 23_040_000);
-  assert.equal(geometry.targetVideoBitrate(3072, 4080, 60), 50_000_000);
+  assert.equal(geometry.targetVideoBitrate(480, 640, 30), 3_000_000);
+  assert.equal(geometry.targetVideoBitrate(720, 1280, 30), 6_082_560);
+  assert.equal(geometry.targetVideoBitrate(1200, 1600, 30), 12_672_000);
+  assert.equal(geometry.targetVideoBitrate(3072, 4080, 60), 28_000_000);
 });
 
 test("keeps a quality floor below the WebRTC bitrate ceiling", () => {
   assert.deepEqual(
     geometry.videoBitrateProfile(720, 1280, 60),
     {
-      minimum: 6_635_520,
-      start: 13_271_040,
-      maximum: 22_118_400,
+      minimum: 3_649_536,
+      start: 7_299_072,
+      maximum: 12_165_120,
     },
   );
 });
 
 test("uses adaptive frame rates without reducing source resolution", () => {
-  assert.equal(geometry.adaptiveFrameRate(2400, 3200, 60, "idle"), 3);
-  assert.equal(geometry.adaptiveFrameRate(1500, 2000, 60, "idle"), 4);
-  assert.equal(geometry.adaptiveFrameRate(720, 1280, 60, "idle"), 5);
+  assert.equal(geometry.adaptiveFrameRate(2400, 3200, 60, "idle"), 5);
+  assert.equal(geometry.adaptiveFrameRate(1500, 2000, 60, "idle"), 7);
+  assert.equal(geometry.adaptiveFrameRate(720, 1280, 60, "idle"), 10);
   assert.equal(geometry.adaptiveFrameRate(2400, 3200, 60, "interaction"), 60);
   assert.equal(geometry.adaptiveFrameRate(1500, 2000, 30, "interaction"), 30);
   assert.equal(geometry.adaptiveFrameRate(720, 1280, 24, "interaction"), 24);
@@ -410,4 +410,15 @@ test("formats dynamic network routes without duplicate address fields or commas"
     "USB: 10.137.181.58:8791",
     "Ethernet: 192.168.56.1:8791",
   ].join("\n"));
+});
+
+test("hides idle virtual adapters but shows one carrying the active route", () => {
+  const interfaces = [
+    { route: "Wi-Fi", address: "192.168.4.132" },
+    { route: "Ethernet", address: "192.168.56.1", virtual: true },
+  ];
+  assert.equal(geometry.formatNetworkInterfaces(interfaces, 8791),
+    "Wi-Fi: 192.168.4.132:8791");
+  assert.match(geometry.formatNetworkInterfaces(interfaces, 8791, "192.168.56.1"),
+    /Ethernet: 192\.168\.56\.1:8791/);
 });

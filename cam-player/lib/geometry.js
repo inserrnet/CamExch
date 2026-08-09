@@ -304,8 +304,8 @@
     const w = Math.max(2, Number(width) || 0);
     const h = Math.max(2, Number(height) || 0);
     const fps = Math.max(1, Math.min(60, Number(framesPerSecond) || 30));
-    const calculated = Math.round(w * h * fps * 0.4);
-    return Math.max(4_000_000, Math.min(50_000_000, calculated));
+    const calculated = Math.round(w * h * fps * 0.22);
+    return Math.max(3_000_000, Math.min(28_000_000, calculated));
   }
 
   function videoBitrateProfile(width, height, framesPerSecond) {
@@ -322,9 +322,9 @@
     if (state === "motion") return configured;
     const pixels = Math.max(1, Number(width) || 0) * Math.max(1, Number(height) || 0);
     if (state === "interaction") return configured;
-    if (pixels >= 7_000_000) return Math.min(configured, 3);
-    if (pixels >= 3_000_000) return Math.min(configured, 4);
-    return Math.min(configured, 5);
+    if (pixels >= 7_000_000) return Math.min(configured, 5);
+    if (pixels >= 3_000_000) return Math.min(configured, 7);
+    return Math.min(configured, 10);
   }
 
   function senderFrameRateLimit(configuredFps, adaptiveFps, state) {
@@ -528,10 +528,10 @@
     return lines.join(separator);
   }
 
-  function formatNetworkInterfaces(interfaces, port) {
+  function formatNetworkInterfaces(interfaces, port, activeAddress = "") {
     const seen = new Set();
     return (Array.isArray(interfaces) ? interfaces : [])
-      .filter((item) => item && item.address)
+      .filter((item) => item && item.address && (!item.virtual || item.address === activeAddress))
       .map((item) => {
         const route = item.route || item.name || "Network";
         return `${route}: ${item.address}:${port}`;

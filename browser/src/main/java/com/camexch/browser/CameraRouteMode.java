@@ -1,7 +1,6 @@
 package com.camexch.browser;
 
 enum CameraRouteMode {
-    AUTO,
     SOURCE,
     REAR,
     NATIVE;
@@ -14,6 +13,6 @@ enum CameraRouteMode {
                 }
             }
         }
-        return AUTO;
+        return SOURCE;
     }
 }

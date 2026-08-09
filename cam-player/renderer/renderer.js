@@ -10,7 +10,6 @@ const heightInput = document.getElementById("heightInput");
 const fpsInput = document.getElementById("fpsInput");
 const blurInput = document.getElementById("blurInput");
 const followSiteToggle = document.getElementById("followSiteToggle");
-const fallbackResolutionToggle = document.getElementById("fallbackResolutionToggle");
 const motionMode = document.getElementById("motionMode");
 const liveMotionToggle = document.getElementById("liveMotionToggle");
 const motionProfileSelect = document.getElementById("motionProfileSelect");
@@ -21,9 +20,8 @@ const stabilizationValue = document.getElementById("stabilizationValue");
 const recenterButton = document.getElementById("recenterButton");
 const recordMotionButton = document.getElementById("recordMotionButton");
 const cancelMotionRecordingButton = document.getElementById("cancelMotionRecordingButton");
-const renameMotionProfileButton = document.getElementById("renameMotionProfileButton");
 const deleteMotionProfileButton = document.getElementById("deleteMotionProfileButton");
-const rememberMotionStateToggle = document.getElementById("rememberMotionStateToggle");
+const openProfilesFolderButton = document.getElementById("openProfilesFolderButton");
 const motionRecordingStatus = document.getElementById("motionRecordingStatus");
 const handheldStatus = document.getElementById("handheldStatus");
 const timeline = document.getElementById("timeline");
@@ -327,6 +325,7 @@ let interactionRenderedFrames = 0;
 let interactionSequence = 0;
 let pendingSiteConfiguration = null;
 let mediaGeneration = 0;
+let mediaLoading = false;
 let fileDragDepth = 0;
 let droppedFileLoading = false;
 let stream = null;
@@ -340,9 +339,9 @@ const encoderFailures = new Map();
 const MAX_ACTIVE_PEERS = 1;
 let manualOutput = { width: canvas.width, height: canvas.height };
 let activeOutputOrigin = "manual";
-let lastWorkingOutput = { width: canvas.width, height: canvas.height };
 let recent = [];
 let currentServerInfo = null;
+let activeLocalAddress = "";
 let handheldController = new CamHandheld.Controller();
 let handheldRenderFrameId = null;
 let handheldLastRenderAt = 0;
@@ -711,7 +710,7 @@ function requestCanvasFrame() {
   if (captureTrackRestartPending
       || !canvasTrack
       || typeof canvasTrack.requestFrame !== "function") return false;
-  const state = sourceKind === "video" && playing
+  const state = (sourceKind === "video" && playing) || motionMode.value !== "off"
     ? "motion"
     : sourceInteractionActive
       ? "interaction"
@@ -719,7 +718,9 @@ function requestCanvasFrame() {
   const requestedFps = CamGeometry.adaptiveFrameRate(
     canvas.width,
     canvas.height,
-    effectiveMediaFps(),
+    state === "motion" && !(sourceKind === "video" && playing)
+      ? Math.min(30, effectiveMediaFps())
+      : effectiveMediaFps(),
     state,
   );
   const now = performance.now();
@@ -734,7 +735,7 @@ function requestCanvasFrame() {
 }
 
 function renderFrame(force, frameMetadata = null) {
-  if (!sourceElement) return false;
+  if (mediaLoading || !sourceElement) return false;
   const now = performance.now();
   const fps = effectiveMediaFps();
   const activeFps = playing ? fps : Math.min(10, fps);
@@ -913,11 +914,14 @@ function stopPausedFrameHeartbeat() {
 function updatePausedFrameHeartbeat() {
   stopPausedFrameHeartbeat();
   if (playing || !sourceElement || !canvasTrack || peers.size === 0) return;
+  const state = motionMode.value === "off" ? "idle" : "motion";
   const idleFps = CamGeometry.adaptiveFrameRate(
     canvas.width,
     canvas.height,
-    Number(fpsInput.value) || 30,
-    "idle",
+    state === "motion"
+      ? Math.min(30, Number(fpsInput.value) || 30)
+      : Number(fpsInput.value) || 30,
+    state,
   );
   renderFrame(true);
   // Chromium can suppress requestFrame() calls when the canvas has not been
@@ -951,7 +955,7 @@ function ensureStream() {
 }
 
 function desiredContentHint() {
-  return sourceKind === "video" && playing ? "motion" : "detail";
+  return sourceKind === "video" ? "motion" : "detail";
 }
 
 function updateTrackContentHint(reason) {
@@ -1021,6 +1025,14 @@ function selectedCandidatePair(report) {
   return `${describe(local)} -> ${describe(remote)}`;
 }
 
+function recordActiveRoute(route) {
+  const match = /^([^: ]+):\d+\//.exec(String(route || ""));
+  const address = match?.[1] || "";
+  if (!address || address === activeLocalAddress) return;
+  activeLocalAddress = address;
+  if (currentServerInfo) applyServerInfo(currentServerInfo);
+}
+
 async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs) {
   const startedAt = performance.now();
   let lastRoute = "";
@@ -1031,6 +1043,7 @@ async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs) {
     const route = selectedCandidatePair(report);
     if (route && route !== lastRoute) {
       lastRoute = route;
+      recordActiveRoute(route);
       log(`WebRTC route id=${id} ${route}`);
     }
     let encoded = 0;
@@ -1122,12 +1135,17 @@ function isImagePath(filePath) {
 
 async function loadMedia(file) {
   if (!file?.path || !file?.url) return;
+  const generation = ++mediaGeneration;
+  mediaLoading = true;
   try {
-    const generation = ++mediaGeneration;
     stopVideoFrameLoop();
     stopPausedFrameHeartbeat();
     video.pause();
     playing = false;
+    sourceElement = null;
+    sourceWidth = 0;
+    sourceHeight = 0;
+    sourceKind = "";
     lastRenderedMediaTime = null;
     detectedMediaFps = 0;
     mediaFrameTimes = [];
@@ -1184,6 +1202,8 @@ async function loadMedia(file) {
       if (generation !== mediaGeneration) return;
       log(`First decoded video frame ready=${firstFramePresented}`);
     }
+    if (generation !== mediaGeneration) return;
+    mediaLoading = false;
     sourceRotation = 0;
     transforms = {
       portrait: { scale: 1, panX: 0, panY: 0 },
@@ -1221,6 +1241,7 @@ async function loadMedia(file) {
     log(`Media loaded kind=${sourceKind} size=${sourceWidth}x${sourceHeight} `
       + `decodedRgbaMiB=${decodedMiB.toFixed(1)} path=${file.path}`);
   } catch (error) {
+    if (generation === mediaGeneration) mediaLoading = false;
     log(`Media load failed ${error.stack || error}`);
     alert(error.message || String(error));
   }
@@ -1267,17 +1288,14 @@ function savePreferences() {
     fps: Number(fpsInput.value),
     blur: Number(blurInput.value),
     followSite: followSiteToggle.checked,
-    fallbackResolution: fallbackResolutionToggle.checked,
     loop: document.getElementById("loopToggle").checked,
     mirrored: sourceMirrored,
     motionMode: motionMode.value,
     selectedMotionProfileId: motionProfileSelect.value,
-    rememberMotionEnabled: rememberMotionStateToggle.checked,
     liveMotion: liveMotionSettings.motion,
     liveStabilization: liveMotionSettings.stabilization,
     motion: Number(motionInput.value),
     stabilization: Number(stabilizationInput.value),
-    lastWorkingOutput,
     recent,
   });
 }
@@ -1469,7 +1487,6 @@ function closePeer(id, reason) {
 
 async function handleOffer(payload) {
   const { id, sdp, constraints, orientation, sessionId = "" } = payload;
-  const outputBeforeOffer = { ...lastWorkingOutput };
   const activeOutputBeforeOffer = { width: canvas.width, height: canvas.height };
   try {
     const existingPeerIds = Array.from(peers.keys());
@@ -1651,8 +1668,6 @@ async function handleOffer(payload) {
       const actualMime = String(result.codec || "").toLowerCase();
       const preferredH264 = maintenance?.preferredCodec === "H264";
       if (!preferredH264 || actualMime.includes("h264")) {
-        lastWorkingOutput = { ...expectedOutput };
-        savePreferences();
       } else {
         log(`Working output not persisted because preferred=H264 actual=${result.codec}`);
       }
@@ -1673,22 +1688,8 @@ async function handleOffer(payload) {
       }
       log(`Encoder readiness failed id=${id} output=${canvas.width}x${canvas.height} `
         + `preferredCodec=${codecChoice.name} reason=${error.message}`);
-      if (fallbackResolutionToggle.checked
-          && activeOutputOrigin === "site"
-          && (canvas.width !== outputBeforeOffer.width
-              || canvas.height !== outputBeforeOffer.height)) {
-        log(`Restoring last working output=${outputBeforeOffer.width}x${outputBeforeOffer.height} `
-          + `after explicit encoder failure fallbackEnabled=true`);
-        applyOutputSize(
-          outputBeforeOffer.width,
-          outputBeforeOffer.height,
-          "last working fallback after encoder failure",
-          { origin: "fallback", persist: false },
-        );
-      } else {
-        log(`Output preserved=${canvas.width}x${canvas.height} origin=${activeOutputOrigin} `
-          + `fallbackEnabled=${fallbackResolutionToggle.checked}`);
-      }
+      log(`Output preserved=${canvas.width}x${canvas.height} origin=${activeOutputOrigin} `
+        + "sameResolutionRecovery=true");
       closePeer(id, `encoder readiness failed: ${error.message}`);
     });
     let lastRoute = "";
@@ -1702,6 +1703,7 @@ async function handleOffer(payload) {
         const route = selectedCandidatePair(report);
         if (route && route !== lastRoute) {
           lastRoute = route;
+          recordActiveRoute(route);
           log(`WebRTC route id=${id} ${route}`);
         }
         report.forEach((entry) => {
@@ -1722,20 +1724,9 @@ async function handleOffer(payload) {
             if (maintenance.unexpectedCodecReports >= 2
                 && !maintenance.codecRecoveryActive) {
               maintenance.codecRecoveryActive = true;
-              const recovery = { ...lastWorkingOutput };
               log(`Unexpected software VP9 fallback detected id=${id} `
-                + `output=${canvas.width}x${canvas.height}; restoring stable H264 `
-                + `output=${recovery.width}x${recovery.height}`);
-              if (canvas.width !== recovery.width || canvas.height !== recovery.height) {
-                applyOutputSize(
-                  recovery.width,
-                  recovery.height,
-                  "unexpected VP9 fallback",
-                  { origin: "fallback", persist: false },
-                );
-              } else {
-                scheduleCaptureTrackRestart("unexpected VP9 fallback");
-              }
+                + `output=${canvas.width}x${canvas.height}; restarting H264 at current resolution`);
+              scheduleCaptureTrackRestart("unexpected VP9 recovery");
             }
           } else if (maintenance && actualCodec !== "unknown") {
             maintenance.unexpectedCodecReports = 0;
@@ -1869,13 +1860,15 @@ function scheduleSiteConfiguration(config, reason) {
 
 function updateConnectionState() {
   const count = peers.size;
+  if (count === 0 && activeLocalAddress) {
+    activeLocalAddress = "";
+    renderNetworkInfo();
+  }
   connectionStatus.textContent = count
     ? readyPeers.size
       ? "Browser streaming"
       : "Browser connected; waiting for first frame"
-    : currentServerInfo?.pairedDevices?.length
-      ? "Source paired; waiting for Browser"
-      : "Waiting for Source pairing";
+    : "Waiting for Source";
   connectionStatus.classList.toggle("connected", count > 0);
   document.getElementById("peerValue").textContent = String(count);
   updateOutputLabel();
@@ -2176,7 +2169,6 @@ function renderMotionProfiles(selectedId = motionProfileSelect.value) {
   motionProfileSelect.value = availableId;
   const hasProfile = Boolean(availableId);
   motionProfileSelect.disabled = !hasProfile;
-  renameMotionProfileButton.disabled = !hasProfile;
   deleteMotionProfileButton.disabled = !hasProfile;
   if (!hasProfile && motionMode.value === "recorded") motionMode.value = "off";
 }
@@ -2338,10 +2330,14 @@ recenterButton.addEventListener("click", () => {
 });
 
 function defaultMotionProfileName() {
-  const now = new Date();
-  const date = now.toLocaleDateString(undefined, { year: "numeric", month: "2-digit", day: "2-digit" });
-  const time = now.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  return `Motion ${date} ${time}`;
+  return new Date().toLocaleString("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }).replace(",", "");
 }
 
 function showMotionRecordingStatus(text) {
@@ -2447,19 +2443,12 @@ recordMotionButton.addEventListener("click", async () => {
   log("Motion recording countdown started seconds=3");
 });
 cancelMotionRecordingButton.addEventListener("click", () => cancelMotionRecording("user"));
-rememberMotionStateToggle.addEventListener("change", savePreferences);
-renameMotionProfileButton.addEventListener("click", async () => {
-  const current = motionProfiles.find((profile) => profile.id === motionProfileSelect.value);
-  if (!current) return;
-  const name = window.prompt("Motion profile name", current.name);
-  if (name == null || !name.trim()) return;
-  const renamed = await window.camPlayer.renameMotionProfile(current.id, name.trim());
-  await refreshMotionProfiles(renamed.id);
-  if (activeMotionProfile?.id === renamed.id) {
-    activeMotionProfile.name = renamed.name;
-    handheldStatus.textContent = `Recorded motion active: ${renamed.name}`;
+openProfilesFolderButton.addEventListener("click", async () => {
+  try {
+    await window.camPlayer.openProfilesFolder();
+  } catch (error) {
+    showToast(error.message || String(error));
   }
-  savePreferences();
 });
 deleteMotionProfileButton.addEventListener("click", async () => {
   const current = motionProfiles.find((profile) => profile.id === motionProfileSelect.value);
@@ -2556,7 +2545,6 @@ for (const input of [fpsInput, followSiteToggle]) {
     savePreferences();
   });
 }
-fallbackResolutionToggle.addEventListener("change", savePreferences);
 document.addEventListener("click", (event) => {
   if (event.target instanceof HTMLButtonElement) {
     setTimeout(() => event.target.blur(), 0);
@@ -2607,10 +2595,18 @@ window.camPlayer.onConfig((message) => {
 });
 function applyServerInfo(info) {
   currentServerInfo = info;
-  document.getElementById("networkValue").textContent =
-    CamGeometry.formatNetworkInterfaces(info.interfaces, info.port) || `Port: ${info.port}`;
-  document.getElementById("pairingCodeValue").textContent = info.pairingCode;
+  renderNetworkInfo();
   updateConnectionState();
+}
+
+function renderNetworkInfo() {
+  if (!currentServerInfo) return;
+  document.getElementById("networkValue").textContent =
+    CamGeometry.formatNetworkInterfaces(
+      currentServerInfo.interfaces,
+      currentServerInfo.port,
+      activeLocalAddress,
+    ) || `Port: ${currentServerInfo.port}`;
 }
 window.camPlayer.onServerInfo(applyServerInfo);
 window.camPlayer.onLog(appendLog);
@@ -2668,7 +2664,6 @@ async function initialize() {
   );
   blurInput.value = String(preferences.blur ?? 40);
   followSiteToggle.checked = !!preferences.followSite;
-  fallbackResolutionToggle.checked = preferences.fallbackResolution === true;
   document.getElementById("loopToggle").checked = preferences.loop !== false;
   sourceMirrored = preferences.mirrored === true;
   document.getElementById("mirrorButton")
@@ -2677,13 +2672,8 @@ async function initialize() {
     motion: Number(preferences.liveMotion ?? preferences.motion ?? 35),
     stabilization: Number(preferences.liveStabilization ?? preferences.stabilization ?? 55),
   };
-  rememberMotionStateToggle.checked = preferences.rememberMotionEnabled == null
-    ? preferences.handheld === true
-    : preferences.rememberMotionEnabled === true;
   await refreshMotionProfiles(preferences.selectedMotionProfileId);
-  const storedMotionMode = preferences.motionMode
-    || (preferences.handheld === true ? "live" : "off");
-  motionMode.value = rememberMotionStateToggle.checked ? storedMotionMode : "off";
+  motionMode.value = "off";
   motionModeBeforeLive = motionMode.value === "recorded" ? "recorded" : "off";
   if (motionMode.value === "recorded" && !motionProfileSelect.value) motionMode.value = "off";
   syncLiveMotionToggle();
@@ -2695,12 +2685,6 @@ async function initialize() {
   }
   recenterButton.disabled = true;
   recordMotionButton.disabled = true;
-  if (preferences.lastWorkingOutput?.width && preferences.lastWorkingOutput?.height) {
-    lastWorkingOutput = {
-      width: Number(preferences.lastWorkingOutput.width),
-      height: Number(preferences.lastWorkingOutput.height),
-    };
-  }
   try {
     manualOutput = {
       width: Number(preferences.width) || 720,

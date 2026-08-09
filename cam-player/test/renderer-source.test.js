@@ -133,7 +133,7 @@ test("keeps the rendering color space explicit and avoids sharpening bias", () =
 });
 
 test("uses content-aware adaptive sender profiles and bounded keyframes", () => {
-  assert.match(renderer, /sourceKind === "video" && playing \? "motion" : "detail"/);
+  assert.match(renderer, /sourceKind === "video" \? "motion" : "detail"/);
   assert.match(renderer, /CamGeometry\.adaptiveFrameRate/);
   assert.match(renderer, /sourceInteractionActive/);
   assert.match(renderer, /sender\.generateKeyFrame/);
@@ -201,16 +201,17 @@ test("coalesces bursts of live site configuration updates", () => {
   assert.match(renderer, /Site size already active=/);
 });
 
-test("keeps manual, active, and last working output states separate", () => {
+test("keeps manual and active output states separate", () => {
   assert.match(renderer, /let manualOutput =/);
   assert.match(renderer, /let activeOutputOrigin = "manual"/);
   assert.match(renderer, /manualOutput = \{ width: w, height: h \}/);
   assert.match(renderer, /\{ origin: "site" \}/);
   assert.match(renderer, /width: manualOutput\.width/);
   assert.match(renderer, /height: manualOutput\.height/);
+  assert.doesNotMatch(renderer, /lastWorkingOutput/);
 });
 
-test("recovers a stalled encoder at the same resolution before fallback", () => {
+test("recovers a stalled encoder at the same resolution", () => {
   assert.match(renderer, /restartCaptureTrackAtCurrentResolution/);
   assert.match(renderer, /Encoder restart superseded after replacement/);
   assert.match(renderer, /restartCaptureTrackAtCurrentResolution\(`offer \$\{id\}`, id\)/);
@@ -220,7 +221,15 @@ test("recovers a stalled encoder at the same resolution before fallback", () => 
   assert.match(renderer, /encoderFailures\.set/);
   assert.match(renderer, /for \(const \[failedOutput, failure\] of encoderFailures\.entries\(\)\)/);
   assert.match(renderer, /Encoder codec retry/);
-  assert.match(renderer, /fallbackResolutionToggle\.checked/);
+  assert.match(renderer, /sameResolutionRecovery=true/);
+  assert.doesNotMatch(renderer, /fallbackResolutionToggle/);
+});
+
+test("isolates media transitions and keeps motion frames active while paused", () => {
+  assert.match(renderer, /let mediaLoading = false/);
+  assert.match(renderer, /if \(mediaLoading \|\| !sourceElement\) return false/);
+  assert.match(renderer, /motionMode\.value !== "off"/);
+  assert.match(renderer, /motionMode\.value === "off" \? "idle" : "motion"/);
 });
 
 test("reloads the renderer after WebGL context loss", () => {

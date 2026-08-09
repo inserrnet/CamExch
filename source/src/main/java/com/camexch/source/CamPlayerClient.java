@@ -14,11 +14,11 @@ final class CamPlayerClient {
     private static final int OFFER_TIMEOUT_MS = 18_000;
 
     private final String baseUrl;
-    private final String token;
+    private final String deviceId;
 
-    CamPlayerClient(String address, String token) {
+    CamPlayerClient(String address, String deviceId) {
         this.baseUrl = normalizeAddress(address);
-        this.token = token == null ? "" : token.trim();
+        this.deviceId = deviceId == null ? "" : deviceId.trim();
     }
 
     static String normalizeAddress(String address) {
@@ -38,19 +38,6 @@ final class CamPlayerClient {
         }
     }
 
-    static String pair(String address, String code, String deviceName) throws Exception {
-        CamPlayerClient client = new CamPlayerClient(address, "");
-        JSONObject request = new JSONObject();
-        request.put("code", code == null ? "" : code.trim());
-        request.put("device", deviceName);
-        JSONObject response = client.post("/pair", request, false, CONNECT_TIMEOUT_MS);
-        String token = response.optString("token", "");
-        if (token.isEmpty()) {
-            throw new IllegalStateException("Cam Player did not return a pairing token");
-        }
-        return token;
-    }
-
     JSONObject status() throws Exception {
         HttpURLConnection connection = open("/status", "GET", CONNECT_TIMEOUT_MS);
         try {
@@ -60,13 +47,20 @@ final class CamPlayerClient {
         }
     }
 
+    void claim(String deviceName) throws Exception {
+        JSONObject request = new JSONObject();
+        request.put("deviceId", deviceId);
+        request.put("deviceName", deviceName == null ? "CamExch Source" : deviceName);
+        post("/claim", request, CONNECT_TIMEOUT_MS);
+    }
+
+    void release() throws Exception {
+        post("/release", new JSONObject(), CONNECT_TIMEOUT_MS);
+    }
+
     JSONObject motionConfig() throws Exception {
-        if (token.isEmpty()) {
-            throw new IllegalStateException("Cam Player is not paired");
-        }
         HttpURLConnection connection = open("/motion-config", "GET", CONNECT_TIMEOUT_MS);
         try {
-            connection.setRequestProperty("Authorization", "Bearer " + token);
             return readResponse(connection);
         } finally {
             connection.disconnect();
@@ -74,13 +68,10 @@ final class CamPlayerClient {
     }
 
     String answerOffer(String offer, String configJson) throws Exception {
-        if (token.isEmpty()) {
-            throw new IllegalStateException("Cam Player is not paired");
-        }
         JSONObject request = new JSONObject();
         request.put("sdp", offer);
         mergeConfig(request, configJson);
-        JSONObject response = post("/offer", request, true, OFFER_TIMEOUT_MS);
+        JSONObject response = post("/offer", request, OFFER_TIMEOUT_MS);
         String answer = response.optString("sdp", "");
         if (answer.isEmpty()) {
             throw new IllegalStateException("Cam Player returned an empty WebRTC answer");
@@ -89,32 +80,22 @@ final class CamPlayerClient {
     }
 
     JSONObject configure(String configJson) throws Exception {
-        if (token.isEmpty()) {
-            throw new IllegalStateException("Cam Player is not paired");
-        }
         JSONObject request = configJson == null || configJson.trim().isEmpty()
                 ? new JSONObject()
                 : new JSONObject(configJson);
-        return post("/configure", request, true, CONNECT_TIMEOUT_MS);
+        return post("/configure", request, CONNECT_TIMEOUT_MS);
     }
 
     void closeSession(String sessionId, String reason) throws Exception {
-        if (token.isEmpty()) {
-            throw new IllegalStateException("Cam Player is not paired");
-        }
         JSONObject request = new JSONObject();
         request.put("sessionId", sessionId == null ? "" : sessionId);
         request.put("reason", reason == null ? "" : reason);
-        post("/close", request, true, CONNECT_TIMEOUT_MS);
+        post("/close", request, CONNECT_TIMEOUT_MS);
     }
 
     HttpURLConnection openMotionStream() throws Exception {
-        if (token.isEmpty()) {
-            throw new IllegalStateException("Cam Player is not paired");
-        }
         HttpURLConnection connection = open("/motion-stream", "POST", 0);
         connection.setRequestProperty("Content-Type", "application/x-ndjson");
-        connection.setRequestProperty("Authorization", "Bearer " + token);
         connection.setDoOutput(true);
         connection.setChunkedStreamingMode(512);
         return connection;
@@ -132,14 +113,11 @@ final class CamPlayerClient {
         }
     }
 
-    private JSONObject post(String path, JSONObject body, boolean authenticated, int timeoutMs)
+    private JSONObject post(String path, JSONObject body, int timeoutMs)
             throws Exception {
         HttpURLConnection connection = open(path, "POST", timeoutMs);
         try {
             connection.setRequestProperty("Content-Type", "application/json");
-            if (authenticated) {
-                connection.setRequestProperty("Authorization", "Bearer " + token);
-            }
             connection.setDoOutput(true);
             byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(payload.length);
@@ -161,6 +139,9 @@ final class CamPlayerClient {
         connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
         connection.setReadTimeout(timeoutMs);
         connection.setUseCaches(false);
+        if (!deviceId.isEmpty()) {
+            connection.setRequestProperty("X-CamExch-Device", deviceId);
+        }
         return connection;
     }
 

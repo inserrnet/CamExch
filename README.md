@@ -3,8 +3,8 @@
 CamExch is a camera-routing suite made of two Android apps and one portable Windows app:
 
 - **CamExch Source** chooses the `Front Camera 4` source: RTSP URL, video file, or photo file.
-- **CamExch Browser** is a small WebView browser with tabs. It leaves the rear camera untouched and replaces front-camera `getUserMedia()` requests with the Source app frame stream.
-- **Cam Player** is a portable Windows photo/video player that sends its composed output directly to Browser over LAN WebRTC. Source handles discovery, pairing, constraints, and signaling; it does not decode or re-encode Cam Player video.
+- **CamExch Browser** is a small WebView browser with tabs and explicit `F`, `R`, and `N` camera routes.
+- **Cam Player** is a portable Windows photo/video player that sends its composed output directly to Browser over LAN WebRTC. Source handles discovery, connection ownership, constraints, and signaling; it does not decode or re-encode Cam Player video.
 
 The project is designed to build on GitHub Actions, so no Android Studio, Gradle, or Git installation is required on the local computer.
 
@@ -15,13 +15,13 @@ The project is designed to build on GitHub Actions, so no Android Studio, Gradle
 3. Enter any even output width and height supported by the GPU.
 4. Use the mouse wheel to scale the source and drag to position it.
 5. Hold Space while scrolling or dragging to inspect the preview without changing output.
-6. In Source, select `Cam Player`, enter the USB or LAN address, enter the pairing code shown by Cam Player, and tap `Pair`. Use `Search for Player` only for automatic discovery.
+6. In Source, select `Cam Player`. Source discovers Cam Player automatically and prefers an available USB route. Use the address field and `Connect` only as a manual fallback.
 7. Tap `Start` in Source.
 8. Select `F` in Browser before the website requests the camera.
 
 `Follow site and phone orientation` makes Cam Player apply the site's requested dimensions in the phone's physical orientation. For example, a `2000x1500` camera request produces `1500x2000` while the phone is portrait and changes live to `2000x1500` after a landscape rotation. The WebRTC track remains active and the page is not reloaded.
 
-For USB tethering, pair Source with the address marked `USB` in Cam Player. Pairing and the selected address remain saved. Cam Player and Browser logs report the selected ICE candidate pair so the actual USB, Wi-Fi, or Ethernet route can be verified.
+For USB tethering, connect the phone and enable USB tethering. Source prefers the current USB address and falls back to Wi-Fi when USB is unavailable. Cam Player and Browser logs report the selected ICE candidate pair so the actual route can be verified.
 
 Cam Player accepts photos and Chromium-compatible video directly. MKV and AVI files are remuxed to MP4 with bundled FFmpeg; incompatible codecs use a compatibility H.264/AAC transcode. No separate runtime is required.
 
@@ -48,8 +48,7 @@ Cam Player accepts photos and Chromium-compatible video directly. MKV and AVI fi
 
 The `!` button near the address bar shows `Front Camera 4 source active`. Long-press it to open the Browser log and copy it to the clipboard. Source has a `Logs` button with the same copy action. After a crash, either app opens its saved crash log before retrying normal startup.
 
-The floating camera controls provide four routes: `A` automatically maps rear requests to
-the phone camera and front requests to Source, `F` forces Source, `R` forces the managed
+The floating camera controls provide three routes: `F` forces Source, `R` forces the managed
 rear-camera route, and `N` passes the site's constraints and native `MediaStream` through
 Android WebView without a CamExch frame proxy. Browser diagnostics aggregate rendered-frame,
 WebRTC, and Canvas readback metrics every five seconds. Source logs direct H.264 input,
@@ -77,18 +76,17 @@ flowchart LR
 
 The browser installs its camera hook at document start, before site scripts can capture the original `getUserMedia()` function. H.264 RTSP access units pass directly into WebRTC without decoding or re-encoding. Other RTSP codecs automatically use the decoded Surface/WebRTC fallback. Video-file frames remain on the hardware-accelerated Surface/WebRTC path and are not converted to JPEG. Playback belongs to the foreground service, so switching from Source to Browser does not destroy the media pipeline. The selected source is restored if Android restarts the service.
 
-Cam Player renders its arbitrary-resolution output with WebGL. Its background is a bounded, strongly blurred cache of the first media frame, so a large photo is not duplicated at full resolution and playback does not render a second moving video. Static and paused frames remain cached and use a one-frame-per-second heartbeat; zooming and dragging temporarily raise the frame rate according to output size without reducing resolution. Rendering follows decoded video-frame callbacks instead of a permanent 60 Hz timer. The sender uses the actually interoperable H.264 codec, keeps the selected resolution, applies separate motion/detail profiles, and limits keyframe fallback to material output changes.
+Cam Player renders its arbitrary-resolution output with WebGL. Its background is a bounded, strongly blurred cache of the first media frame, so a large photo is not duplicated at full resolution and playback does not render a second moving video. Static and paused frames remain cached and use an adaptive heartbeat; recorded or live Motion remains active at up to 30 FPS. Rendering follows decoded video-frame callbacks instead of a permanent 60 Hz timer. The sender uses the actually interoperable H.264 codec, keeps the selected resolution, applies stable motion/detail profiles, and limits keyframe fallback to material output changes.
 
-Browser, Source, and Cam Player use asynchronous signaling with session/request IDs. Browser retains a healthy source session through short site probe/reopen cycles and applies changed geometry to that session before returning the next track. A newer pending offer cancels unfinished negotiation, and Cam Player keeps one active encoder. The selected USB route is preferred at ICE candidate level while the full candidate set remains an automatic fallback when the requested interface is unavailable. Managed rear-camera switching transfers native `VideoFrame` objects through `MediaStreamTrackProcessor/Generator`; the Canvas path is only a compatibility fallback. Cam Player and Source pair with a six-digit one-time code, and signaling requires the resulting token. Media flows directly from Windows to Browser, avoiding an Android decode/encode hop.
+Browser, Source, and Cam Player use asynchronous signaling with session/request IDs. Browser retains a healthy source session through short site probe/reopen cycles and applies changed geometry to that session before returning the next track. A newer pending offer cancels unfinished negotiation, and Cam Player keeps one active encoder. Explicit `Start` gives one Source installation ownership of Cam Player; a newer phone displaces a stale owner. The selected USB route is preferred at ICE candidate level while the full candidate set remains an automatic fallback when the requested interface is unavailable. Managed rear-camera switching transfers native `VideoFrame` objects through `MediaStreamTrackProcessor/Generator`; the Canvas path is only a compatibility fallback. Media flows directly from Windows to Browser, avoiding an Android decode/encode hop.
 
 ## Browser Features
 
 - Address bar.
 - Back and forward buttons.
 - Reload button.
-- Multiple tabs.
-- Long-press a tab to close it.
-- Automatic front-camera override for `video: true`, `facingMode: "user"`, an unconstrained default camera request, or `deviceId: "camexch-front-camera-4"`.
+- Multiple tabs with a visible close button. Closing the last tab opens Google.
+- `F` is the default route and sends Source while retaining the requested front/back camera identity.
 - A physical camera selected by `deviceId` is inspected through `MediaStreamTrack.getSettings()` and replaced automatically when it reports `facingMode: "user"`.
 - Rear camera requests are passed through to the real Android camera.
 - Explicit microphone diagnostics record whether audio was requested and which audio tracks were returned. Audio routing itself is unchanged.
@@ -123,7 +121,7 @@ pnpm dist
 Windows output:
 
 ```text
-cam-player/dist/Cam-Player-0.3.4-Windows-x64.exe
+cam-player/dist/Cam-Player-*-Windows-x64.exe
 ```
 
 ## Notes

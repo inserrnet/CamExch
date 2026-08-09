@@ -7,6 +7,12 @@ import org.junit.Test;
 
 public class VirtualCameraScriptTest {
     @Test
+    public void removedAutomaticModeCannotReenterRouting() {
+        assertFalse(VirtualCameraScript.SCRIPT.contains("'AUTO'"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains("return 'SOURCE'"));
+    }
+
+    @Test
     public void nativeRearRouteSelectsPrimaryCameraBeforeFocusing() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "native passthrough replacing secondary rear"));
@@ -64,7 +70,7 @@ public class VirtualCameraScriptTest {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "WebRTC receiver bounded pacing targetMs="));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "Math.max(35,Math.min(70,1250/fps))"));
+                "Math.max(80,Math.min(120,2000/fps))"));
         assertFalse(VirtualCameraScript.SCRIPT.contains(
                 "receiver.playoutDelayHint=0"));
         assertFalse(VirtualCameraScript.SCRIPT.contains(

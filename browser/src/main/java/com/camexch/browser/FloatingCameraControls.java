@@ -29,11 +29,10 @@ final class FloatingCameraControls {
     private final SharedPreferences preferences;
     private LinearLayout root;
     private WindowManager.LayoutParams layoutParams;
-    private Button autoButton;
     private Button sourceButton;
     private Button rearButton;
     private Button nativeButton;
-    private CameraRouteMode selectedMode = CameraRouteMode.AUTO;
+    private CameraRouteMode selectedMode = CameraRouteMode.SOURCE;
 
     FloatingCameraControls(Context context, Listener listener) {
         this.context = context;
@@ -66,12 +65,10 @@ final class FloatingCameraControls {
         moveButton.setLayoutParams(new LinearLayout.LayoutParams(dp(34), dp(40)));
         moveButton.setOnTouchListener(new DragTouchListener());
 
-        autoButton = createModeButton("A", "Automatic camera routing", CameraRouteMode.AUTO);
         sourceButton = createModeButton("F", "Front Camera 4", CameraRouteMode.SOURCE);
         rearButton = createModeButton("R", "Phone rear camera", CameraRouteMode.REAR);
         nativeButton = createModeButton("N", "Native WebView camera", CameraRouteMode.NATIVE);
         root.addView(moveButton);
-        root.addView(autoButton);
         root.addView(sourceButton);
         root.addView(rearButton);
         root.addView(nativeButton);
@@ -137,7 +134,6 @@ final class FloatingCameraControls {
     }
 
     private void updateButtons() {
-        updateButton(autoButton, selectedMode == CameraRouteMode.AUTO);
         updateButton(sourceButton, selectedMode == CameraRouteMode.SOURCE);
         updateButton(rearButton, selectedMode == CameraRouteMode.REAR);
         updateButton(nativeButton, selectedMode == CameraRouteMode.NATIVE);
@@ -178,7 +174,6 @@ final class FloatingCameraControls {
     private void clearViews() {
         root = null;
         layoutParams = null;
-        autoButton = null;
         sourceButton = null;
         rearButton = null;
         nativeButton = null;

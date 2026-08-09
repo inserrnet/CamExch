@@ -142,7 +142,7 @@ public class SourceForegroundService extends Service {
         } else if (intent != null && ACTION_PAUSE_VIDEO.equals(intent.getAction())) {
             setVideoPlaying(false);
         }
-        return START_REDELIVER_INTENT;
+        return START_NOT_STICKY;
     }
 
     @Override
@@ -289,13 +289,19 @@ public class SourceForegroundService extends Service {
                 reportError(mode, new IllegalArgumentException("Cam Player address is empty"));
                 return;
             }
-            String token = getSharedPreferences("cam_player", MODE_PRIVATE)
-                    .getString("token", "");
-            camPlayerClient = new CamPlayerClient(currentUri, token);
+            android.content.SharedPreferences camPlayerPreferences =
+                    getSharedPreferences("cam_player", MODE_PRIVATE);
+            String deviceId = camPlayerPreferences.getString("device_instance_id", "");
+            if (deviceId.isEmpty()) {
+                deviceId = java.util.UUID.randomUUID().toString();
+                camPlayerPreferences.edit().putString("device_instance_id", deviceId).apply();
+            }
+            camPlayerClient = new CamPlayerClient(currentUri, deviceId);
             CamPlayerClient expectedClient = camPlayerClient;
             reportStatus("Cam Player connecting");
             camPlayerExecutor.execute(() -> {
                 try {
+                    expectedClient.claim(Build.MANUFACTURER + " " + Build.MODEL);
                     org.json.JSONObject status = expectedClient.status();
                     synchronized (SourceForegroundService.this) {
                         if (camPlayerClient != expectedClient || !"Cam Player".equals(mode)) {
@@ -658,6 +664,7 @@ public class SourceForegroundService extends Service {
     }
 
     private void stopSource() {
+        CamPlayerClient clientToRelease = camPlayerClient;
         mode = "Idle";
         error = "";
         directH264 = false;
@@ -667,7 +674,20 @@ public class SourceForegroundService extends Service {
         getSharedPreferences("source", MODE_PRIVATE).edit().clear().apply();
         releaseVideoPipeline();
         reportStatus("Idle");
-        updateForegroundTypes(false);
+        stopForeground(true);
+        if (clientToRelease == null) {
+            stopSelf();
+            return;
+        }
+        new Thread(() -> {
+            try {
+                clientToRelease.release();
+            } catch (Throwable releaseError) {
+                AppLog.info(this, "Cam Player ownership release failed " + releaseError);
+            } finally {
+                stopSelf();
+            }
+        }, "CamPlayerRelease").start();
     }
 
     private void updateForegroundTypes(boolean includeCamera) {

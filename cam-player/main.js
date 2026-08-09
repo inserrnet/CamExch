@@ -8,6 +8,7 @@ const {
   dialog,
   ipcMain,
   screen,
+  shell,
 } = require("electron");
 const crypto = require("crypto");
 const fs = require("fs");
@@ -34,7 +35,6 @@ let mainWindow;
 let server;
 let bonjour;
 let publication;
-let pairingCode = String(crypto.randomInt(100000, 1000000));
 let state = {
   outputWidth: 720,
   outputHeight: 1280,
@@ -53,6 +53,21 @@ let pendingMotionSample = null;
 let motionDispatchScheduled = false;
 let liveMotionRequested = false;
 let motionCaptureRequested = false;
+let sourceOwner = null;
+
+function sourceDeviceId(request) {
+  return String(request.headers["x-camexch-device"] || "").trim();
+}
+
+function requireSourceOwner(request, response) {
+  const deviceId = sourceDeviceId(request);
+  if (!deviceId || !sourceOwner || sourceOwner.deviceId !== deviceId) {
+    sendJson(response, 409, { error: "Cam Player is owned by another Source; press Start to claim it" });
+    return false;
+  }
+  sourceOwner.lastSeenAt = Date.now();
+  return true;
+}
 
 function dispatchLatestMotionSample(sample) {
   pendingMotionSample = sample;
@@ -167,6 +182,8 @@ function localInterfaces() {
           description,
           address: entry.address,
           route: routeType(name, description),
+          virtual: /(virtualbox|vmware|hyper-v|host-only|vethernet|loopback)/i
+            .test(`${name} ${description}`),
         });
       }
     }
@@ -317,20 +334,6 @@ function readBody(request) {
   });
 }
 
-function bearerToken(request) {
-  const value = request.headers.authorization || "";
-  return value.startsWith("Bearer ") ? value.slice(7) : "";
-}
-
-function pairedTokens() {
-  return readJson("paired-devices.json", {});
-}
-
-function tokenIsValid(token) {
-  if (!token) return false;
-  return Object.values(pairedTokens()).some((entry) => entry.token === token);
-}
-
 async function forwardOffer(payload) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     throw new Error("Cam Player window is unavailable");
@@ -375,7 +378,6 @@ async function handleRequest(request, response) {
       sendJson(response, 200, {
         name: "Cam Player",
         version: VERSION,
-        pairingRequired: true,
         addresses: localAddresses(),
         interfaces: localInterfaces(),
         port: PORT,
@@ -383,27 +385,39 @@ async function handleRequest(request, response) {
       });
       return;
     }
-    if (request.method === "POST" && requestUrl.pathname === "/pair") {
+    if (request.method === "POST" && requestUrl.pathname === "/claim") {
       const body = await readBody(request);
-      if (String(body.code || "") !== pairingCode) {
-        sendJson(response, 403, { error: "Invalid pairing code" });
+      const deviceId = String(body.deviceId || sourceDeviceId(request)).trim();
+      if (!deviceId) {
+        sendJson(response, 400, { error: "Source device id is missing" });
         return;
       }
-      const device = String(body.device || "CamExch Source").slice(0, 120);
-      const token = crypto.randomBytes(32).toString("hex");
-      const devices = pairedTokens();
-      devices[device] = { token, pairedAt: new Date().toISOString() };
-      writeJson("paired-devices.json", devices);
-      pairingCode = String(crypto.randomInt(100000, 1000000));
-      log(`Paired device=${device}`);
-      sendJson(response, 200, { token });
-      mainWindow?.webContents.send("server-info", serverInfo());
+      const previous = sourceOwner?.deviceId || "";
+      sourceOwner = {
+        deviceId,
+        deviceName: String(body.deviceName || "CamExch Source").slice(0, 120),
+        claimedAt: Date.now(),
+        lastSeenAt: Date.now(),
+      };
+      if (previous && previous !== deviceId) {
+        mainWindow?.webContents.send("source-close", {
+          sessionId: "",
+          reason: "Cam Player claimed by another Source",
+        });
+      }
+      log(`Source ownership claimed device=${sourceOwner.deviceName} id=${deviceId} replaced=${previous || "none"}`);
+      sendJson(response, 200, { ok: true, replaced: previous && previous !== deviceId });
       return;
     }
-    if (!tokenIsValid(bearerToken(request))) {
-      sendJson(response, 401, { error: "Cam Player pairing is required" });
+    if (request.method === "POST" && requestUrl.pathname === "/release") {
+      const deviceId = sourceDeviceId(request);
+      const released = Boolean(sourceOwner && sourceOwner.deviceId === deviceId);
+      if (released) sourceOwner = null;
+      log(`Source ownership release id=${deviceId || "missing"} released=${released}`);
+      sendJson(response, 200, { ok: true, released });
       return;
     }
+    if (!requireSourceOwner(request, response)) return;
     if (request.method === "GET" && requestUrl.pathname === "/motion-config") {
       sendJson(response, 200, {
         liveMotion: liveMotionRequested,
@@ -515,8 +529,6 @@ function serverInfo() {
     port: PORT,
     addresses: localAddresses(),
     interfaces: localInterfaces(),
-    pairingCode,
-    pairedDevices: Object.keys(pairedTokens()),
   };
 }
 
@@ -685,17 +697,6 @@ ipcMain.handle("save-motion-profile", (_event, value) => {
     + `durationMs=${profile.durationMs} rateHz=${profile.sampleRateHz}`);
   return profileSummary(profile);
 });
-ipcMain.handle("rename-motion-profile", (_event, id, requestedName) => {
-  const profiles = motionProfiles();
-  const profile = profiles.find((candidate) => candidate.id === String(id || ""));
-  if (!profile) throw new Error("Motion profile was not found");
-  profile.name = String(requestedName || "").trim().slice(0, 80);
-  if (!profile.name) throw new Error("Motion profile name is empty");
-  profile.updatedAt = new Date().toISOString();
-  saveMotionProfiles(profiles);
-  log(`Motion profile renamed id=${profile.id} name=${profile.name}`);
-  return profileSummary(profile);
-});
 ipcMain.handle("delete-motion-profile", (_event, id) => {
   const profileId = String(id || "");
   const profiles = motionProfiles();
@@ -704,6 +705,13 @@ ipcMain.handle("delete-motion-profile", (_event, id) => {
   saveMotionProfiles(remaining);
   log(`Motion profile deleted id=${profileId}`);
   return true;
+});
+ipcMain.handle("open-profiles-folder", async () => {
+  const folder = app.getPath("userData");
+  fs.mkdirSync(folder, { recursive: true });
+  const error = await shell.openPath(folder);
+  if (error) throw new Error(error);
+  return folder;
 });
 ipcMain.handle("prepare-media", async (_event, filePath) => {
   const originalPath = String(filePath || "");

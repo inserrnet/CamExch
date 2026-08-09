@@ -58,7 +58,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 public class BrowserActivity extends Activity {
-    private static final String HOME_URL = "https://webcamtests.com/";
+    private static final String HOME_URL = "https://www.google.com/";
     private static final int FILE_CHOOSER_REQUEST_CODE = 4107;
     private final List<Tab> tabs = new ArrayList<>();
     private FrameLayout webContainer;
@@ -319,7 +319,7 @@ public class BrowserActivity extends Activity {
         } else if (mode == CameraRouteMode.NATIVE) {
             message = "Native WebView camera";
         } else {
-            message = "Automatic camera routing";
+            message = "Front camera source";
         }
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
     }
@@ -481,7 +481,7 @@ public class BrowserActivity extends Activity {
         AppLog.info(this, "Microphone WebView permission requested=" + requestsAudio
                 + " origin=" + request.getOrigin()
                 + " cameraRoute=" + (cameraRoutePreferences == null
-                ? CameraRouteMode.AUTO : cameraRoutePreferences.getMode()));
+                ? CameraRouteMode.SOURCE : cameraRoutePreferences.getMode()));
         if (!requestsVideo) {
             request.grant(requested);
             AppLog.info(this, "Microphone WebView permission decision=granted requested="
@@ -506,7 +506,7 @@ public class BrowserActivity extends Activity {
             }
         }
         CameraRouteMode routeMode = cameraRoutePreferences == null
-                ? CameraRouteMode.AUTO : cameraRoutePreferences.getMode();
+                ? CameraRouteMode.SOURCE : cameraRoutePreferences.getMode();
         WebView webView = currentWebView();
         AppLog.info(this, "Denied unclassified native video request origin=" + request.getOrigin()
                 + " routeMode=" + routeMode
@@ -531,15 +531,20 @@ public class BrowserActivity extends Activity {
         tabStrip.addView(plus);
         for (int i = 0; i < tabs.size(); i++) {
             int index = i;
+            LinearLayout tabItem = new LinearLayout(this);
+            tabItem.setOrientation(LinearLayout.HORIZONTAL);
             Button button = smallButton((i == activeTab ? "* " : "") + shortTitle(tabs.get(i).title));
             button.setOnClickListener(view -> switchToTab(index));
-            button.setOnLongClickListener(view -> {
-                if (tabs.size() > 1) {
-                    closeTab(index);
-                }
-                return true;
-            });
-            tabStrip.addView(button);
+            Button close = smallButton("X");
+            close.setContentDescription("Close tab");
+            close.setTooltipText("Close tab");
+            close.setMinWidth(0);
+            close.setMinimumWidth(0);
+            close.setPadding(10, 0, 10, 0);
+            close.setOnClickListener(view -> closeTab(index));
+            tabItem.addView(button);
+            tabItem.addView(close);
+            tabStrip.addView(tabItem);
         }
     }
 
@@ -568,13 +573,18 @@ public class BrowserActivity extends Activity {
     }
 
     private void closeTab(int index) {
-        if (index < 0 || index >= tabs.size() || tabs.size() == 1) {
+        if (index < 0 || index >= tabs.size()) {
             return;
         }
         Tab removed = tabs.remove(index);
         cancelFileChooser(removed.webView, "tab closed");
         webContainer.removeView(removed.webView);
         removed.webView.destroy();
+        if (tabs.isEmpty()) {
+            activeTab = -1;
+            addTab(HOME_URL);
+            return;
+        }
         switchToTab(Math.max(0, Math.min(index, tabs.size() - 1)));
     }
 
@@ -757,7 +767,7 @@ public class BrowserActivity extends Activity {
         @JavascriptInterface
         public String getCameraRouteMode() {
             if (cameraRoutePreferences == null) {
-                return CameraRouteMode.AUTO.name();
+                return CameraRouteMode.SOURCE.name();
             }
             return cameraRoutePreferences.getMode().name();
         }

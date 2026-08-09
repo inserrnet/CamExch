@@ -12,6 +12,9 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkRequest;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
@@ -39,14 +42,12 @@ public class SourceActivity extends Activity {
     private static final String DEFAULT_RTSP_URI = "rtsp://192.168.4.132:554/live";
     private static final String CAM_PLAYER_PREFERENCES = "cam_player";
     private static final String PREF_CAM_PLAYER_ADDRESS = "address";
-    private static final String PREF_CAM_PLAYER_TOKEN = "token";
+    private static final String PREF_CAM_PLAYER_ROUTE = "preferred_route";
     private static final String DEFAULT_CAM_PLAYER_ADDRESS = "192.168.4.1:8791";
 
     private EditText rtspInput;
     private EditText camPlayerInput;
-    private EditText pairingCodeInput;
-    private Button pairButton;
-    private Button findCamPlayerButton;
+    private Button connectButton;
     private TextView camPlayerDiscoveryLabel;
     private TextView selectedFileLabel;
     private TextView statusLabel;
@@ -58,6 +59,9 @@ public class SourceActivity extends Activity {
     private boolean startCamPlayerAfterCameraPermission;
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private CamPlayerDiscovery camPlayerDiscovery;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private boolean activityStarted;
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -90,6 +94,7 @@ public class SourceActivity extends Activity {
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     protected void onStart() {
         super.onStart();
+        activityStarted = true;
         if (diagnosticsOnly) {
             return;
         }
@@ -100,12 +105,22 @@ public class SourceActivity extends Activity {
             registerReceiver(statusReceiver, filter);
         }
         receiverRegistered = true;
+        registerNetworkDiscovery();
+        startCamPlayerDiscovery();
     }
 
     @Override
     protected void onStop() {
+        activityStarted = false;
         if (camPlayerDiscovery != null) {
             camPlayerDiscovery.stop();
+        }
+        if (connectivityManager != null && networkCallback != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback);
+            } catch (IllegalArgumentException ignored) {
+            }
+            networkCallback = null;
         }
         if (receiverRegistered) {
             unregisterReceiver(statusReceiver);
@@ -196,30 +211,17 @@ public class SourceActivity extends Activity {
                 ));
         root.addView(camPlayerAddressRow);
 
-        LinearLayout camPlayerPairRow = new LinearLayout(this);
-        camPlayerPairRow.setOrientation(LinearLayout.HORIZONTAL);
-        pairingCodeInput = new EditText(this);
-        pairingCodeInput.setSingleLine(true);
-        pairingCodeInput.setHint("Pairing code");
-        pairingCodeInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        pairButton = new Button(this);
-        pairButton.setText("Pair");
-        camPlayerPairRow.addView(pairingCodeInput,
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        camPlayerPairRow.addView(pairButton);
-        root.addView(camPlayerPairRow);
+        LinearLayout camPlayerConnectRow = new LinearLayout(this);
+        camPlayerConnectRow.setGravity(Gravity.END);
+        connectButton = new Button(this);
+        connectButton.setText("Connect");
+        camPlayerConnectRow.addView(connectButton);
+        root.addView(camPlayerConnectRow);
 
         camPlayerDiscoveryLabel = new TextView(this);
         camPlayerDiscoveryLabel.setText("Cam Player is not connected");
         camPlayerDiscoveryLabel.setTextColor(0xff455a64);
         root.addView(camPlayerDiscoveryLabel);
-
-        LinearLayout camPlayerFindRow = new LinearLayout(this);
-        camPlayerFindRow.setGravity(Gravity.END);
-        findCamPlayerButton = new Button(this);
-        findCamPlayerButton.setText("Find on network");
-        camPlayerFindRow.addView(findCamPlayerButton);
-        root.addView(camPlayerFindRow);
 
         selectedFileLabel = new TextView(this);
         selectedFileLabel.setText("No file selected");
@@ -265,9 +267,8 @@ public class SourceActivity extends Activity {
                 rtspInput.setVisibility("RTSP".equals(mode) ? View.VISIBLE : View.GONE);
                 boolean camPlayerMode = "Cam Player".equals(mode);
                 camPlayerAddressRow.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
-                camPlayerPairRow.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
+                camPlayerConnectRow.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
                 camPlayerDiscoveryLabel.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
-                camPlayerFindRow.setVisibility(camPlayerMode ? View.VISIBLE : View.GONE);
                 pickButton.setEnabled("Video".equals(mode) || "Photo".equals(mode));
                 pickButton.setVisibility(camPlayerMode || "RTSP".equals(mode) ? View.GONE : View.VISIBLE);
             }
@@ -278,8 +279,7 @@ public class SourceActivity extends Activity {
         });
 
         pickButton.setOnClickListener(view -> pickFile());
-        pairButton.setOnClickListener(view -> pairCamPlayer());
-        findCamPlayerButton.setOnClickListener(view -> findCamPlayer());
+        connectButton.setOnClickListener(view -> connectCamPlayer());
         startButton.setOnClickListener(view -> startSelectedSource());
         stopButton.setOnClickListener(view -> stopSource());
         logButton.setOnClickListener(view -> showLogDialog());
@@ -308,12 +308,6 @@ public class SourceActivity extends Activity {
             uriText = camPlayerInput.getText().toString().trim();
             if (uriText.isEmpty()) {
                 showError("Enter the Cam Player address");
-                return;
-            }
-            String token = getSharedPreferences(CAM_PLAYER_PREFERENCES, MODE_PRIVATE)
-                    .getString(PREF_CAM_PLAYER_TOKEN, "");
-            if (token.isEmpty()) {
-                showError("Pair Source with Cam Player first");
                 return;
             }
             getSharedPreferences(CAM_PLAYER_PREFERENCES, MODE_PRIVATE).edit()
@@ -373,59 +367,49 @@ public class SourceActivity extends Activity {
         }
     }
 
-    private void pairCamPlayer() {
+    private void connectCamPlayer() {
         String address = camPlayerInput.getText().toString().trim();
-        String code = pairingCodeInput.getText().toString().trim();
-        if (address.isEmpty() || code.isEmpty()) {
-            showError("Enter the Cam Player address and pairing code");
+        if (address.isEmpty()) {
+            showError("Enter the Cam Player address");
             return;
         }
-        pairButton.setEnabled(false);
-        camPlayerDiscoveryLabel.setText("Pairing...");
+        connectButton.setEnabled(false);
+        camPlayerDiscoveryLabel.setText("Connecting...");
         networkExecutor.execute(() -> {
             try {
-                String token = CamPlayerClient.pair(
-                        address,
-                        code,
-                        Build.MANUFACTURER + " " + Build.MODEL
-                );
+                org.json.JSONObject status = new CamPlayerClient(address, "").status();
                 getSharedPreferences(CAM_PLAYER_PREFERENCES, MODE_PRIVATE).edit()
                         .putString(PREF_CAM_PLAYER_ADDRESS, address)
-                        .putString(PREF_CAM_PLAYER_TOKEN, token)
                         .apply();
-                AppLog.info(this, "Cam Player paired address=" + address);
+                AppLog.info(this, "Cam Player connected manually address=" + address
+                        + " version=" + status.optString("version", "unknown"));
                 runOnUiThread(() -> {
-                    pairButton.setEnabled(true);
-                    pairingCodeInput.setText("");
-                    camPlayerDiscoveryLabel.setText("Cam Player paired");
-                    Toast.makeText(this, "Cam Player paired", Toast.LENGTH_SHORT).show();
+                    connectButton.setEnabled(true);
+                    camPlayerDiscoveryLabel.setText("Cam Player connected");
+                    Toast.makeText(this, "Cam Player connected", Toast.LENGTH_SHORT).show();
                 });
             } catch (Throwable throwable) {
-                AppLog.error(this, "Cam Player pairing failed", throwable);
+                AppLog.error(this, "Cam Player connection failed", throwable);
                 runOnUiThread(() -> {
-                    pairButton.setEnabled(true);
-                    camPlayerDiscoveryLabel.setText("Pairing failed");
+                    connectButton.setEnabled(true);
+                    camPlayerDiscoveryLabel.setText("Connection failed");
                     showError(throwable.getMessage() == null
-                            ? "Unable to pair Cam Player" : throwable.getMessage());
+                            ? "Unable to connect Cam Player" : throwable.getMessage());
                 });
             }
         });
     }
 
-    private void findCamPlayer() {
-        findCamPlayerButton.setEnabled(false);
-        camPlayerDiscoveryLabel.setText("Searching for Cam Player...");
+    private void startCamPlayerDiscovery() {
+        if (diagnosticsOnly || camPlayerInput == null) return;
+        camPlayerDiscoveryLabel.setText("Looking for Cam Player...");
         if (camPlayerDiscovery == null) {
             camPlayerDiscovery = new CamPlayerDiscovery(this, new CamPlayerDiscovery.Listener() {
                 @Override
                 public void onEndpoint(String name, String address) {
                     AppLog.info(SourceActivity.this,
                             "Cam Player discovered name=" + name + " address=" + address);
-                    runOnUiThread(() -> {
-                        camPlayerInput.setText(address);
-                        camPlayerDiscoveryLabel.setText(name + " at " + address);
-                        findCamPlayerButton.setEnabled(true);
-                    });
+                    selectDiscoveredAddress(name, address);
                 }
 
                 @Override
@@ -433,13 +417,69 @@ public class SourceActivity extends Activity {
                     AppLog.info(SourceActivity.this, message);
                     runOnUiThread(() -> {
                         camPlayerDiscoveryLabel.setText(message);
-                        findCamPlayerButton.setEnabled(true);
                     });
                 }
             });
         }
         camPlayerDiscovery.start();
-        camPlayerDiscoveryLabel.postDelayed(() -> findCamPlayerButton.setEnabled(true), 8_000);
+    }
+
+    private void registerNetworkDiscovery() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || networkCallback != null) return;
+        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                runOnUiThread(() -> {
+                    if (!activityStarted) return;
+                    AppLog.info(SourceActivity.this, "Network available; refreshing Cam Player discovery");
+                    startCamPlayerDiscovery();
+                });
+            }
+        };
+        connectivityManager.registerNetworkCallback(new NetworkRequest.Builder().build(), networkCallback);
+    }
+
+    private void selectDiscoveredAddress(String name, String address) {
+        networkExecutor.execute(() -> {
+            String selected = address;
+            String route = "Wi-Fi";
+            try {
+                org.json.JSONObject status = new CamPlayerClient(address, "").status();
+                org.json.JSONArray interfaces = status.optJSONArray("interfaces");
+                if (interfaces != null) {
+                    int playerPort = status.optInt("port", 8791);
+                    String preferredRoute = getSharedPreferences(CAM_PLAYER_PREFERENCES, MODE_PRIVATE)
+                            .getString(PREF_CAM_PLAYER_ROUTE, "USB");
+                    for (int i = 0; i < interfaces.length(); i++) {
+                        org.json.JSONObject item = interfaces.optJSONObject(i);
+                        if (item != null && preferredRoute.equals(item.optString("route"))) {
+                            String candidate = item.optString("address", "") + ":" + playerPort;
+                            try {
+                                new CamPlayerClient(candidate, "").status();
+                                selected = candidate;
+                                route = preferredRoute;
+                                break;
+                            } catch (Throwable unavailable) {
+                                AppLog.info(this, "Preferred Cam Player route unavailable route="
+                                        + preferredRoute + " address=" + candidate);
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable error) {
+                AppLog.info(this, "Cam Player route inspection failed " + error);
+            }
+            final String endpoint = selected;
+            final String selectedRoute = route;
+            getSharedPreferences(CAM_PLAYER_PREFERENCES, MODE_PRIVATE).edit()
+                    .putString(PREF_CAM_PLAYER_ADDRESS, endpoint)
+                    .apply();
+            runOnUiThread(() -> {
+                camPlayerInput.setText(endpoint);
+                camPlayerDiscoveryLabel.setText(name + " via " + selectedRoute + " at " + endpoint);
+            });
+        });
     }
 
     private void stopSource() {

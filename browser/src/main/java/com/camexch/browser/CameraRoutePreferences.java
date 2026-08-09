@@ -15,7 +15,7 @@ final class CameraRoutePreferences {
 
     CameraRouteMode getMode() {
         return CameraRouteMode.fromString(
-                preferences.getString(PREF_MODE, CameraRouteMode.AUTO.name()));
+                preferences.getString(PREF_MODE, CameraRouteMode.SOURCE.name()));
     }
 
     void setMode(CameraRouteMode mode) {

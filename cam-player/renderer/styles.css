@@ -310,10 +310,16 @@ dd {
   white-space: pre-line;
 }
 
-.pairing {
-  font-family: Consolas, monospace;
-  font-size: 20px;
-  line-height: 1;
+.profile-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 7px;
+  align-items: end;
+}
+
+.profile-row label,
+.profile-row select {
+  min-width: 0;
 }
 
 #toast {
