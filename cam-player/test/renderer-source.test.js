@@ -26,7 +26,7 @@ test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("paces the latest decoded video frame and keeps paused or photo sources alive", () => {
+test("paces timestamped decoded video frames and keeps paused or photo sources alive", () => {
   assert.match(
     renderer,
     /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000 \/ idleFps\)/,
@@ -35,12 +35,16 @@ test("paces the latest decoded video frame and keeps paused or photo sources ali
   assert.match(renderer, /function requestCanvasFrame\(force = false\)/);
   assert.match(renderer, /!force && now - lastCanvasFrameRequestAt < \(1000 \/ requestedFps\) \* 0\.85/);
   assert.match(renderer, /video\.requestVideoFrameCallback\(callback\)/);
-  assert.match(renderer, /renderFrame\(false, metadata, \{ submit: false \}\)/);
+  assert.match(renderer, /new VideoFrame\(video, \{ timestamp: timestampUs \}\)/);
+  assert.match(renderer, /videoFrameQueue\.enqueue\(captureQueuedVideoFrame\(metadata\)\)/);
   assert.match(renderer, /function startVideoTransportScheduler\(\)/);
-  assert.match(renderer, /queue=latest-frame-only/);
-  assert.match(renderer, /renderFrame\(true, latestDecodedFrameMetadata, \{ submit: false, measureCadence: false \}\)/);
+  assert.match(renderer, /queue=timestamped-video-frame/);
+  assert.match(renderer, /sourceFrame: queued\.frame/);
   assert.match(renderer, /requestCanvasFrame\(true\)/);
-  assert.match(renderer, /latestDecodedFrameSequence === lastSubmittedFrameSequence/);
+  assert.match(renderer, /queued\.frame\.close\(\)/);
+  assert.match(renderer, /queueDepth=/);
+  assert.match(renderer, /queueDrops=/);
+  assert.doesNotMatch(renderer, /latestDecodedFrameSequence/);
   assert.match(renderer, /stopPausedFrameHeartbeat\(\);[\s\S]*stopVideoTransportScheduler\(\);[\s\S]*playing = true;[\s\S]*await video\.play\(\)/);
   assert.match(renderer, /video\.pause\(\);[\s\S]*stopVideoTransportScheduler\(\);[\s\S]*reportPlaybackCadence\("pause"/);
   assert.match(renderer, /stopVideoFrameLoop\(\);[\s\S]*stopVideoTransportScheduler\(\);[\s\S]*stopPausedFrameHeartbeat\(\)/);

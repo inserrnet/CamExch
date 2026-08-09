@@ -9,7 +9,7 @@ Last reviewed: 2026-08-10
 
 Relevant deployed engines at the time of review:
 
-- Cam Player 0.5.7: Electron 39.2.7 / Chromium 142.0.7444.235.
+- Cam Player 0.6.0: Electron 39.2.7 / Chromium 142.0.7444.235.
 - Browser 0.6.18: Android System WebView 150.0.7871.181.
 
 The specifications and Chromium main branch can change. Recheck the linked
@@ -64,11 +64,14 @@ MP4 `mediaTime` is therefore not carried through the canvas track.
 
 Consequences for Cam Player:
 
-- Use decoded `mediaTime` to replace a single latest-frame slot; never enqueue
-  decoded frames.
-- Submit that latest slot on a deadline-corrected clock at the effective source
-  FPS. If decode presentation is late, hold the latest image for one deadline
-  and replace it with the newest image without replaying skipped content.
+- Capture each accepted presentation as a timestamped WebCodecs `VideoFrame`.
+- Prime with two frames and retain at most three. This absorbs the measured
+  callback bursts without allowing a growing latency queue.
+- Submit frames in media timestamp order on a deadline-corrected clock at the
+  effective source FPS. If the queue overflows, close and drop its oldest frame.
+- Never submit the same retained frame twice during healthy playback. If the
+  queue temporarily empties, hold the already visible canvas without generating
+  an extra stale transport frame.
 - The deadline scheduler is the only playing-video caller of `requestFrame()`.
 - Do not submit a paused heartbeat frame after playback startup begins.
 - Do not use an immediate redraw of the pause frame as a substitute for an
@@ -143,9 +146,12 @@ For `Pause -> Play`:
 1. Enter a playback-starting state.
 2. Stop the paused/static heartbeat before calling `video.play()`.
 3. If `video.play()` fails, restore paused state and heartbeat.
-4. Wait for the first fresh `requestVideoFrameCallback` result.
-5. Upload, compose, and request one canvas frame for that decoded frame.
-6. Continue with one canvas submission per accepted decoded frame.
+4. Wait for two fresh `requestVideoFrameCallback` results, bounded by a short
+   startup timeout so low-rate sources can begin with one frame.
+5. Upload, compose, submit, and close one retained `VideoFrame` per transport
+   deadline.
+6. Keep transformations independent from queue consumption and clear retained
+   frames on pause, seek, loop discontinuity, media replacement, and shutdown.
 
 For `Play -> Pause`:
 
@@ -158,6 +164,13 @@ Every transition must log its generation, source `mediaTime`,
 `presentedFrames`, and the owner of the next canvas submission.
 
 ## Current Diagnostic Interpretation
+
+The 2026-08-10 Browser 0.6.19 / Player 0.5.9 test proved that the single latest
+frame slot was not sufficient. Player encoded and Browser decoded 23-25 FPS
+with zero packet loss, drops, freezes, PLI, FIR, or NACK, but Player repeated
+29-43 stale canvas frames per five-second interval. Callback arrivals reached
+67-83 ms while source media timestamps remained exactly 41.7 ms apart. Player
+0.6.0 therefore uses the bounded timestamped queue described above.
 
 The 2026-08-09 Browser 0.6.18 / Player 0.5.7 test does not prove that playing
 video decoded at only 10-17 FPS. Its five-second Browser samples mixed a 10 FPS

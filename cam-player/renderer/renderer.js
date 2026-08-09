@@ -301,9 +301,9 @@ let backgroundSnapshotMirrored = false;
 let videoFrameCallbackId = null;
 let videoTransportTimer = null;
 let videoTransportDeadline = 0;
-let latestDecodedFrameMetadata = null;
-let latestDecodedFrameSequence = 0;
-let lastSubmittedFrameSequence = 0;
+const videoFrameQueue = new CamVideoFrameQueue.Queue({ maximum: 3, prime: 2 });
+let videoQueueWaitStartedAt = 0;
+let videoFrameCaptureFailures = 0;
 let pausedFrameTimer = null;
 let timelineTimer = null;
 let cadenceStartedAt = 0;
@@ -318,6 +318,10 @@ let cadenceRequestIntervalsMs = [];
 let cadenceLastDecodedAt = 0;
 let cadenceSubmittedFrames = 0;
 let cadenceRepeatedFrames = 0;
+let cadenceQueueUnderruns = 0;
+let cadenceQueueFrameAgeMs = 0;
+let cadenceQueueMaximumFrameAgeMs = 0;
+let cadenceQueueFramesSubmitted = 0;
 let cadenceMediaIntervalsMs = [];
 let cadenceLastMediaTime = null;
 let cadenceProcessingTimeMs = 0;
@@ -657,7 +661,7 @@ function applyOutputSize(width, height, reason, options = {}) {
   if (persist) savePreferences();
 }
 
-function uploadSource() {
+function uploadSource(frameSource = sourceElement) {
   if (!sourceElement || !sourceWidth || !sourceHeight) return false;
   try {
     gl.activeTexture(gl.TEXTURE0);
@@ -691,7 +695,7 @@ function uploadSource() {
         0,
         gl.RGBA,
         gl.UNSIGNED_BYTE,
-        sourceElement,
+        frameSource,
       );
       sourceTextureDirty = false;
       sourceMipmapsValid = false;
@@ -769,7 +773,7 @@ function renderFrame(force, frameMetadata = null, options = {}) {
     }
   }
   const renderStartedAt = performance.now();
-  if (!uploadSource()) return false;
+  if (!uploadSource(options.sourceFrame || sourceElement)) return false;
   const size = sourceDimensions();
   const t = transform();
   const handheld = handheldController.output(canvas.width, canvas.height);
@@ -833,12 +837,17 @@ function resetPlaybackCadence(state = playing ? "playing" : "idle") {
   cadenceLastDecodedAt = 0;
   cadenceSubmittedFrames = 0;
   cadenceRepeatedFrames = 0;
+  cadenceQueueUnderruns = 0;
+  cadenceQueueFrameAgeMs = 0;
+  cadenceQueueMaximumFrameAgeMs = 0;
+  cadenceQueueFramesSubmitted = 0;
   cadenceMediaIntervalsMs = [];
   cadenceLastMediaTime = null;
   cadenceProcessingTimeMs = 0;
   cadenceMaxProcessingTimeMs = 0;
   cadenceFirstPresentedFrame = null;
   cadenceLastPresentedFrame = null;
+  videoFrameQueue.resetMetrics();
 }
 
 function configuredMaximumFps() {
@@ -895,6 +904,12 @@ function reportPlaybackCadence(reason = "periodic", force = false) {
       + `renderedFps=${(cadenceRenderedFrames / elapsedSeconds).toFixed(1)} `
       + `submittedFps=${(cadenceSubmittedFrames / elapsedSeconds).toFixed(1)} `
       + `filtered=${cadenceSkippedFrames} repeated=${cadenceRepeatedFrames} `
+      + `queueDepth=${videoFrameQueue.size} queueMax=${videoFrameQueue.maximumDepth} `
+      + `queueDrops=${videoFrameQueue.dropped} queueDuplicates=${videoFrameQueue.duplicates} `
+      + `timestampRegressions=${videoFrameQueue.regressions} queueUnderruns=${cadenceQueueUnderruns} `
+      + `frameAgeAvgMs=${(cadenceQueueFramesSubmitted
+        ? cadenceQueueFrameAgeMs / cadenceQueueFramesSubmitted : 0).toFixed(1)} `
+      + `frameAgeMaxMs=${cadenceQueueMaximumFrameAgeMs.toFixed(1)} `
       + `renderAvgMs=${averageRenderMs.toFixed(2)} `
       + `renderMaxMs=${cadenceMaxRenderTimeMs.toFixed(2)} `
       + `decodedIntervalMs=${decodedTiming.p50.toFixed(1)}/${decodedTiming.p95.toFixed(1)}/${decodedTiming.maximum.toFixed(1)} `
@@ -923,25 +938,49 @@ function stopVideoTransportScheduler() {
   clearTimeout(videoTransportTimer);
   videoTransportTimer = null;
   videoTransportDeadline = 0;
-  latestDecodedFrameMetadata = null;
-  latestDecodedFrameSequence = 0;
-  lastSubmittedFrameSequence = 0;
+  videoQueueWaitStartedAt = 0;
+  videoFrameQueue.clear();
 }
 
 function startVideoTransportScheduler() {
   stopVideoTransportScheduler();
   if (!playing || sourceKind !== "video") return;
+  videoQueueWaitStartedAt = performance.now();
   const tick = () => {
     videoTransportTimer = null;
     if (!playing || sourceKind !== "video") return;
     const fps = effectiveMediaFps();
     const now = performance.now();
-    renderFrame(true, latestDecodedFrameMetadata, { submit: false, measureCadence: false });
-    if (requestCanvasFrame(true)) {
-      if (latestDecodedFrameSequence === lastSubmittedFrameSequence) {
-        cadenceRepeatedFrames += 1;
+    const frameIntervalMs = 1000 / fps;
+    const primeTimeoutMs = Math.min(150, frameIntervalMs * 3);
+    const primeTimedOut = performance.now() - videoQueueWaitStartedAt >= primeTimeoutMs;
+    const queued = videoFrameQueue.dequeue(primeTimedOut);
+    if (!queued) {
+      cadenceQueueUnderruns += 1;
+      const stillPriming = !primeTimedOut;
+      videoTransportTimer = setTimeout(tick, stillPriming ? 4 : Math.min(12, frameIntervalMs / 3));
+      return;
+    }
+    if (videoTransportDeadline <= 0) videoTransportDeadline = now;
+    const frameAgeMs = Math.max(0, now - queued.enqueuedAt);
+    cadenceQueueFrameAgeMs += frameAgeMs;
+    cadenceQueueMaximumFrameAgeMs = Math.max(cadenceQueueMaximumFrameAgeMs, frameAgeMs);
+    cadenceQueueFramesSubmitted += 1;
+    sourceTextureDirty = true;
+    try {
+      if (renderFrame(true, queued.metadata, {
+        sourceFrame: queued.frame,
+        submit: false,
+      })) {
+        cadenceRenderedFrames += 1;
+        requestCanvasFrame(true);
+        if (playbackNeedsKeyFrame) {
+          playbackNeedsKeyFrame = false;
+          scheduleKeyFrame("fresh playback frame", 0);
+        }
       }
-      lastSubmittedFrameSequence = latestDecodedFrameSequence;
+    } finally {
+      queued.frame.close();
     }
     const timing = CamFrameCadence.nextDeadline(videoTransportDeadline, now, fps);
     videoTransportDeadline = timing.deadline;
@@ -950,7 +989,25 @@ function startVideoTransportScheduler() {
   videoTransportDeadline = performance.now();
   videoTransportTimer = setTimeout(tick, 0);
   log(`Playback transport scheduler started fps=${effectiveMediaFps().toFixed(3)} `
-    + "queue=latest-frame-only");
+    + `queue=timestamped-video-frame prime=${videoFrameQueue.prime} max=${videoFrameQueue.maximum}`);
+}
+
+function captureQueuedVideoFrame(metadata) {
+  const mediaTime = Number(metadata?.mediaTime);
+  const timestampUs = Math.max(0, Math.round(
+    (Number.isFinite(mediaTime) ? mediaTime : video.currentTime || 0) * 1_000_000,
+  ));
+  if (typeof VideoFrame !== "function") {
+    throw new Error("WebCodecs VideoFrame is unavailable");
+  }
+  const frame = new VideoFrame(video, { timestamp: timestampUs });
+  return {
+    frame,
+    metadata,
+    mediaTime: timestampUs / 1_000_000,
+    timestampUs,
+    enqueuedAt: performance.now(),
+  };
 }
 
 function scheduleVideoFrame() {
@@ -985,17 +1042,20 @@ function scheduleVideoFrame() {
       cadenceLastPresentedFrame = presentedFrames;
     }
     observeMediaFrameRate(metadata);
-    sourceTextureDirty = true;
-    latestDecodedFrameMetadata = metadata;
-    latestDecodedFrameSequence += 1;
-    if (renderFrame(false, metadata, { submit: false })) {
-      cadenceRenderedFrames += 1;
-      if (playbackNeedsKeyFrame) {
-        playbackNeedsKeyFrame = false;
-        scheduleKeyFrame("fresh playback frame", 0);
+    try {
+      const result = videoFrameQueue.enqueue(captureQueuedVideoFrame(metadata));
+      if (!result.accepted) cadenceSkippedFrames += 1;
+      if (result.regression) {
+        videoTransportDeadline = 0;
+        videoQueueWaitStartedAt = performance.now();
+        log(`Playback timestamp reset mediaTime=${Number(mediaTime).toFixed(6)} queueCleared=true`);
       }
-    } else {
+    } catch (error) {
+      videoFrameCaptureFailures += 1;
       cadenceSkippedFrames += 1;
+      if (videoFrameCaptureFailures === 1 || videoFrameCaptureFailures % 60 === 0) {
+        log(`VideoFrame capture failed count=${videoFrameCaptureFailures} ${error}`);
+      }
     }
     reportPlaybackCadence("periodic");
     scheduleVideoFrame();
@@ -1288,6 +1348,7 @@ async function loadMedia(file) {
     sourceKind = "";
     lastRenderedMediaTime = null;
     detectedMediaFps = Number.isFinite(Number(file.fps)) ? Number(file.fps) : 0;
+    videoFrameCaptureFailures = 0;
     mediaFrameTimes = [];
     uploadedTextureWidth = 0;
     uploadedTextureHeight = 0;
@@ -2647,6 +2708,13 @@ timeline.addEventListener("input", () => {
     video.currentTime = (Number(timeline.value) / 1000) * video.duration;
   }
 });
+video.addEventListener("seeking", () => {
+  videoFrameQueue.clear();
+  videoTransportDeadline = 0;
+  videoQueueWaitStartedAt = performance.now();
+  lastRenderedMediaTime = null;
+  log(`Playback queue cleared reason=seek positionMs=${Math.round(video.currentTime * 1000)}`);
+});
 video.addEventListener("seeked", () => {
   sourceTextureDirty = true;
   renderFrame(true);
@@ -2734,6 +2802,7 @@ for (const input of [fpsInput, followSiteToggle]) {
     if (input === fpsInput) {
       lastRenderedMediaTime = null;
       resetPlaybackCadence(playing ? "playing" : "paused");
+      if (playing) startVideoTransportScheduler();
       scheduleSenderQualityRefresh("maximum FPS changed");
     }
     savePreferences();

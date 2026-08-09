@@ -186,6 +186,38 @@
     const bootstrap = setInterval(paintLatest, 40);
     await video.play();
     clearInterval(bootstrap);
+    const capturedFrame = await new Promise((resolve, reject) => {
+      video.requestVideoFrameCallback((_now, metadata) => {
+        try {
+          resolve(new VideoFrame(video, {
+            timestamp: Math.max(0, Math.round(Number(metadata.mediaTime || 0) * 1_000_000)),
+          }));
+        } catch (error) {
+          reject(error);
+        }
+      });
+      paintLatest();
+    });
+    const uploadCanvas = document.createElement("canvas");
+    uploadCanvas.width = capturedFrame.displayWidth;
+    uploadCanvas.height = capturedFrame.displayHeight;
+    const uploadGl = uploadCanvas.getContext("webgl2");
+    const uploadTexture = uploadGl.createTexture();
+    uploadGl.bindTexture(uploadGl.TEXTURE_2D, uploadTexture);
+    uploadGl.texImage2D(
+      uploadGl.TEXTURE_2D, 0, uploadGl.RGBA,
+      capturedFrame.displayWidth, capturedFrame.displayHeight,
+      0, uploadGl.RGBA, uploadGl.UNSIGNED_BYTE, null,
+    );
+    uploadGl.texSubImage2D(
+      uploadGl.TEXTURE_2D, 0, 0, 0,
+      uploadGl.RGBA, uploadGl.UNSIGNED_BYTE, capturedFrame,
+    );
+    if (uploadGl.getError() !== uploadGl.NO_ERROR) {
+      throw new Error("WebCodecs VideoFrame WebGL upload failed");
+    }
+    capturedFrame.close();
+    progress("WebCodecs VideoFrame WebGL upload ready=true");
     const presentedAt = [];
     let observing = true;
     const observe = (now) => {

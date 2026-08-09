@@ -38,22 +38,29 @@ schedulers, sessions, or routes can conflict in the complete pipeline.
 
 These rules are release blockers.
 
-- While a video is playing, `metadata.mediaTime` is the master clock for which
-  source frame is current; callback arrival time must not become the WebRTC
-  capture timestamp.
-- Use `requestVideoFrameCallback` to replace one latest decoded-frame slot.
-- Submit the latest slot on a deadline-corrected transport clock at the source
-  cadence. A late callback may repeat the current frame for one deadline, but
-  must never enqueue or replay obsolete frames afterward.
+- While a video is playing, `metadata.mediaTime` is the master clock for source
+  frame order; callback arrival time must not become the WebRTC capture order.
+- Use `requestVideoFrameCallback` to retain timestamped `VideoFrame` objects in
+  a two-frame primed queue with a hard maximum of three frames.
+- Submit retained frames in timestamp order on a deadline-corrected transport
+  clock. Never replace an unseen frame merely because callbacks arrived in a
+  burst.
+- Queue overflow drops and closes the oldest frame. Pause, seek, media changes,
+  loop timestamp resets, and shutdown close every retained `VideoFrame`.
+- Source zoom, pan, mirror, rotation, and motion transform the selected frame
+  without consuming another queued frame or changing media time.
 - Maximum FPS is a ceiling, not a forced output rate.
 - A source below the ceiling keeps its native cadence: `24 -> 24`, `30 -> 30`,
   and `60 -> 60`.
 - A source above the ceiling is reduced evenly using media timestamps, for
   example `60 -> 30`; it must not use callback arrival time for frame selection.
-- Do not accumulate decoded frames in a queue. Keep the newest usable frame and
-  discard obsolete work without replaying delayed motion.
 - The decoded-frame callback updates content only. The transport scheduler owns
   playing-video `requestFrame()` calls; no second playing scheduler may submit.
+- Cadence logs include queue depth, maximum depth, frame age, overflow drops,
+  underruns, duplicate timestamps, and timestamp regressions.
+- With healthy decoding, repeated submitted frames remain zero. The bounded
+  queue may add at most roughly three source-frame intervals and must never grow
+  into accumulated playback delay.
 - GPU texture storage is allocated only when dimensions change. Ordinary frames
   update existing texture storage.
 - Decide whether a frame is needed before expensive upload, composition, and
