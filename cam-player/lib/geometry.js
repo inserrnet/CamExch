@@ -291,13 +291,12 @@
   function shouldRenderMediaFrame(previousMediaTime, currentMediaTime, maximumFps) {
     const current = Number(currentMediaTime);
     const previous = previousMediaTime == null ? Number.NaN : Number(previousMediaTime);
-    const fps = Math.max(1, Math.min(60, Number(maximumFps) || 30));
-    if (!Number.isFinite(current)
-        || !Number.isFinite(previous)
-        || current <= previous) {
-      return true;
-    }
-    return current - previous >= (1 / fps) * 0.9;
+    if (!Number.isFinite(current) || !Number.isFinite(previous)) return true;
+    if (current === previous) return false;
+    // requestVideoFrameCallback already follows decoded media cadence. Submit
+    // every fresh frame and let RTCRtpSender enforce a configured FPS ceiling.
+    // A backwards timestamp is a seek or loop discontinuity and starts a new epoch.
+    return true;
   }
 
   function targetVideoBitrate(width, height, framesPerSecond) {

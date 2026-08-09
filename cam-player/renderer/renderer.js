@@ -276,6 +276,8 @@ let sourceMirrored = false;
 let currentFile = null;
 let memoryTimer = null;
 let playing = false;
+let playbackGeneration = 0;
+let playbackNeedsKeyFrame = false;
 let previewZoom = 1;
 let previewPanX = 0;
 let previewPanY = 0;
@@ -310,6 +312,12 @@ let cadenceFrameIntervalsMs = [];
 let cadenceRequestIntervalsMs = [];
 let cadenceLastDecodedAt = 0;
 let cadenceSubmittedFrames = 0;
+let cadenceMediaIntervalsMs = [];
+let cadenceLastMediaTime = null;
+let cadenceProcessingTimeMs = 0;
+let cadenceMaxProcessingTimeMs = 0;
+let cadenceFirstPresentedFrame = null;
+let cadenceLastPresentedFrame = null;
 let detectedMediaFps = 0;
 let mediaFrameTimes = [];
 let backgroundSnapshotReady = false;
@@ -789,6 +797,10 @@ function renderFrame(force, frameMetadata = null, options = {}) {
 }
 
 function emitBootstrapFrames(reason, count = 4, intervalMs = 80) {
+  if (sourceKind === "video" && playing) {
+    log(`Canvas bootstrap skipped during playback reason=${reason}`);
+    return;
+  }
   let remaining = Math.max(1, count);
   const emit = () => {
     if (!canvasTrack || peers.size === 0) return;
@@ -812,6 +824,12 @@ function resetPlaybackCadence(state = playing ? "playing" : "idle") {
   cadenceRequestIntervalsMs = [];
   cadenceLastDecodedAt = 0;
   cadenceSubmittedFrames = 0;
+  cadenceMediaIntervalsMs = [];
+  cadenceLastMediaTime = null;
+  cadenceProcessingTimeMs = 0;
+  cadenceMaxProcessingTimeMs = 0;
+  cadenceFirstPresentedFrame = null;
+  cadenceLastPresentedFrame = null;
 }
 
 function configuredMaximumFps() {
@@ -846,10 +864,11 @@ function observeMediaFrameRate(metadata) {
     + `effective=${effectiveMediaFps().toFixed(3)} samples=${intervals.length}`);
 }
 
-function reportPlaybackCadence() {
+function reportPlaybackCadence(reason = "periodic", force = false) {
   const now = performance.now();
   const elapsedMs = now - cadenceStartedAt;
-  if (elapsedMs < 5000) return;
+  if (!force && elapsedMs < 5000) return;
+  if (elapsedMs < 250 || cadenceDecodedFrames === 0) return;
   const elapsedSeconds = Math.max(0.001, elapsedMs / 1000);
   const averageRenderMs = cadenceRenderedFrames
     ? cadenceRenderTimeMs / cadenceRenderedFrames
@@ -857,8 +876,12 @@ function reportPlaybackCadence() {
   const expectedFps = effectiveMediaFps();
   const decodedTiming = CamGeometry.cadenceStatistics(cadenceFrameIntervalsMs, expectedFps);
   const requestTiming = CamGeometry.cadenceStatistics(cadenceRequestIntervalsMs, expectedFps);
+  const mediaTiming = CamGeometry.cadenceStatistics(cadenceMediaIntervalsMs, expectedFps);
+  const presentedDelta = cadenceFirstPresentedFrame == null || cadenceLastPresentedFrame == null
+    ? 0
+    : Math.max(0, cadenceLastPresentedFrame - cadenceFirstPresentedFrame);
   log(
-    `Playback cadence state=${cadenceState} `
+    `Playback cadence state=${cadenceState} cadence reason=${reason} `
       + `decodedFps=${(cadenceDecodedFrames / elapsedSeconds).toFixed(1)} `
       + `renderedFps=${(cadenceRenderedFrames / elapsedSeconds).toFixed(1)} `
       + `submittedFps=${(cadenceSubmittedFrames / elapsedSeconds).toFixed(1)} `
@@ -867,6 +890,9 @@ function reportPlaybackCadence() {
       + `renderMaxMs=${cadenceMaxRenderTimeMs.toFixed(2)} `
       + `decodedIntervalMs=${decodedTiming.p50.toFixed(1)}/${decodedTiming.p95.toFixed(1)}/${decodedTiming.maximum.toFixed(1)} `
       + `requestIntervalMs=${requestTiming.p50.toFixed(1)}/${requestTiming.p95.toFixed(1)}/${requestTiming.maximum.toFixed(1)} `
+      + `mediaIntervalMs=${mediaTiming.p50.toFixed(1)}/${mediaTiming.p95.toFixed(1)}/${mediaTiming.maximum.toFixed(1)} `
+      + `processingAvgMs=${(cadenceDecodedFrames ? cadenceProcessingTimeMs / cadenceDecodedFrames : 0).toFixed(2)} `
+      + `processingMaxMs=${cadenceMaxProcessingTimeMs.toFixed(2)} presentedDelta=${presentedDelta} `
       + `lateDecoded=${decodedTiming.late}/${decodedTiming.samples} `
       + `lateRequests=${requestTiming.late}/${requestTiming.samples} `
       + `output=${canvas.width}x${canvas.height}`,
@@ -896,14 +922,37 @@ function scheduleVideoFrame() {
       if (cadenceFrameIntervalsMs.length > 600) cadenceFrameIntervalsMs.shift();
     }
     cadenceLastDecodedAt = _now;
+    const mediaTime = Number(metadata?.mediaTime);
+    if (Number.isFinite(mediaTime)) {
+      if (Number.isFinite(cadenceLastMediaTime) && mediaTime > cadenceLastMediaTime) {
+        cadenceMediaIntervalsMs.push((mediaTime - cadenceLastMediaTime) * 1000);
+        if (cadenceMediaIntervalsMs.length > 600) cadenceMediaIntervalsMs.shift();
+      }
+      cadenceLastMediaTime = mediaTime;
+    }
+    const processingDuration = Number(metadata?.processingDuration);
+    if (Number.isFinite(processingDuration) && processingDuration >= 0) {
+      const processingMs = processingDuration * 1000;
+      cadenceProcessingTimeMs += processingMs;
+      cadenceMaxProcessingTimeMs = Math.max(cadenceMaxProcessingTimeMs, processingMs);
+    }
+    const presentedFrames = Number(metadata?.presentedFrames);
+    if (Number.isFinite(presentedFrames)) {
+      if (cadenceFirstPresentedFrame == null) cadenceFirstPresentedFrame = presentedFrames;
+      cadenceLastPresentedFrame = presentedFrames;
+    }
     observeMediaFrameRate(metadata);
     sourceTextureDirty = true;
     if (renderFrame(false, metadata, { forceSubmit: true })) {
       cadenceRenderedFrames += 1;
+      if (playbackNeedsKeyFrame) {
+        playbackNeedsKeyFrame = false;
+        scheduleKeyFrame("fresh playback frame", 0);
+      }
     } else {
       cadenceSkippedFrames += 1;
     }
-    reportPlaybackCadence();
+    reportPlaybackCadence("periodic");
     scheduleVideoFrame();
   };
   if (typeof video.requestVideoFrameCallback === "function") {
@@ -996,7 +1045,7 @@ function requestKeyFrames(reason) {
       }
     }
   }
-  const fallbackAllowed = /^(output|media loaded|playback started|playback paused|video seek|source reset|source rotation)/.test(reason);
+  const fallbackAllowed = /^(output|media loaded|playback paused|video seek|source reset|source rotation)/.test(reason);
   if (unsupported) {
     keyFrameGenerationUnsupported = true;
     log("Sender generateKeyFrame unavailable; using one rendered frame for keyframe-worthy changes");
@@ -1014,7 +1063,7 @@ function scheduleKeyFrame(reason, delayMs = 180) {
   keyFrameTimer = setTimeout(() => requestKeyFrames(reason), delayMs);
 }
 
-function selectedCandidatePair(report) {
+function selectedCandidatePairDetails(report) {
   let pair = null;
   report.forEach((entry) => {
     if (entry.type === "transport" && entry.selectedCandidatePairId) {
@@ -1037,7 +1086,22 @@ function selectedCandidatePair(report) {
     ? `${candidate.address || candidate.ip || "?"}:${candidate.port || "?"}`
       + `/${candidate.protocol || "?"}/${candidate.candidateType || "?"}`
     : "unknown";
-  return `${describe(local)} -> ${describe(remote)}`;
+  return {
+    route: `${describe(local)} -> ${describe(remote)}`,
+    localAddress: String(local?.address || local?.ip || ""),
+    remoteAddress: String(remote?.address || remote?.ip || ""),
+  };
+}
+
+function selectedCandidatePair(report) {
+  return selectedCandidatePairDetails(report)?.route || null;
+}
+
+function preferredRouteHost(value) {
+  const route = String(value || "").trim();
+  if (!route) return "";
+  if (route.startsWith("[")) return route.slice(1, route.indexOf("]"));
+  return route.replace(/:\d+$/, "");
 }
 
 function recordActiveRoute(route) {
@@ -1048,18 +1112,21 @@ function recordActiveRoute(route) {
   if (currentServerInfo) applyServerInfo(currentServerInfo);
 }
 
-async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs) {
+async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs, preferredRoute = "") {
   const startedAt = performance.now();
+  const preferredHost = preferredRouteHost(preferredRoute);
   let lastRoute = "";
   let lastEncodedSize = "0x0";
   let lastCodec = "unknown";
+  let encodedAtExpectedSize = false;
   while (performance.now() - startedAt < timeoutMs) {
     const report = await pc.getStats();
-    const route = selectedCandidatePair(report);
+    const routeDetails = selectedCandidatePairDetails(report);
+    const route = routeDetails?.route || "";
     if (route && route !== lastRoute) {
       lastRoute = route;
       recordActiveRoute(route);
-      log(`WebRTC route id=${id} ${route}`);
+      log(`WebRTC provisional route id=${id} ${route} preferred=${preferredHost || "automatic"}`);
     }
     let encoded = 0;
     let encodedWidth = 0;
@@ -1077,9 +1144,13 @@ async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs) {
       }
     });
     lastEncodedSize = `${encodedWidth}x${encodedHeight}`;
-    if (encoded > 0
-        && encodedWidth === expected.width
-        && encodedHeight === expected.height) {
+    encodedAtExpectedSize = encoded > 0
+      && encodedWidth === expected.width
+      && encodedHeight === expected.height;
+    const preferredRouteReady = !preferredHost || routeDetails?.localAddress === preferredHost;
+    if (encodedAtExpectedSize && preferredRouteReady) {
+      log(`WebRTC final route validated id=${id} route=${route || "pending"} `
+        + `preferred=${preferredHost || "automatic"}`);
       return {
         encoded,
         route,
@@ -1088,8 +1159,14 @@ async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs) {
         codec: lastCodec,
       };
     }
-    renderFrame(true);
+    if (!(sourceKind === "video" && playing)) renderFrame(true);
     await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  if (encodedAtExpectedSize && preferredHost) {
+    const routeError = new Error(`preferred route ${preferredHost} was not selected; `
+      + `lastRoute=${lastRoute || "pending"}`);
+    routeError.routeOnly = true;
+    throw routeError;
   }
   throw new Error(`encoder did not produce exact ${expected.width}x${expected.height} `
     + `in ${timeoutMs}ms; lastEncodedSize=${lastEncodedSize}; lastCodec=${lastCodec}`);
@@ -1268,27 +1345,37 @@ async function loadMedia(file) {
 
 async function play() {
   if (sourceKind !== "video") return;
+  const generation = ++playbackGeneration;
+  stopPausedFrameHeartbeat();
+  stopVideoFrameLoop();
+  playing = true;
+  playbackNeedsKeyFrame = true;
+  lastRenderAt = 0;
+  resetPlaybackCadence("playing");
   try {
     await video.play();
-    playing = true;
-    lastRenderAt = 0;
-    lastRenderedMediaTime = null;
-    resetPlaybackCadence("playing");
-    stopPausedFrameHeartbeat();
+    if (generation !== playbackGeneration || !playing) return;
     updateTrackContentHint("playback started");
-    scheduleKeyFrame("playback started", 0);
     scheduleVideoFrame();
     updateOutputLabel();
     log("Playback started");
   } catch (error) {
+    if (generation === playbackGeneration) {
+      playing = false;
+      playbackNeedsKeyFrame = false;
+      updatePausedFrameHeartbeat();
+    }
     log(`Playback failed ${error}`);
   }
 }
 
 function pause() {
   if (sourceKind !== "video") return;
+  playbackGeneration += 1;
   video.pause();
+  reportPlaybackCadence("pause", true);
   playing = false;
+  playbackNeedsKeyFrame = false;
   stopVideoFrameLoop();
   resetPlaybackCadence("paused");
   updateOutputLabel();
@@ -1505,7 +1592,14 @@ function closePeer(id, reason) {
 }
 
 async function handleOffer(payload) {
-  const { id, sdp, constraints, orientation, sessionId = "" } = payload;
+  const {
+    id,
+    sdp,
+    constraints,
+    orientation,
+    sessionId = "",
+    preferredRoute = "",
+  } = payload;
   const activeOutputBeforeOffer = { width: canvas.width, height: canvas.height };
   try {
     const existingPeerIds = Array.from(peers.keys());
@@ -1670,14 +1764,27 @@ async function handleOffer(payload) {
     emitBootstrapFrames(`offer ${id} answered`, 1, 100);
     (async () => {
       try {
-        return await waitForFirstEncodedFrame(pc, id, expectedOutput, 3500);
+        return await waitForFirstEncodedFrame(
+          pc,
+          id,
+          expectedOutput,
+          3500,
+          preferredRoute,
+        );
       } catch (firstError) {
+        if (firstError.routeOnly) throw firstError;
         ensureOfferActive(id);
         log(`Encoder first attempt stalled id=${id}; retrying same resolution reason=`
           + `${firstError.message}`);
         await restartCaptureTrackAtCurrentResolution(`offer ${id}`, id);
         ensureOfferActive(id);
-        return waitForFirstEncodedFrame(pc, id, expectedOutput, 4500);
+        return waitForFirstEncodedFrame(
+          pc,
+          id,
+          expectedOutput,
+          4500,
+          preferredRoute,
+        );
       }
     })().then((result) => {
       if (!peers.has(id)) return;

@@ -249,18 +249,21 @@ test("renders every 24 FPS media frame when the output limit is 30 FPS", () => {
   assert.equal(rendered, 120);
 });
 
-test("evenly limits 60 FPS media to 30 FPS using media timestamps", () => {
+test("submits every fresh decoded frame and leaves FPS limiting to WebRTC", () => {
   let previous = null;
-  const renderedFrames = [];
+  let rendered = 0;
   for (let frame = 0; frame < 120; frame += 1) {
     const current = frame / 60;
-    if (geometry.shouldRenderMediaFrame(previous, current, 30)) {
+    if (geometry.shouldRenderMediaFrame(previous, current, 24)) {
       previous = current;
-      renderedFrames.push(frame);
+      rendered += 1;
     }
   }
-  assert.deepEqual(renderedFrames.slice(0, 6), [0, 2, 4, 6, 8, 10]);
-  assert.equal(renderedFrames.length, 60);
+  assert.equal(rendered, 120);
+});
+
+test("rejects duplicate media timestamps", () => {
+  assert.equal(geometry.shouldRenderMediaFrame(4.25, 4.25, 60), false);
 });
 
 test("renders immediately when a looping video's media timestamp resets", () => {

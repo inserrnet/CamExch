@@ -63,18 +63,26 @@ public class VirtualCameraScriptTest {
                 "cadenceMs="));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "totalSquaredInterFrameDelay"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "bufferMs="));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "rtpJitterMs="));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "cadenceBasis="));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "decoder="));
     }
 
     @Test
-    public void sourceReceiverUsesABoundedPacingBuffer() {
+    public void sourceReceiverUsesChromiumAdaptiveBufferingDefaults() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "WebRTC receiver bounded pacing targetMs="));
+                "WebRTC receiver adaptive buffering"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "receiver.playoutDelayHint=null"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "receiver.jitterBufferTarget=null"));
+        assertFalse(VirtualCameraScript.SCRIPT.contains(
                 "Math.max(80,Math.min(120,2000/fps))"));
-        assertFalse(VirtualCameraScript.SCRIPT.contains(
-                "receiver.playoutDelayHint=0"));
-        assertFalse(VirtualCameraScript.SCRIPT.contains(
-                "receiver.jitterBufferTarget=0"));
     }
 
     @Test

@@ -9,14 +9,17 @@ implementation.
 
 Before changing Browser, Source, or Cam Player:
 
-1. Identify every guardrail touched directly or indirectly by the change.
-2. Read the full call path, including cleanup, fallback, pause, reconnect, and
+1. For media timing, canvas capture, receiver buffering, or WebRTC telemetry,
+   first read `CHROMIUM_MEDIA_PIPELINE_NOTES.md` and recheck its linked runtime
+   sources when Chromium, Electron, or Android WebView has changed.
+2. Identify every guardrail touched directly or indirectly by the change.
+3. Read the full call path, including cleanup, fallback, pause, reconnect, and
    orientation handling.
-3. Add or update a regression test before replacing working timing, routing, or
+4. Add or update a regression test before replacing working timing, routing, or
    ownership logic.
-4. Run the relevant component tests and the release matrix below.
-5. Compare logs and behavior with the last known-good build in `GOOD`.
-6. Do not call a release complete when a required scenario was not tested. State
+5. Run the relevant component tests and the release matrix below.
+6. Compare logs and behavior with the last known-good build in `GOOD`.
+7. Do not call a release complete when a required scenario was not tested. State
    the missing verification explicitly.
 
 A unit test for a helper is not sufficient when two independently correct
@@ -53,6 +56,12 @@ These rules are release blockers.
   encoding work whenever possible.
 - Rendering, canvas submission, and WebRTC delivery must preserve monotonically
   increasing media time while playing.
+- Canvas capture assigns capture-clock timestamps and cannot retain the MP4
+  `mediaTime`; one accepted decoded frame therefore owns exactly one canvas
+  submission.
+- Receiver delay overrides are disabled by default. A non-null
+  `playoutDelayHint` or `jitterBufferTarget` requires a measured runtime-specific
+  A/B test because buffer adjustment may repeat or drop video frames.
 
 Historical regressions:
 

@@ -36,6 +36,8 @@ test("uses decoded video cadence and keeps paused or photo sources alive", () =>
   assert.match(renderer, /!force && now - lastCanvasFrameRequestAt < \(1000 \/ requestedFps\) \* 0\.85/);
   assert.match(renderer, /video\.requestVideoFrameCallback\(callback\)/);
   assert.match(renderer, /renderFrame\(false, metadata, \{ forceSubmit: true \}\)/);
+  assert.match(renderer, /stopPausedFrameHeartbeat\(\);[\s\S]*playing = true;[\s\S]*await video\.play\(\)/);
+  assert.doesNotMatch(renderer, /lastRenderedMediaTime = null;[\s\S]{0,160}resetPlaybackCadence\("playing"\)/);
   assert.doesNotMatch(renderer, /function startVideoTransportScheduler\(\)/);
   assert.doesNotMatch(renderer, /CamFrameCadence\.advanceDeadline/);
   assert.match(renderer, /CamGeometry\.adaptiveFrameRate\([\s\S]*"idle"/);
@@ -48,6 +50,7 @@ test("uses decoded video cadence and keeps paused or photo sources alive", () =>
   assert.match(renderer, /decodedIntervalMs=/);
   assert.match(renderer, /requestIntervalMs=/);
   assert.match(renderer, /filtered=\$\{cadenceSkippedFrames\} repeated=0/);
+  assert.match(renderer, /cadence reason=\$\{reason\}/);
   assert.match(
     renderer,
     /waitForFirstEncodedFrame[\s\S]*renderFrame\(true\)/,
@@ -145,6 +148,7 @@ test("uses content-aware adaptive sender profiles and bounded keyframes", () => 
   assert.match(renderer, /fallbackAllowed/);
   assert.match(renderer, /keyFrameGenerationUnsupported/);
   assert.match(renderer, /using one rendered frame for keyframe-worthy changes/);
+  assert.doesNotMatch(renderer, /fallbackAllowed = \/\^\(output\|media loaded\|playback started/);
   assert.doesNotMatch(renderer, /scheduleKeyFrame\("source zoom"\)/);
   assert.doesNotMatch(renderer, /scheduleKeyFrame\("source drag complete"\)/);
   assert.match(renderer, /replacementStream = canvas\.captureStream\(0\)/);
@@ -163,6 +167,15 @@ test("reuses the healthy canvas capture track between short browser probes", () 
   assert.match(renderer, /emitBootstrapFrames\(`offer \$\{id\} answered`/);
   assert.match(renderer, /emitBootstrapFrames\(`offer \$\{id\} answered`, 1, 100\)/);
   assert.match(renderer, /emitBootstrapFrames\(`same-resolution restart \$\{reason\}`, 2, 150\)/);
+});
+
+test("validates the final Player ICE route without filtering Android candidates", () => {
+  assert.match(renderer, /function selectedCandidatePairDetails\(report\)/);
+  assert.match(renderer, /preferredRouteHost\(preferredRoute\)/);
+  assert.match(renderer, /routeDetails\?\.localAddress === preferredHost/);
+  assert.match(renderer, /WebRTC final route validated/);
+  assert.match(renderer, /if \(firstError\.routeOnly\) throw firstError/);
+  assert.match(renderer, /if \(!\(sourceKind === "video" && playing\)\) renderFrame\(true\)/);
 });
 
 test("releases a decoded photo after preserving its full GPU texture", () => {
