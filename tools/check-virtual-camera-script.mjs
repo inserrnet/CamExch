@@ -23,7 +23,7 @@ for (const marker of [
   "WebRTC track settings size=",
   "WebRTC inbound codec=",
   "WebRTC selected route=",
-  "WebRTC receiver low-latency hints",
+  "WebRTC receiver bounded pacing targetMs=",
   "WebRTC frame latencyMs=",
   "getUserMedia resolved elapsedMs=",
   "getUserMedia route gateway target=",
