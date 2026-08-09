@@ -96,12 +96,20 @@ public class VirtualCameraScriptTest {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "preferIceRoute"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "getCamPlayerRouteInfo"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "configValue.preferredClientRoute=localRouteAddress"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "waitForPreferredRoute"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "Selected Cam Player route has no matching ICE candidate"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "localCandidatesPreserved='+routedOffer.kept"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "strictRoute='+routedAnswer.strict"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "preferIceRoute(pc.localDescription.sdp,localRouteAddress,'browser')"));
+        assertFalse(VirtualCameraScript.SCRIPT.contains(
                 "if(localSide)return {sdp:sdp"));
     }
 
@@ -113,6 +121,10 @@ public class VirtualCameraScriptTest {
                 "resetSharedRtc('pagehide')"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "activeBridgeRequestId||sharedRtcSessionId"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "invalidateManagedSourceEntries(reason)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "Source returned an ended video track"));
     }
 
     @Test

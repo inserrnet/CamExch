@@ -241,6 +241,12 @@ repeated, late, encoder FPS, receiver FPS, dropped frames, packet loss, and
 freeze counters. A visually smooth preview alone is not proof that Browser sees
 the same cadence.
 
+For a strict USB route, both SDP sides must be restricted before negotiation:
+the Browser offer to the phone's local USB address and the Player answer to the
+computer's USB address. A route mismatch is a network failure, never an encoder
+or codec failure. Do not expose a SOURCE track to a page before the selected ICE
+pair is validated, and never retain or reattach an ended SOURCE track.
+
 ## Release Gate
 
 Do not publish artifacts until all of the following are true:

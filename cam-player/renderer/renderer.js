@@ -1918,9 +1918,12 @@ async function handleOffer(payload) {
         : codecChoice.codecs.length
           ? String(codecChoice.codecs[0].mimeType).toLowerCase()
           : "";
-      if (failedMime) {
+      if (!error.routeOnly && failedMime) {
         encoderFailures.set(outputKey, { mime: failedMime, at: performance.now() });
         log(`Encoder codec marked failed output=${outputKey} codec=${failedMime}`);
+      } else if (error.routeOnly) {
+        log(`Preferred route rejected without penalizing codec output=${outputKey} `
+          + `codec=${failedMime || "unknown"}`);
       }
       log(`Encoder readiness failed id=${id} output=${canvas.width}x${canvas.height} `
         + `preferredCodec=${codecChoice.name} reason=${error.message}`);

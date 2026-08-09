@@ -186,6 +186,8 @@ test("validates the final Player ICE route without filtering Android candidates"
   assert.match(renderer, /routeDetails\?\.localAddress === preferredHost/);
   assert.match(renderer, /WebRTC final route validated/);
   assert.match(renderer, /if \(firstError\.routeOnly\) throw firstError/);
+  assert.match(renderer, /if \(!error\.routeOnly && failedMime\)/);
+  assert.match(renderer, /Preferred route rejected without penalizing codec/);
   assert.match(renderer, /if \(!\(sourceKind === "video" && playing\)\) renderFrame\(true\)/);
 });
 

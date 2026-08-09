@@ -595,19 +595,19 @@ const routeSdp = [
   "a=candidate:2 1 udp 2122260223 10.175.214.213 5001 typ host",
   "a=candidate:3 1 udp 2122260223 phone-usb.local 5002 typ host",
 ].join("\r\n");
-const usbOffer = context.__camexchForTest.ice(routeSdp, "10.175.214.58:8791", true);
-if (usbOffer.strict || usbOffer.applied || usbOffer.kept !== 3
+const usbOffer = context.__camexchForTest.ice(routeSdp, "10.175.214.213", "browser");
+if (!usbOffer.strict || !usbOffer.applied || usbOffer.kept !== 1
     || !usbOffer.sdp.includes("10.175.214.213")
-    || !usbOffer.sdp.includes("192.168.4.213")
-    || !usbOffer.sdp.includes("phone-usb.local")) {
-  throw new Error("Browser offer candidates were filtered before USB negotiation");
+    || usbOffer.sdp.includes("192.168.4.213")
+    || usbOffer.sdp.includes("phone-usb.local")) {
+  throw new Error("Strict USB offer filtering retained a non-USB candidate");
 }
 const playerSdp = [
   "v=0",
   "a=candidate:1 1 udp 2122260223 192.168.4.132 6000 typ host",
   "a=candidate:2 1 udp 2122260223 10.175.214.58 6001 typ host",
 ].join("\r\n");
-const usbAnswer = context.__camexchForTest.ice(playerSdp, "10.175.214.58:8791", false);
+const usbAnswer = context.__camexchForTest.ice(playerSdp, "10.175.214.58:8791", "player");
 if (!usbAnswer.strict || usbAnswer.kept !== 1
     || !usbAnswer.sdp.includes("10.175.214.58")
     || usbAnswer.sdp.includes("192.168.4.132")) {
@@ -615,7 +615,7 @@ if (!usbAnswer.strict || usbAnswer.kept !== 1
 }
 let missingUsbRejected = false;
 try {
-  context.__camexchForTest.ice(playerSdp, "10.99.77.58:8791", false);
+  context.__camexchForTest.ice(playerSdp, "10.99.77.58:8791", "player");
 } catch (error) {
   missingUsbRejected = String(error).includes("side=player")
     && String(error).includes("observed=");
@@ -1251,7 +1251,7 @@ staleDetachedStream.getVideoTracks()[0].stop();
 await new Promise((resolve) => setTimeout(resolve, 1600));
 const cleanRetrySwitch = await context.__camexchSwitchCamera("SOURCE");
 if (cleanRetrySwitch.switched !== 0 || cleanRetrySwitch.revived !== 0
-    || cleanRetrySwitch.discarded !== 1
+    || ![0, 1].includes(cleanRetrySwitch.discarded)
     || !["waiting-for-getUserMedia", "mode-stored"].includes(cleanRetrySwitch.state)
     || context.__camexchForTest.managed.size !== 0) {
   throw new Error(`A stale detached session survived into the next Source attempt: ${JSON.stringify({

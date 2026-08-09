@@ -31,8 +31,12 @@ import androidx.media3.exoplayer.rtsp.RtspMediaSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import org.json.JSONObject;
 
 @OptIn(markerClass = UnstableApi.class)
 public class SourceForegroundService extends Service {
@@ -178,6 +182,33 @@ public class SourceForegroundService extends Service {
 
     String getCamPlayerRouteAddress() {
         return "Cam Player".equals(mode) ? currentUri : "";
+    }
+
+    String getCamPlayerRouteInfo() throws Exception {
+        String endpoint = getCamPlayerRouteAddress();
+        JSONObject result = new JSONObject();
+        result.put("endpoint", endpoint);
+        if (endpoint.isEmpty()) {
+            return result.toString();
+        }
+
+        Uri parsed = Uri.parse(endpoint.contains("://") ? endpoint : "http://" + endpoint);
+        String remoteAddress = parsed.getHost();
+        int remotePort = parsed.getPort() > 0 ? parsed.getPort() : 8791;
+        result.put("remoteAddress", remoteAddress == null ? "" : remoteAddress);
+        result.put("remotePort", remotePort);
+        if (remoteAddress == null || remoteAddress.isEmpty()) {
+            return result.toString();
+        }
+
+        try (DatagramSocket socket = new DatagramSocket()) {
+            socket.connect(InetAddress.getByName(remoteAddress), remotePort);
+            String localAddress = socket.getLocalAddress().getHostAddress();
+            result.put("localAddress", localAddress == null ? "" : localAddress);
+            AppLog.info(this, "Cam Player route resolved local=" + localAddress
+                    + " remote=" + remoteAddress + ":" + remotePort);
+        }
+        return result.toString();
     }
 
     String answerBridgeOffer(String offer) throws Exception {

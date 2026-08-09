@@ -35,6 +35,8 @@ public class SourceBridgeProvider extends ContentProvider {
                 result.putString("value", service.getBridgeMode());
             } else if ("route".equals(method)) {
                 result.putString("value", service.getCamPlayerRouteAddress());
+            } else if ("route_info".equals(method)) {
+                result.putString("value", service.getCamPlayerRouteInfo());
             } else if ("offer".equals(method)) {
                 String config = extras == null ? "" : extras.getString("config", "");
                 JSONObject parsed = config.isEmpty() ? new JSONObject() : new JSONObject(config);

@@ -796,6 +796,11 @@ public class BrowserActivity extends Activity {
         }
 
         @JavascriptInterface
+        public String getCamPlayerRouteInfo() {
+            return callString("route_info", null);
+        }
+
+        @JavascriptInterface
         public String answerOffer(String offer) {
             AppLog.info(BrowserActivity.this, "IPC offer length=" + (offer == null ? 0 : offer.length()));
             return callString("offer", offer);
