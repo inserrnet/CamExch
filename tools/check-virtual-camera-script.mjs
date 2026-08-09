@@ -577,7 +577,7 @@ context.CamExchBridge = {
   configureCamPlayer: (config) => {
     sourceConfigureCount += 1;
     lastSourceOfferConfig = JSON.parse(config);
-    return "OK";
+    return JSON.stringify({ ok: true, fps: 24 });
   },
 };
 const testScript = script.replace(
@@ -1091,7 +1091,7 @@ const requestedGeometryStream = await context.__camexchForTest.rtc({
   audio: false,
 });
 if (sourceOfferCount !== firstGeometryOffers
-    || sourceConfigureCount !== 1) {
+    || sourceConfigureCount !== 2) {
   throw new Error("A changed Source geometry rebuilt WebRTC instead of live configuration");
 }
 for (const stream of [firstGeometryStream, sameGeometryStream, requestedGeometryStream]) {
@@ -1114,8 +1114,13 @@ if (onlineSourceSwitch.switched < 1 || onlineSourceSwitch.failed !== 0
   throw new Error("Online Source switch did not install the compatible remote track");
 }
 const sourceSettings = onlineSourceTrack.getSettings();
+const sourceCapabilities = onlineSourceTrack.getCapabilities();
 if (sourceSettings.facingMode !== "environment"
     || sourceSettings.deviceId !== "camexch-back-camera"
+    || sourceSettings.frameRate !== 24
+    || sourceCapabilities.deviceId !== "camexch-back-camera"
+    || sourceCapabilities.frameRate?.min !== 24
+    || sourceCapabilities.frameRate?.max !== 24
     || sourceSettings.width !== TEST_SOURCE_WIDTH
     || sourceSettings.height !== TEST_SOURCE_HEIGHT
     || nativeGetCount !== nativeCountBeforeOnlineSwitch) {

@@ -149,6 +149,12 @@ public class VirtualCameraScriptTest {
                 "reportedSourceFps>=1&&reportedSourceFps<=60"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "Cam Player reported source fps="));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "applySourceConfiguration('initial getUserMedia'"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "caps.deviceId=identity.deviceId"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "caps.frameRate={min:fps,max:fps}"));
     }
 
     @Test

@@ -26,7 +26,7 @@ test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("keeps stable photo and video heartbeats so sites see a live camera", () => {
+test("uses decoded video cadence and keeps paused or photo sources alive", () => {
   assert.match(
     renderer,
     /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000 \/ idleFps\)/,
@@ -34,9 +34,10 @@ test("keeps stable photo and video heartbeats so sites see a live camera", () =>
   assert.doesNotMatch(renderer, /function emitCurrentFrame\(\)/);
   assert.match(renderer, /function requestCanvasFrame\(force = false\)/);
   assert.match(renderer, /!force && now - lastCanvasFrameRequestAt < \(1000 \/ requestedFps\) \* 0\.85/);
-  assert.match(renderer, /function startVideoTransportScheduler\(\)/);
-  assert.match(renderer, /CamFrameCadence\.advanceDeadline/);
-  assert.match(renderer, /requestCanvasFrame\(true\)/);
+  assert.match(renderer, /video\.requestVideoFrameCallback\(callback\)/);
+  assert.match(renderer, /renderFrame\(false, metadata, \{ forceSubmit: true \}\)/);
+  assert.doesNotMatch(renderer, /function startVideoTransportScheduler\(\)/);
+  assert.doesNotMatch(renderer, /CamFrameCadence\.advanceDeadline/);
   assert.match(renderer, /CamGeometry\.adaptiveFrameRate\([\s\S]*"idle"/);
   assert.match(renderer, /!canvasTrack \|\| peers\.size === 0/);
   assert.match(
@@ -46,6 +47,7 @@ test("keeps stable photo and video heartbeats so sites see a live camera", () =>
   assert.match(renderer, /function renderFrame\(force/);
   assert.match(renderer, /decodedIntervalMs=/);
   assert.match(renderer, /requestIntervalMs=/);
+  assert.match(renderer, /filtered=\$\{cadenceSkippedFrames\} repeated=0/);
   assert.match(
     renderer,
     /waitForFirstEncodedFrame[\s\S]*renderFrame\(true\)/,
@@ -141,7 +143,8 @@ test("uses content-aware adaptive sender profiles and bounded keyframes", () => 
   assert.match(renderer, /sourceInteractionActive/);
   assert.match(renderer, /sender\.generateKeyFrame/);
   assert.match(renderer, /fallbackAllowed/);
-  assert.match(renderer, /keyframe fallback \$\{reason\}`, 1/);
+  assert.match(renderer, /keyFrameGenerationUnsupported/);
+  assert.match(renderer, /using one rendered frame for keyframe-worthy changes/);
   assert.doesNotMatch(renderer, /scheduleKeyFrame\("source zoom"\)/);
   assert.doesNotMatch(renderer, /scheduleKeyFrame\("source drag complete"\)/);
   assert.match(renderer, /replacementStream = canvas\.captureStream\(0\)/);
@@ -158,6 +161,8 @@ test("reuses the healthy canvas capture track between short browser probes", () 
   assert.match(renderer, /const localStream = ensureStream\(\)/);
   assert.doesNotMatch(renderer, /freshWhenIdle/);
   assert.match(renderer, /emitBootstrapFrames\(`offer \$\{id\} answered`/);
+  assert.match(renderer, /emitBootstrapFrames\(`offer \$\{id\} answered`, 1, 100\)/);
+  assert.match(renderer, /emitBootstrapFrames\(`same-resolution restart \$\{reason\}`, 2, 150\)/);
 });
 
 test("releases a decoded photo after preserving its full GPU texture", () => {

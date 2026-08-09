@@ -14,18 +14,5 @@
     return Number.isFinite(source) && source > 0 ? Math.min(maximum, source) : maximum;
   }
 
-  function advanceDeadline(deadlineMs, nowMs, fps) {
-    const intervalMs = 1000 / Math.max(1, Number(fps) || 30);
-    const currentDeadline = Number.isFinite(deadlineMs) && deadlineMs > 0
-      ? deadlineMs
-      : nowMs;
-    const lateSlots = Math.max(0, Math.floor((nowMs - currentDeadline) / intervalMs));
-    return {
-      intervalMs,
-      lateSlots,
-      nextDeadlineMs: currentDeadline + ((lateSlots + 1) * intervalMs),
-    };
-  }
-
-  return { effectiveFrameRate, advanceDeadline };
+  return { effectiveFrameRate };
 }));
