@@ -286,7 +286,7 @@ let dragMode = "";
 let dragX = 0;
 let dragY = 0;
 let lastRenderAt = 0;
-let lastRenderedMediaTime = null;
+const mediaFrameSelector = new CamGeometry.MediaFrameSelector();
 let uploadedTextureWidth = 0;
 let uploadedTextureHeight = 0;
 let detailMinificationEnabled = null;
@@ -299,10 +299,6 @@ let backgroundSnapshotHeight = 0;
 let backgroundSnapshotRotation = 0;
 let backgroundSnapshotMirrored = false;
 let videoFrameCallbackId = null;
-let videoTransportTimer = null;
-let videoTransportDeadline = 0;
-const videoFrameQueue = new CamVideoFrameQueue.Queue({ maximum: 3, prime: 2 });
-let videoQueueWaitStartedAt = 0;
 let videoFrameCaptureFailures = 0;
 let pausedFrameTimer = null;
 let timelineTimer = null;
@@ -317,11 +313,8 @@ let cadenceFrameIntervalsMs = [];
 let cadenceRequestIntervalsMs = [];
 let cadenceLastDecodedAt = 0;
 let cadenceSubmittedFrames = 0;
-let cadenceRepeatedFrames = 0;
-let cadenceQueueUnderruns = 0;
-let cadenceQueueFrameAgeMs = 0;
-let cadenceQueueMaximumFrameAgeMs = 0;
-let cadenceQueueFramesSubmitted = 0;
+let cadenceGeneratorDrops = 0;
+let cadenceGeneratorWrites = 0;
 let cadenceMediaIntervalsMs = [];
 let cadenceLastMediaTime = null;
 let cadenceProcessingTimeMs = 0;
@@ -351,8 +344,15 @@ let fileDragDepth = 0;
 let droppedFileLoading = false;
 let stream = null;
 let canvasTrack = null;
-let lastCanvasFrameRequestAt = 0;
-let captureTrackRestartPending = false;
+let trackWriter = null;
+let trackWriteActive = false;
+let pendingTrackFrame = null;
+let trackRestartPending = false;
+let trackFramesCreated = 0;
+let trackFramesWritten = 0;
+let trackFramesDropped = 0;
+let trackWriteFailures = 0;
+const outputTimeline = new CamOutputTimeline.Timeline();
 let peers = new Map();
 let readyPeers = new Set();
 const peerMaintenance = new Map();
@@ -626,7 +626,6 @@ function applyOutputSize(width, height, reason, options = {}) {
   if (w > maximum || h > maximum) {
     throw new Error(`Requested ${w}\u00d7${h} exceeds GPU texture limit ${maximum}`);
   }
-  if (peers.size > 0) captureTrackRestartPending = true;
   canvas.width = w;
   canvas.height = h;
   activeOutputOrigin = origin;
@@ -652,11 +651,7 @@ function applyOutputSize(width, height, reason, options = {}) {
   } else {
     renderFrame(true);
   }
-  if (peers.size > 0) {
-    scheduleCaptureTrackRestart(`output ${reason}`);
-  } else {
-    scheduleSenderQualityRefresh(`output ${reason}`);
-  }
+  scheduleSenderQualityRefresh(`output ${reason}`);
   scheduleKeyFrame(`output ${reason}`, 0);
   if (persist) savePreferences();
 }
@@ -727,34 +722,99 @@ function uploadSource(frameSource = sourceElement) {
   }
 }
 
-function requestCanvasFrame(force = false) {
-  if (captureTrackRestartPending
-      || !canvasTrack
-      || typeof canvasTrack.requestFrame !== "function") return false;
-  const state = (sourceKind === "video" && playing) || motionMode.value !== "off"
-    ? "motion"
-    : sourceInteractionActive
-      ? "interaction"
-      : "idle";
-  const requestedFps = CamGeometry.adaptiveFrameRate(
-    canvas.width,
-    canvas.height,
-    state === "motion" && !(sourceKind === "video" && playing)
-      ? Math.min(30, effectiveMediaFps())
-      : effectiveMediaFps(),
-    state,
-  );
-  const now = performance.now();
-  if (!force && now - lastCanvasFrameRequestAt < (1000 / requestedFps) * 0.85) return false;
-  if (lastCanvasFrameRequestAt > 0) {
-    cadenceRequestIntervalsMs.push(now - lastCanvasFrameRequestAt);
-    if (cadenceRequestIntervalsMs.length > 600) cadenceRequestIntervalsMs.shift();
+function closeVideoFrame(frame) {
+  try {
+    frame?.close?.();
+  } catch (_) {
   }
-  canvasTrack.requestFrame();
-  lastCanvasFrameRequestAt = now;
+}
+
+function discardPendingTrackFrame(reason) {
+  if (!pendingTrackFrame) return;
+  closeVideoFrame(pendingTrackFrame.frame);
+  pendingTrackFrame = null;
+  trackFramesDropped += 1;
+  cadenceGeneratorDrops += 1;
+  if (reason) log(`Generated frame discarded reason=${reason}`);
+}
+
+async function flushGeneratedFrames() {
+  if (trackWriteActive || !trackWriter) return;
+  const writer = trackWriter;
+  trackWriteActive = true;
+  try {
+    while (writer === trackWriter && pendingTrackFrame) {
+      const entry = pendingTrackFrame;
+      pendingTrackFrame = null;
+      if (entry.videoGeneration != null && entry.videoGeneration !== playbackGeneration) {
+        closeVideoFrame(entry.frame);
+        trackFramesDropped += 1;
+        cadenceGeneratorDrops += 1;
+        continue;
+      }
+      try {
+        await writer.write(entry.frame);
+        trackFramesWritten += 1;
+        cadenceGeneratorWrites += 1;
+      } catch (error) {
+        trackWriteFailures += 1;
+        if (writer === trackWriter) {
+          log(`Generated track write failed count=${trackWriteFailures} ${error}`);
+        }
+      } finally {
+        closeVideoFrame(entry.frame);
+      }
+    }
+  } finally {
+    trackWriteActive = false;
+    if (pendingTrackFrame && trackWriter && writer !== trackWriter) {
+      flushGeneratedFrames();
+    }
+  }
+}
+
+function submitGeneratedFrame(options = {}) {
+  if (trackRestartPending || !canvasTrack || !trackWriter || peers.size === 0) return false;
+  const fps = Math.max(1, Number(options.fps) || effectiveMediaFps());
+  const durationUs = Math.max(1, Math.round(1_000_000 / fps));
+  const mediaTime = Number(options.mediaTime);
+  const timing = Number.isFinite(mediaTime)
+    ? outputTimeline.nextVideo(mediaTime, durationUs)
+    : outputTimeline.nextStatic(durationUs);
+  let frame;
+  try {
+    frame = new VideoFrame(canvas, {
+      timestamp: timing.timestampUs,
+      duration: timing.durationUs,
+    });
+  } catch (error) {
+    videoFrameCaptureFailures += 1;
+    if (videoFrameCaptureFailures === 1 || videoFrameCaptureFailures % 60 === 0) {
+      log(`Generated VideoFrame capture failed count=${videoFrameCaptureFailures} ${error}`);
+    }
+    return false;
+  }
+  const now = performance.now();
+  if (cadenceSubmittedFrames > 0 && cadenceState === "playing") {
+    const previous = Number(options.previousSubmitAt) || submitGeneratedFrame.lastSubmittedAt;
+    if (previous > 0) {
+      cadenceRequestIntervalsMs.push(now - previous);
+      if (cadenceRequestIntervalsMs.length > 600) cadenceRequestIntervalsMs.shift();
+    }
+  }
+  submitGeneratedFrame.lastSubmittedAt = now;
+  trackFramesCreated += 1;
   if (playing && cadenceState === "playing") cadenceSubmittedFrames += 1;
+  if (pendingTrackFrame) discardPendingTrackFrame("");
+  pendingTrackFrame = {
+    frame,
+    timestampUs: timing.timestampUs,
+    videoGeneration: options.videoGeneration,
+  };
+  flushGeneratedFrames();
   return true;
 }
+submitGeneratedFrame.lastSubmittedAt = 0;
 
 function renderFrame(force, frameMetadata = null, options = {}) {
   if (mediaLoading || !sourceElement) return false;
@@ -764,7 +824,7 @@ function renderFrame(force, frameMetadata = null, options = {}) {
   const mediaTime = Number(frameMetadata?.mediaTime);
   if (!force) {
     if (Number.isFinite(mediaTime)) {
-      if (!CamGeometry.shouldRenderMediaFrame(lastRenderedMediaTime, mediaTime, activeFps)) {
+      if (!mediaFrameSelector.accept(mediaTime, activeFps)) {
         return false;
       }
     } else {
@@ -795,22 +855,28 @@ function renderFrame(force, frameMetadata = null, options = {}) {
   gl.uniform1i(uniforms.mirrored, sourceMirrored ? 1 : 0);
   gl.uniform1f(uniforms.handheldRoll, handheld.roll);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
-  if (options.submit !== false) requestCanvasFrame(Boolean(options.forceSubmit));
+  const shouldSubmit = options.submit == null
+    ? !(sourceKind === "video" && playing)
+    : options.submit;
+  if (shouldSubmit) {
+    submitGeneratedFrame({
+      mediaTime,
+      fps: options.fps,
+      videoGeneration: options.videoGeneration,
+    });
+  }
   const renderTimeMs = performance.now() - renderStartedAt;
   if (options.measureCadence !== false) {
     cadenceRenderTimeMs += renderTimeMs;
     cadenceMaxRenderTimeMs = Math.max(cadenceMaxRenderTimeMs, renderTimeMs);
   }
   lastRenderAt = now;
-  if (Number.isFinite(mediaTime)) {
-    lastRenderedMediaTime = mediaTime;
-  }
   return true;
 }
 
 function emitBootstrapFrames(reason, count = 4, intervalMs = 80) {
   if (sourceKind === "video" && playing) {
-    log(`Canvas bootstrap skipped during playback reason=${reason}`);
+    log(`Generated track bootstrap skipped during playback reason=${reason}`);
     return;
   }
   let remaining = Math.max(1, count);
@@ -821,7 +887,7 @@ function emitBootstrapFrames(reason, count = 4, intervalMs = 80) {
     if (remaining > 0) setTimeout(emit, intervalMs);
   };
   emit();
-  log(`Canvas bootstrap frames scheduled count=${count} reason=${reason}`);
+  log(`Generated track bootstrap frames scheduled count=${count} reason=${reason}`);
 }
 
 function resetPlaybackCadence(state = playing ? "playing" : "idle") {
@@ -836,18 +902,15 @@ function resetPlaybackCadence(state = playing ? "playing" : "idle") {
   cadenceRequestIntervalsMs = [];
   cadenceLastDecodedAt = 0;
   cadenceSubmittedFrames = 0;
-  cadenceRepeatedFrames = 0;
-  cadenceQueueUnderruns = 0;
-  cadenceQueueFrameAgeMs = 0;
-  cadenceQueueMaximumFrameAgeMs = 0;
-  cadenceQueueFramesSubmitted = 0;
+  cadenceGeneratorDrops = 0;
+  cadenceGeneratorWrites = 0;
   cadenceMediaIntervalsMs = [];
   cadenceLastMediaTime = null;
   cadenceProcessingTimeMs = 0;
   cadenceMaxProcessingTimeMs = 0;
   cadenceFirstPresentedFrame = null;
   cadenceLastPresentedFrame = null;
-  videoFrameQueue.resetMetrics();
+  submitGeneratedFrame.lastSubmittedAt = 0;
 }
 
 function configuredMaximumFps() {
@@ -903,13 +966,8 @@ function reportPlaybackCadence(reason = "periodic", force = false) {
       + `decodedFps=${(cadenceDecodedFrames / elapsedSeconds).toFixed(1)} `
       + `renderedFps=${(cadenceRenderedFrames / elapsedSeconds).toFixed(1)} `
       + `submittedFps=${(cadenceSubmittedFrames / elapsedSeconds).toFixed(1)} `
-      + `filtered=${cadenceSkippedFrames} repeated=${cadenceRepeatedFrames} `
-      + `queueDepth=${videoFrameQueue.size} queueMax=${videoFrameQueue.maximumDepth} `
-      + `queueDrops=${videoFrameQueue.dropped} queueDuplicates=${videoFrameQueue.duplicates} `
-      + `timestampRegressions=${videoFrameQueue.regressions} queueUnderruns=${cadenceQueueUnderruns} `
-      + `frameAgeAvgMs=${(cadenceQueueFramesSubmitted
-        ? cadenceQueueFrameAgeMs / cadenceQueueFramesSubmitted : 0).toFixed(1)} `
-      + `frameAgeMaxMs=${cadenceQueueMaximumFrameAgeMs.toFixed(1)} `
+      + `filtered=${cadenceSkippedFrames} generatorWrites=${cadenceGeneratorWrites} `
+      + `generatorDrops=${cadenceGeneratorDrops} pending=${pendingTrackFrame ? 1 : 0} `
       + `renderAvgMs=${averageRenderMs.toFixed(2)} `
       + `renderMaxMs=${cadenceMaxRenderTimeMs.toFixed(2)} `
       + `decodedIntervalMs=${decodedTiming.p50.toFixed(1)}/${decodedTiming.p95.toFixed(1)}/${decodedTiming.maximum.toFixed(1)} `
@@ -934,88 +992,12 @@ function stopVideoFrameLoop() {
   videoFrameCallbackId = null;
 }
 
-function stopVideoTransportScheduler() {
-  clearTimeout(videoTransportTimer);
-  videoTransportTimer = null;
-  videoTransportDeadline = 0;
-  videoQueueWaitStartedAt = 0;
-  videoFrameQueue.clear();
-}
-
-function startVideoTransportScheduler() {
-  stopVideoTransportScheduler();
-  if (!playing || sourceKind !== "video") return;
-  videoQueueWaitStartedAt = performance.now();
-  const tick = () => {
-    videoTransportTimer = null;
-    if (!playing || sourceKind !== "video") return;
-    const fps = effectiveMediaFps();
-    const now = performance.now();
-    const frameIntervalMs = 1000 / fps;
-    const primeTimeoutMs = Math.min(150, frameIntervalMs * 3);
-    const primeTimedOut = performance.now() - videoQueueWaitStartedAt >= primeTimeoutMs;
-    const queued = videoFrameQueue.dequeue(primeTimedOut);
-    if (!queued) {
-      cadenceQueueUnderruns += 1;
-      const stillPriming = !primeTimedOut;
-      videoTransportTimer = setTimeout(tick, stillPriming ? 4 : Math.min(12, frameIntervalMs / 3));
-      return;
-    }
-    if (videoTransportDeadline <= 0) videoTransportDeadline = now;
-    const frameAgeMs = Math.max(0, now - queued.enqueuedAt);
-    cadenceQueueFrameAgeMs += frameAgeMs;
-    cadenceQueueMaximumFrameAgeMs = Math.max(cadenceQueueMaximumFrameAgeMs, frameAgeMs);
-    cadenceQueueFramesSubmitted += 1;
-    sourceTextureDirty = true;
-    try {
-      if (renderFrame(true, queued.metadata, {
-        sourceFrame: queued.frame,
-        submit: false,
-      })) {
-        cadenceRenderedFrames += 1;
-        requestCanvasFrame(true);
-        if (playbackNeedsKeyFrame) {
-          playbackNeedsKeyFrame = false;
-          scheduleKeyFrame("fresh playback frame", 0);
-        }
-      }
-    } finally {
-      queued.frame.close();
-    }
-    const timing = CamFrameCadence.nextDeadline(videoTransportDeadline, now, fps);
-    videoTransportDeadline = timing.deadline;
-    videoTransportTimer = setTimeout(tick, timing.delay);
-  };
-  videoTransportDeadline = performance.now();
-  videoTransportTimer = setTimeout(tick, 0);
-  log(`Playback transport scheduler started fps=${effectiveMediaFps().toFixed(3)} `
-    + `queue=timestamped-video-frame prime=${videoFrameQueue.prime} max=${videoFrameQueue.maximum}`);
-}
-
-function captureQueuedVideoFrame(metadata) {
-  const mediaTime = Number(metadata?.mediaTime);
-  const timestampUs = Math.max(0, Math.round(
-    (Number.isFinite(mediaTime) ? mediaTime : video.currentTime || 0) * 1_000_000,
-  ));
-  if (typeof VideoFrame !== "function") {
-    throw new Error("WebCodecs VideoFrame is unavailable");
-  }
-  const frame = new VideoFrame(video, { timestamp: timestampUs });
-  return {
-    frame,
-    metadata,
-    mediaTime: timestampUs / 1_000_000,
-    timestampUs,
-    enqueuedAt: performance.now(),
-  };
-}
-
-function scheduleVideoFrame() {
+function scheduleVideoFrame(generation = playbackGeneration) {
   stopVideoFrameLoop();
-  if (!playing || sourceKind !== "video") return;
+  if (!playing || sourceKind !== "video" || generation !== playbackGeneration) return;
   const callback = (_now, metadata) => {
     videoFrameCallbackId = null;
-    if (!playing) return;
+    if (!playing || generation !== playbackGeneration) return;
     cadenceDecodedFrames += 1;
     if (cadenceLastDecodedAt > 0) {
       cadenceFrameIntervalsMs.push(_now - cadenceLastDecodedAt);
@@ -1042,23 +1024,22 @@ function scheduleVideoFrame() {
       cadenceLastPresentedFrame = presentedFrames;
     }
     observeMediaFrameRate(metadata);
-    try {
-      const result = videoFrameQueue.enqueue(captureQueuedVideoFrame(metadata));
-      if (!result.accepted) cadenceSkippedFrames += 1;
-      if (result.regression) {
-        videoTransportDeadline = 0;
-        videoQueueWaitStartedAt = performance.now();
-        log(`Playback timestamp reset mediaTime=${Number(mediaTime).toFixed(6)} queueCleared=true`);
+    sourceTextureDirty = true;
+    if (renderFrame(false, metadata, {
+      submit: true,
+      fps: effectiveMediaFps(),
+      videoGeneration: generation,
+    })) {
+      cadenceRenderedFrames += 1;
+      if (playbackNeedsKeyFrame) {
+        playbackNeedsKeyFrame = false;
+        scheduleKeyFrame("fresh playback frame", 0);
       }
-    } catch (error) {
-      videoFrameCaptureFailures += 1;
+    } else {
       cadenceSkippedFrames += 1;
-      if (videoFrameCaptureFailures === 1 || videoFrameCaptureFailures % 60 === 0) {
-        log(`VideoFrame capture failed count=${videoFrameCaptureFailures} ${error}`);
-      }
     }
     reportPlaybackCadence("periodic");
-    scheduleVideoFrame();
+    scheduleVideoFrame(generation);
   };
   if (typeof video.requestVideoFrameCallback === "function") {
     videoFrameCallbackId = video.requestVideoFrameCallback(callback);
@@ -1075,7 +1056,7 @@ function stopPausedFrameHeartbeat() {
 
 function updatePausedFrameHeartbeat() {
   stopPausedFrameHeartbeat();
-  if (playing || !sourceElement || !canvasTrack || peers.size === 0) return;
+  if (playing || !sourceElement || !canvasTrack || !trackWriter || peers.size === 0) return;
   const state = motionMode.value === "off" ? "idle" : "motion";
   const idleFps = CamGeometry.adaptiveFrameRate(
     canvas.width,
@@ -1086,15 +1067,19 @@ function updatePausedFrameHeartbeat() {
     state,
   );
   renderFrame(true);
-  // Chromium can suppress requestFrame() calls when the canvas has not been
-  // painted again. A real redraw keeps a paused video or photo camera alive.
+  // A low-rate static heartbeat keeps paused video and photos observable as a
+  // live camera track without affecting the playing-video clock.
   pausedFrameTimer = setInterval(() => renderFrame(true), 1000 / idleFps);
   log(`Paused/photo camera heartbeat state=${state} fps=${idleFps} `
     + `output=${canvas.width}x${canvas.height}`);
 }
 
-function discardCaptureStream(reason) {
+function discardGeneratedStream(reason) {
   if (!stream) return;
+  discardPendingTrackFrame("");
+  const previousWriter = trackWriter;
+  trackWriter = null;
+  Promise.resolve(previousWriter?.close?.()).catch(() => {});
   stream.getTracks().forEach((track) => {
     try {
       track.stop();
@@ -1103,17 +1088,20 @@ function discardCaptureStream(reason) {
   });
   stream = null;
   canvasTrack = null;
-  lastCanvasFrameRequestAt = 0;
-  captureTrackRestartPending = false;
-  log(`Canvas capture stream discarded reason=${reason}`);
+  trackRestartPending = false;
+  log(`Generated media stream discarded reason=${reason}`);
 }
 
 function ensureStream() {
   if (stream) return stream;
-  stream = canvas.captureStream(0);
-  canvasTrack = stream.getVideoTracks()[0];
-  lastCanvasFrameRequestAt = 0;
+  if (typeof MediaStreamTrackGenerator !== "function" || typeof VideoFrame !== "function") {
+    throw new Error("MediaStreamTrackGenerator and VideoFrame are required");
+  }
+  canvasTrack = new MediaStreamTrackGenerator({ kind: "video" });
+  trackWriter = canvasTrack.writable.getWriter();
+  stream = new MediaStream([canvasTrack]);
   updateTrackContentHint("stream created");
+  log("Generated video track created transport=MediaStreamTrackGenerator");
   return stream;
 }
 
@@ -1127,9 +1115,9 @@ function updateTrackContentHint(reason) {
   if (canvasTrack.contentHint === desired) return;
   try {
     canvasTrack.contentHint = desired;
-    log(`Canvas contentHint=${canvasTrack.contentHint || "default"} reason=${reason}`);
+    log(`Generated track contentHint=${canvasTrack.contentHint || "default"} reason=${reason}`);
   } catch (error) {
-    log(`Canvas contentHint unavailable reason=${reason} ${error}`);
+    log(`Generated track contentHint unavailable reason=${reason} ${error}`);
   }
 }
 
@@ -1335,18 +1323,20 @@ async function loadMedia(file) {
   const generation = ++mediaGeneration;
   mediaLoading = true;
   try {
+    playbackGeneration += 1;
     stopVideoFrameLoop();
-    stopVideoTransportScheduler();
+    discardPendingTrackFrame("");
     stopPausedFrameHeartbeat();
     video.pause();
     video.removeAttribute("src");
     video.load();
     playing = false;
+    outputTimeline.beginGeneration(0);
     sourceElement = null;
     sourceWidth = 0;
     sourceHeight = 0;
     sourceKind = "";
-    lastRenderedMediaTime = null;
+    mediaFrameSelector.reset();
     detectedMediaFps = Number.isFinite(Number(file.fps)) ? Number(file.fps) : 0;
     videoFrameCaptureFailures = 0;
     mediaFrameTimes = [];
@@ -1455,17 +1445,18 @@ async function play() {
   const generation = ++playbackGeneration;
   stopPausedFrameHeartbeat();
   stopVideoFrameLoop();
-  stopVideoTransportScheduler();
+  discardPendingTrackFrame("");
   playing = true;
   playbackNeedsKeyFrame = true;
   lastRenderAt = 0;
   resetPlaybackCadence("playing");
+  mediaFrameSelector.reset();
+  outputTimeline.beginGeneration(video.currentTime || 0);
   try {
     await video.play();
     if (generation !== playbackGeneration || !playing) return;
     updateTrackContentHint("playback started");
-    scheduleVideoFrame();
-    startVideoTransportScheduler();
+    scheduleVideoFrame(generation);
     updateOutputLabel();
     log("Playback started");
   } catch (error) {
@@ -1482,7 +1473,7 @@ function pause() {
   if (sourceKind !== "video") return;
   playbackGeneration += 1;
   video.pause();
-  stopVideoTransportScheduler();
+  discardPendingTrackFrame("");
   reportPlaybackCadence("pause", true);
   playing = false;
   playbackNeedsKeyFrame = false;
@@ -1517,16 +1508,18 @@ function savePreferences() {
   });
 }
 
-async function restartCaptureTrackAtCurrentResolution(reason, expectedPeerId) {
+async function restartGeneratedTrack(reason, expectedPeerId) {
   const previousStream = stream;
   const previousTrack = canvasTrack;
+  const previousWriter = trackWriter;
   const expectedMaintenance = peerMaintenance.get(expectedPeerId);
   const expectedSender = expectedMaintenance?.sender;
   if (!expectedSender || !peers.has(expectedPeerId)) {
     throw new Error(`Encoder restart superseded before replacement id=${expectedPeerId}`);
   }
-  const replacementStream = canvas.captureStream(0);
-  const replacementTrack = replacementStream.getVideoTracks()[0];
+  const replacementTrack = new MediaStreamTrackGenerator({ kind: "video" });
+  const replacementWriter = replacementTrack.writable.getWriter();
+  const replacementStream = new MediaStream([replacementTrack]);
   try {
     replacementTrack.contentHint = desiredContentHint();
   } catch (_) {
@@ -1534,18 +1527,22 @@ async function restartCaptureTrackAtCurrentResolution(reason, expectedPeerId) {
   try {
     await expectedSender.replaceTrack(replacementTrack);
   } catch (error) {
+    Promise.resolve(replacementWriter.close()).catch(() => {});
     replacementTrack.stop();
     throw error;
   }
   if (!peers.has(expectedPeerId)
       || peerMaintenance.get(expectedPeerId)?.sender !== expectedSender) {
+    Promise.resolve(replacementWriter.close()).catch(() => {});
     replacementTrack.stop();
     throw new Error(`Encoder restart superseded after replacement id=${expectedPeerId}`);
   }
   stream = replacementStream;
   canvasTrack = replacementTrack;
-  lastCanvasFrameRequestAt = 0;
-  captureTrackRestartPending = false;
+  trackWriter = replacementWriter;
+  trackRestartPending = false;
+  discardPendingTrackFrame("");
+  Promise.resolve(previousWriter?.close?.()).catch(() => {});
   previousStream?.getTracks().forEach((track) => {
     if (track !== replacementTrack) {
       try {
@@ -1556,23 +1553,23 @@ async function restartCaptureTrackAtCurrentResolution(reason, expectedPeerId) {
   });
   emitBootstrapFrames(`same-resolution restart ${reason}`, 2, 150);
   updatePausedFrameHeartbeat();
-  log(`Encoder same-resolution restart output=${canvas.width}x${canvas.height} `
+  log(`Generated encoder track restarted output=${canvas.width}x${canvas.height} `
     + `peer=${expectedPeerId} previousTrack=${previousTrack?.id || "none"} `
     + `nextTrack=${replacementTrack.id}`);
 }
 
-function scheduleCaptureTrackRestart(reason) {
-  captureTrackRestartPending = true;
+function scheduleGeneratedTrackRestart(reason) {
+  trackRestartPending = true;
   clearTimeout(captureTrackRestartTimer);
   captureTrackRestartTimer = setTimeout(async () => {
     const activePeerId = Array.from(peers.keys())[0];
     const maintenance = activePeerId ? peerMaintenance.get(activePeerId) : null;
     if (!activePeerId || !maintenance?.sender) {
-      captureTrackRestartPending = false;
+      trackRestartPending = false;
       return;
     }
     try {
-      await restartCaptureTrackAtCurrentResolution(reason, activePeerId);
+      await restartGeneratedTrack(reason, activePeerId);
       if (!peers.has(activePeerId)) return;
       await lockSenderQuality(maintenance.sender, canvas.width, canvas.height);
       maintenance.outputWidth = canvas.width;
@@ -1582,13 +1579,13 @@ function scheduleCaptureTrackRestart(reason) {
       maintenance.encoderStallReports = 0;
       maintenance.encoderStallRecoveryActive = false;
       maintenance.lastEncodedFrames = -1;
-      log(`Capture track restarted after output change peer=${activePeerId} `
+      log(`Generated track recovery completed peer=${activePeerId} `
         + `output=${canvas.width}x${canvas.height} reason=${reason}`);
     } catch (error) {
-      captureTrackRestartPending = false;
+      trackRestartPending = false;
       if (peers.has(activePeerId)) {
         maintenance.codecRecoveryActive = false;
-        log(`Capture track restart failed peer=${activePeerId} reason=${reason} ${error}`);
+        log(`Generated track recovery failed peer=${activePeerId} reason=${reason} ${error}`);
       }
     }
   }, 120);
@@ -1601,11 +1598,7 @@ async function lockSenderQuality(sender, width, height) {
   const configuredFps = configuredMaximumFps();
   const senderState = sourceKind === "video" && playing ? "motion" : "stable";
   const contentFps = sourceKind === "video" ? effectiveMediaFps() : configuredFps;
-  const senderFpsLimit = CamGeometry.senderFrameRateLimit(
-    configuredFps,
-    configuredFps,
-    senderState,
-  );
+  const senderFpsLimit = null;
   const bitrateProfile = CamGeometry.videoBitrateProfile(width, height, contentFps);
   try {
     const parameters = sender.getParameters();
@@ -1732,6 +1725,9 @@ async function handleOffer(payload) {
       statsTimer: null,
       lastOutboundBytes: 0,
       lastOutboundTimestamp: 0,
+      lastFramesSent: 0,
+      lastPacketsSent: 0,
+      lastPacketSendDelay: 0,
       sender: null,
       sessionId,
       preferredCodec: "",
@@ -1832,12 +1828,16 @@ async function handleOffer(payload) {
     if (transceiver && codecChoice.codecs.length && transceiver.setCodecPreferences) {
       transceiver.setCodecPreferences(codecChoice.codecs);
     }
+    const selectedCodecDetails = codecChoice.codecs
+      .map((codec) => `${codec.mimeType}{${codec.sdpFmtpLine || "default"}}`)
+      .join("|");
     log(`Encoder preference id=${id} selected=${codecChoice.name} `
       + `output=${canvas.width}x${canvas.height} highResolution=`
       + `${CamGeometry.isHighResolution(canvas.width, canvas.height)} `
       + `h264=${codecChoice.h264Available} hevc=${codecChoice.hevcAvailable} `
       + `vp9=${codecChoice.vp9Available} remoteH264=${remoteOffersH264} `
-      + `remoteHevc=${remoteOffersHevc} remoteVp9=${remoteOffersVp9}`);
+      + `remoteHevc=${remoteOffersHevc} remoteVp9=${remoteOffersVp9} `
+      + `profiles=${selectedCodecDetails || "default"}`);
     const answer = await pc.createAnswer();
     ensureOfferActive(id);
     const prioritizedAnswerSdp = codecChoice.name === "default"
@@ -1886,7 +1886,7 @@ async function handleOffer(payload) {
         ensureOfferActive(id);
         log(`Encoder first attempt stalled id=${id}; retrying same resolution reason=`
           + `${firstError.message}`);
-        await restartCaptureTrackAtCurrentResolution(`offer ${id}`, id);
+        await restartGeneratedTrack(`offer ${id}`, id);
         ensureOfferActive(id);
         return waitForFirstEncodedFrame(
           pc,
@@ -1965,24 +1965,41 @@ async function handleOffer(payload) {
               maintenance.codecRecoveryActive = true;
               log(`Unexpected software VP9 fallback detected id=${id} `
                 + `output=${canvas.width}x${canvas.height}; restarting H264 at current resolution`);
-              scheduleCaptureTrackRestart("unexpected VP9 recovery");
+              scheduleGeneratedTrackRestart("unexpected VP9 recovery");
             }
           } else if (maintenance && actualCodec !== "unknown") {
             maintenance.unexpectedCodecReports = 0;
           }
           const bytes = Number(entry.bytesSent) || 0;
           const timestamp = Number(entry.timestamp) || performance.now();
+          const framesSent = Number(entry.framesSent) || 0;
+          const packetsSent = Number(entry.packetsSent) || 0;
+          const packetSendDelay = Number(entry.totalPacketSendDelay) || 0;
           let bitrateMbps = 0;
+          let sentFps = 0;
+          let packetSendDelayMs = 0;
           if (maintenance?.lastOutboundTimestamp > 0
               && timestamp > maintenance.lastOutboundTimestamp
               && bytes >= maintenance.lastOutboundBytes) {
+            const intervalSeconds = (timestamp - maintenance.lastOutboundTimestamp) / 1000;
             bitrateMbps = ((bytes - maintenance.lastOutboundBytes) * 8)
-              / ((timestamp - maintenance.lastOutboundTimestamp) / 1000)
+              / intervalSeconds
               / 1_000_000;
+            if (framesSent >= maintenance.lastFramesSent) {
+              sentFps = (framesSent - maintenance.lastFramesSent) / intervalSeconds;
+            }
+            const packetDelta = packetsSent - maintenance.lastPacketsSent;
+            const delayDelta = packetSendDelay - maintenance.lastPacketSendDelay;
+            if (packetDelta > 0 && delayDelta >= 0) {
+              packetSendDelayMs = delayDelta * 1000 / packetDelta;
+            }
           }
           if (maintenance) {
             maintenance.lastOutboundBytes = bytes;
             maintenance.lastOutboundTimestamp = timestamp;
+            maintenance.lastFramesSent = framesSent;
+            maintenance.lastPacketsSent = packetsSent;
+            maintenance.lastPacketSendDelay = packetSendDelay;
           }
           const encodedFrames = Number(entry.framesEncoded) || 0;
           if (maintenance) {
@@ -1995,11 +2012,11 @@ async function handleOffer(payload) {
               renderFrame(true);
               if (maintenance.encoderStallReports >= 2
                   && !maintenance.encoderStallRecoveryActive
-                  && !captureTrackRestartPending) {
+                  && !trackRestartPending) {
                 maintenance.encoderStallRecoveryActive = true;
                 log(`Encoder output stalled id=${id} encoded=${encodedFrames} `
-                  + `reports=${maintenance.encoderStallReports}; restarting capture track`);
-                scheduleCaptureTrackRestart(`stalled encoder ${id}`);
+                  + `reports=${maintenance.encoderStallReports}; restarting generated track`);
+                scheduleGeneratedTrackRestart(`stalled encoder ${id}`);
               }
             }
           }
@@ -2014,11 +2031,14 @@ async function handleOffer(payload) {
           log(`WebRTC outbound id=${id} codec=${actualCodec} `
             + `size=${entry.frameWidth || 0}x${entry.frameHeight || 0} `
             + `fps=${entry.framesPerSecond || 0} encoded=${entry.framesEncoded || 0} `
+            + `sent=${framesSent} sentFps=${sentFps.toFixed(1)} packets=${packetsSent} `
             + `bytes=${bytes} bitrateMbps=${bitrateMbps.toFixed(2)} `
             + `minMbps=${(currentBitrateProfile.minimum / 1_000_000).toFixed(2)} `
             + `targetMbps=${(currentBitrateProfile.maximum / 1_000_000).toFixed(2)} `
             + `avgQp=${averageQp.toFixed(1)} avgEncodeMs=${averageEncodeMs.toFixed(2)} `
+            + `packetSendDelayMs=${packetSendDelayMs.toFixed(2)} `
             + `quality=${entry.qualityLimitationReason || "none"} `
+            + `generated=${trackFramesCreated}/${trackFramesWritten}/${trackFramesDropped} `
             + `sourceUploads=${sourceUploadCount} peers=${peers.size}`);
         });
       } catch (error) {
@@ -2712,11 +2732,15 @@ timeline.addEventListener("input", () => {
   }
 });
 video.addEventListener("seeking", () => {
-  videoFrameQueue.clear();
-  videoTransportDeadline = 0;
-  videoQueueWaitStartedAt = performance.now();
-  lastRenderedMediaTime = null;
-  log(`Playback queue cleared reason=seek positionMs=${Math.round(video.currentTime * 1000)}`);
+  playbackGeneration += 1;
+  const generation = playbackGeneration;
+  stopVideoFrameLoop();
+  discardPendingTrackFrame("");
+  outputTimeline.beginGeneration(video.currentTime || 0);
+  mediaFrameSelector.reset();
+  if (playing) scheduleVideoFrame(generation);
+  log(`Playback generation advanced reason=seek generation=${generation} `
+    + `positionMs=${Math.round(video.currentTime * 1000)}`);
 });
 video.addEventListener("seeked", () => {
   sourceTextureDirty = true;
@@ -2727,7 +2751,7 @@ video.addEventListener("ended", () => {
   if (video.loop || sourceKind !== "video") return;
   playbackGeneration += 1;
   stopVideoFrameLoop();
-  stopVideoTransportScheduler();
+  discardPendingTrackFrame("");
   playing = false;
   playbackNeedsKeyFrame = false;
   resetPlaybackCadence("ended");
@@ -2795,17 +2819,11 @@ document.addEventListener("drop", (event) => {
 });
 for (const input of [fpsInput, followSiteToggle]) {
   input.addEventListener("change", () => {
-    if (input === fpsInput && peers.size === 0 && stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      stream = null;
-      canvasTrack = null;
-    }
     updateOutputLabel();
     renderFrame(true);
     if (input === fpsInput) {
-      lastRenderedMediaTime = null;
+      mediaFrameSelector.reset();
       resetPlaybackCadence(playing ? "playing" : "paused");
-      if (playing) startVideoTransportScheduler();
       scheduleSenderQualityRefresh("maximum FPS changed");
     }
     savePreferences();
@@ -3006,7 +3024,7 @@ window.addEventListener("beforeunload", () => {
   clearInterval(motionRecordingTimer);
   clearTimeout(motionProfileSaveTimer);
   stopVideoFrameLoop();
-  stopVideoTransportScheduler();
+  discardPendingTrackFrame("");
   stopPausedFrameHeartbeat();
   clearInterval(timelineTimer);
   clearInterval(memoryTimer);
@@ -3017,7 +3035,7 @@ window.addEventListener("beforeunload", () => {
   clearTimeout(preferencesSaveTimer);
   if (interactiveRenderFrameId != null) cancelAnimationFrame(interactiveRenderFrameId);
   for (const id of Array.from(peers.keys())) closePeer(id, "renderer unload");
-  stream?.getTracks().forEach((track) => track.stop());
+  discardGeneratedStream("renderer unload");
 });
 
 initialize();

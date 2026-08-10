@@ -40,37 +40,31 @@ These rules are release blockers.
 
 - While a video is playing, `metadata.mediaTime` is the master clock for source
   frame order; callback arrival time must not become the WebRTC capture order.
-- Use `requestVideoFrameCallback` to retain timestamped `VideoFrame` objects in
-  a two-frame primed queue with a hard maximum of three frames.
-- Submit retained frames in timestamp order on a deadline-corrected transport
-  clock. Never replace an unseen frame merely because callbacks arrived in a
-  burst.
-- Queue overflow drops and closes the oldest frame. Pause, seek, media changes,
-  loop timestamp resets, and shutdown close every retained `VideoFrame`.
+- `requestVideoFrameCallback()` is the only playing-video submission owner.
+- Each accepted callback writes one timestamped `VideoFrame` from the composed
+  canvas to a single `MediaStreamTrackGenerator`.
+- `canvas.captureStream()`, `requestFrame()`, and a separate playing-video
+  transport timer are forbidden in Cam Player.
+- Generator backpressure may retain at most one not-yet-written latest frame.
+  Replacing it closes the old frame; stale frames are never replayed later.
 - Source zoom, pan, mirror, rotation, and motion transform the selected frame
-  without consuming another queued frame or changing media time.
-- Maximum FPS is a ceiling, not a forced output rate.
+  without creating another playing-video submission or changing media time.
+- Maximum FPS is a ceiling, not a forced output rate. Reduction is based on
+  source `mediaTime`, never callback wall time or an encoder-side timer.
 - A source below the ceiling keeps its native cadence: `24 -> 24`, `30 -> 30`,
   and `60 -> 60`.
 - A source above the ceiling is reduced evenly using media timestamps, for
   example `60 -> 30`; it must not use callback arrival time for frame selection.
-- The decoded-frame callback updates content only. The transport scheduler owns
-  playing-video `requestFrame()` calls; no second playing scheduler may submit.
-- Cadence logs include queue depth, maximum depth, frame age, overflow drops,
-  underruns, duplicate timestamps, and timestamp regressions.
-- With healthy decoding, repeated submitted frames remain zero. The bounded
-  queue may add at most roughly three source-frame intervals and must never grow
-  into accumulated playback delay.
+- Cadence logs include decoded, rendered, generated, written, replaced, encoded,
+  and sent frame rates plus timestamp spacing and write backpressure.
+- Output timestamps remain strictly monotonic across pause, play, seek, loop,
+  media replacement, and resolution changes while preserving source spacing.
 - GPU texture storage is allocated only when dimensions change. Ordinary frames
   update existing texture storage.
 - Decide whether a frame is needed before expensive upload, composition, and
   encoding work whenever possible.
-- Rendering, canvas submission, and WebRTC delivery must preserve monotonically
-  increasing media time while playing.
-- Canvas capture assigns capture-clock timestamps and cannot retain MP4
-  `mediaTime`. Regular transport deadlines prevent irregular callback arrival
-  from becoming irregular RTP pacing while still retaining only the newest
-  decoded content.
+- Rendering, generated-track submission, and WebRTC delivery preserve
+  monotonically increasing transport time while playing.
 - Receiver delay overrides are disabled by default. A non-null
   `playoutDelayHint` or `jitterBufferTarget` requires a measured runtime-specific
   A/B test because buffer adjustment may repeat or drop video frames.
@@ -111,8 +105,11 @@ Historical regressions:
   a decoded frame with stable non-zero geometry.
 - A paused/static source must still satisfy first-frame readiness.
 - ICE route validation must inspect the selected candidate pair after connection.
-- When USB is selected and available, media must use the USB candidate pair.
-  Wi-Fi remains a fallback only when the selected route is unavailable.
+- The endpoint selected when Source starts is locked for that service session.
+  USB never falls back to Wi-Fi and Wi-Fi never falls back to USB. A route loss
+  stops with an error until the user explicitly starts the source again.
+- Discovery and route probing remain stopped while a Cam Player session is
+  active; they must not compete with media traffic or rewrite the selected IP.
 - Source controls signaling and ownership for Cam Player but does not decode or
   re-encode the Cam Player media stream.
 
@@ -231,10 +228,11 @@ or WebRTC change.
 | `F -> N -> F` and `F -> R -> F` | Correct source every time; no frozen track |
 | Rear camera near/far target | Continuous autofocus remains active |
 | Portrait/landscape rotation | Page and tabs persist; geometry updates correctly |
-| USB selected | Selected ICE candidate pair is USB when available |
+| USB selected | USB candidate pair only; disconnect fails without Wi-Fi fallback |
+| Wi-Fi selected | Wi-Fi candidate pair only; disconnect fails without USB fallback |
 | Follow-site disabled | Manual output resolution remains unchanged |
 | Follow-site enabled | Requested geometry follows physical orientation |
-| Five-minute run | No growing queue, peer leak, encoder leak, or memory climb |
+| Five-minute run | At most one pending frame; no peer/encoder leak or memory climb |
 
 For cadence tests, inspect at least decoded, rendered, submitted, skipped,
 repeated, late, encoder FPS, receiver FPS, dropped frames, packet loss, and

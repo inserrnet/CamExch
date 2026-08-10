@@ -167,6 +167,10 @@ public class SourceForegroundService extends Service {
         return instance;
     }
 
+    boolean isCamPlayerSessionActive() {
+        return "Cam Player".equals(mode) && camPlayerClient != null;
+    }
+
     String getBridgeMode() {
         if ("Error".equals(mode)) {
             throw new IllegalStateException(error.isEmpty() ? "Source is in an error state" : error);

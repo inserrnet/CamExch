@@ -26,33 +26,27 @@ test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("paces timestamped decoded video frames and keeps paused or photo sources alive", () => {
+test("writes timestamped decoded frames directly and keeps static sources alive", () => {
   assert.match(
     renderer,
     /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000 \/ idleFps\)/,
   );
-  assert.doesNotMatch(renderer, /function emitCurrentFrame\(\)/);
-  assert.match(renderer, /function requestCanvasFrame\(force = false\)/);
-  assert.match(renderer, /!force && now - lastCanvasFrameRequestAt < \(1000 \/ requestedFps\) \* 0\.85/);
+  assert.doesNotMatch(renderer, /canvas\.captureStream/);
+  assert.doesNotMatch(renderer, /requestFrame\(\)/);
+  assert.doesNotMatch(renderer, /VideoFrameQueue/);
+  assert.doesNotMatch(renderer, /startVideoTransportScheduler/);
   assert.match(renderer, /video\.requestVideoFrameCallback\(callback\)/);
-  assert.match(renderer, /new VideoFrame\(video, \{ timestamp: timestampUs \}\)/);
-  assert.match(renderer, /videoFrameQueue\.enqueue\(captureQueuedVideoFrame\(metadata\)\)/);
-  assert.match(renderer, /function startVideoTransportScheduler\(\)/);
-  assert.match(renderer, /queue=timestamped-video-frame/);
-  assert.match(renderer, /sourceFrame: queued\.frame/);
-  assert.match(renderer, /requestCanvasFrame\(true\)/);
-  assert.match(renderer, /queued\.frame\.close\(\)/);
-  assert.match(renderer, /queueDepth=/);
-  assert.match(renderer, /queueDrops=/);
-  assert.doesNotMatch(renderer, /latestDecodedFrameSequence/);
-  assert.match(renderer, /stopPausedFrameHeartbeat\(\);[\s\S]*stopVideoTransportScheduler\(\);[\s\S]*playing = true;[\s\S]*await video\.play\(\)/);
-  assert.match(renderer, /video\.pause\(\);[\s\S]*stopVideoTransportScheduler\(\);[\s\S]*reportPlaybackCadence\("pause"/);
-  assert.match(renderer, /stopVideoFrameLoop\(\);[\s\S]*stopVideoTransportScheduler\(\);[\s\S]*stopPausedFrameHeartbeat\(\)/);
-  assert.match(renderer, /video\.addEventListener\("ended"[\s\S]*stopVideoTransportScheduler\(\)/);
-  assert.doesNotMatch(renderer, /lastRenderedMediaTime = null;[\s\S]{0,160}resetPlaybackCadence\("playing"\)/);
-  assert.match(renderer, /CamFrameCadence\.nextDeadline/);
-  assert.match(renderer, /CamGeometry\.adaptiveFrameRate\([\s\S]*"idle"/);
-  assert.match(renderer, /!canvasTrack \|\| peers\.size === 0/);
+  assert.match(renderer, /new MediaStreamTrackGenerator\(\{ kind: "video" \}\)/);
+  assert.match(renderer, /trackWriter = canvasTrack\.writable\.getWriter\(\)/);
+  assert.match(renderer, /new VideoFrame\(canvas, \{[\s\S]*timestamp: timing\.timestampUs/);
+  assert.match(renderer, /outputTimeline\.nextVideo\(mediaTime, durationUs\)/);
+  assert.match(renderer, /await writer\.write\(entry\.frame\)/);
+  assert.match(renderer, /if \(pendingTrackFrame\) discardPendingTrackFrame\(""\)/);
+  assert.match(renderer, /entry\.videoGeneration !== playbackGeneration/);
+  assert.match(renderer, /stopPausedFrameHeartbeat\(\);[\s\S]*playing = true;[\s\S]*await video\.play\(\)/);
+  assert.match(renderer, /video\.pause\(\);[\s\S]*discardPendingTrackFrame\(""\)[\s\S]*reportPlaybackCadence\("pause"/);
+  assert.match(renderer, /CamGeometry\.adaptiveFrameRate\(/);
+  assert.match(renderer, /!canvasTrack \|\| !trackWriter \|\| peers\.size === 0/);
   assert.match(
     renderer,
     /const sender = pc\.addTrack[\s\S]*updatePausedFrameHeartbeat\(\)/,
@@ -60,12 +54,10 @@ test("paces timestamped decoded video frames and keeps paused or photo sources a
   assert.match(renderer, /function renderFrame\(force/);
   assert.match(renderer, /decodedIntervalMs=/);
   assert.match(renderer, /requestIntervalMs=/);
-  assert.match(renderer, /filtered=\$\{cadenceSkippedFrames\} repeated=\$\{cadenceRepeatedFrames\}/);
+  assert.match(renderer, /generatorWrites=\$\{cadenceGeneratorWrites\}/);
+  assert.match(renderer, /generatorDrops=\$\{cadenceGeneratorDrops\}/);
   assert.match(renderer, /cadence reason=\$\{reason\}/);
-  assert.match(
-    renderer,
-    /waitForFirstEncodedFrame[\s\S]*renderFrame\(true\)/,
-  );
+  assert.match(renderer, /Generated video track created transport=MediaStreamTrackGenerator/);
 });
 
 test("mirrors the transmitted source and cached background on the GPU", () => {
@@ -162,7 +154,7 @@ test("uses content-aware adaptive sender profiles and bounded keyframes", () => 
   assert.doesNotMatch(renderer, /fallbackAllowed = \/\^\(output\|media loaded\|playback started/);
   assert.doesNotMatch(renderer, /scheduleKeyFrame\("source zoom"\)/);
   assert.doesNotMatch(renderer, /scheduleKeyFrame\("source drag complete"\)/);
-  assert.match(renderer, /replacementStream = canvas\.captureStream\(0\)/);
+  assert.match(renderer, /replacementTrack = new MediaStreamTrackGenerator/);
 });
 
 test("allows only one active WebRTC encoder", () => {
@@ -172,7 +164,7 @@ test("allows only one active WebRTC encoder", () => {
   assert.match(renderer, /sender\.replaceTrack\(null\)/);
 });
 
-test("reuses the healthy canvas capture track between short browser probes", () => {
+test("reuses the healthy generated track between short browser probes", () => {
   assert.match(renderer, /const localStream = ensureStream\(\)/);
   assert.doesNotMatch(renderer, /freshWhenIdle/);
   assert.match(renderer, /emitBootstrapFrames\(`offer \$\{id\} answered`/);
@@ -198,12 +190,11 @@ test("releases a decoded photo after preserving its full GPU texture", () => {
   assert.match(renderer, /sourceKind === "photo" && photoCpuReleased/);
 });
 
-test("replaces the capture track when a live site request changes output geometry", () => {
-  assert.match(renderer, /function scheduleCaptureTrackRestart\(reason\)/);
-  assert.match(renderer, /scheduleCaptureTrackRestart\(`output \$\{reason\}`\)/);
-  assert.match(renderer, /expectedSender\.replaceTrack\(replacementTrack\)/);
-  assert.match(renderer, /if \(captureTrackRestartPending[\s\S]*return false/);
-  assert.match(renderer, /maintenance\.unexpectedCodecReports = 0/);
+test("changes live output geometry atomically without restarting the generated track", () => {
+  assert.match(renderer, /function applyOutputSize\(width, height, reason, options = \{\}\)/);
+  assert.doesNotMatch(renderer, /scheduleGeneratedTrackRestart\(`output \$\{reason\}`\)/);
+  assert.match(renderer, /scheduleSenderQualityRefresh\(`output \$\{reason\}`\)/);
+  assert.match(renderer, /new VideoFrame\(canvas/);
 });
 
 test("recovers from an unexpected software VP9 fallback", () => {
@@ -245,11 +236,11 @@ test("keeps manual and active output states separate", () => {
   assert.doesNotMatch(renderer, /lastWorkingOutput/);
 });
 
-test("recovers a stalled encoder at the same resolution", () => {
-  assert.match(renderer, /restartCaptureTrackAtCurrentResolution/);
+test("recovers a stalled encoder with a new generated track at the same resolution", () => {
+  assert.match(renderer, /restartGeneratedTrack/);
   assert.match(renderer, /Encoder restart superseded after replacement/);
-  assert.match(renderer, /restartCaptureTrackAtCurrentResolution\(`offer \$\{id\}`, id\)/);
-  assert.match(renderer, /Encoder same-resolution restart/);
+  assert.match(renderer, /restartGeneratedTrack\(`offer \$\{id\}`, id\)/);
+  assert.match(renderer, /Generated encoder track restarted/);
   assert.match(renderer, /Encoder output stalled id=/);
   assert.match(renderer, /maintenance\.encoderStallReports >= 2/);
   assert.match(renderer, /encoderFailures\.set/);
@@ -278,10 +269,9 @@ test("migrates the output ceiling to 60 FPS without duplicating media frames", (
   assert.match(renderer, /preferences\.preferencesVersion\) >= 2 \? preferences\.fps \|\| 60 : 60/);
 });
 
-test("keeps one sender FPS ceiling while requestFrame controls cadence", () => {
+test("keeps sender pacing unset while media timestamps control cadence", () => {
   assert.match(renderer, /const configuredFps = configuredMaximumFps\(\)/);
   assert.match(renderer, /const contentFps = sourceKind === "video" \? effectiveMediaFps\(\) : configuredFps/);
-  assert.match(renderer, /CamGeometry\.senderFrameRateLimit/);
   assert.match(renderer, /delete encoding\.maxFramerate/);
   assert.doesNotMatch(renderer, /const configuredFps = effectiveMediaFps\(\)/);
   assert.doesNotMatch(renderer, /scheduleSenderQualityRefresh\(`interaction/);

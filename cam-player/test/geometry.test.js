@@ -237,37 +237,43 @@ test("uses half the former source wheel sensitivity", () => {
 });
 
 test("renders every 24 FPS media frame when the output limit is 30 FPS", () => {
-  let previous = null;
+  const selector = new geometry.MediaFrameSelector();
   let rendered = 0;
   for (let frame = 0; frame < 120; frame += 1) {
     const current = frame / 24;
-    if (geometry.shouldRenderMediaFrame(previous, current, 30)) {
-      previous = current;
-      rendered += 1;
-    }
+    if (selector.accept(current, 30)) rendered += 1;
   }
   assert.equal(rendered, 120);
 });
 
-test("submits every fresh decoded frame and leaves FPS limiting to WebRTC", () => {
-  let previous = null;
+test("reduces 60 FPS to the configured 24 FPS ceiling by media timestamp", () => {
+  const selector = new geometry.MediaFrameSelector();
   let rendered = 0;
   for (let frame = 0; frame < 120; frame += 1) {
     const current = frame / 60;
-    if (geometry.shouldRenderMediaFrame(previous, current, 24)) {
-      previous = current;
-      rendered += 1;
-    }
+    if (selector.accept(current, 24)) rendered += 1;
   }
-  assert.equal(rendered, 120);
+  assert.ok(rendered >= 47 && rendered <= 49, `rendered=${rendered}`);
+});
+
+test("resets media-frame phase after a seek and an FPS change", () => {
+  const selector = new geometry.MediaFrameSelector();
+  assert.equal(selector.accept(10, 24), true);
+  assert.equal(selector.accept(10, 24), false);
+  assert.equal(selector.accept(0, 24), true);
+  assert.equal(selector.accept(1 / 60, 30), true);
 });
 
 test("rejects duplicate media timestamps", () => {
-  assert.equal(geometry.shouldRenderMediaFrame(4.25, 4.25, 60), false);
+  const selector = new geometry.MediaFrameSelector();
+  assert.equal(selector.accept(4.25, 60), true);
+  assert.equal(selector.accept(4.25, 60), false);
 });
 
 test("renders immediately when a looping video's media timestamp resets", () => {
-  assert.equal(geometry.shouldRenderMediaFrame(12.4, 0, 30), true);
+  const selector = new geometry.MediaFrameSelector();
+  assert.equal(selector.accept(12.4, 30), true);
+  assert.equal(selector.accept(0, 30), true);
 });
 
 test("allocates detail-preserving WebRTC bitrate by output size", () => {

@@ -288,15 +288,38 @@
     return Math.exp(-Number(deltaY) * Number(sensitivity));
   }
 
-  function shouldRenderMediaFrame(previousMediaTime, currentMediaTime, maximumFps) {
-    const current = Number(currentMediaTime);
-    const previous = previousMediaTime == null ? Number.NaN : Number(previousMediaTime);
-    if (!Number.isFinite(current) || !Number.isFinite(previous)) return true;
-    if (current === previous) return false;
-    // requestVideoFrameCallback already follows decoded media cadence. Submit
-    // every fresh frame and let RTCRtpSender enforce a configured FPS ceiling.
-    // A backwards timestamp is a seek or loop discontinuity and starts a new epoch.
-    return true;
+  class MediaFrameSelector {
+    constructor() {
+      this.reset();
+    }
+
+    reset() {
+      this.lastSourceSeconds = null;
+      this.nextDeadlineSeconds = null;
+      this.maximumFps = null;
+    }
+
+    accept(sourceSeconds, maximumFps) {
+      const source = Number(sourceSeconds);
+      const ceiling = Math.max(1, Math.min(60, Number(maximumFps) || 30));
+      if (!Number.isFinite(source)) return true;
+      const interval = 1 / ceiling;
+      if (this.maximumFps !== ceiling
+          || this.lastSourceSeconds == null
+          || source < this.lastSourceSeconds) {
+        this.maximumFps = ceiling;
+        this.lastSourceSeconds = source;
+        this.nextDeadlineSeconds = source + interval;
+        return true;
+      }
+      if (source === this.lastSourceSeconds) return false;
+      this.lastSourceSeconds = source;
+      if (source + 0.000001 < this.nextDeadlineSeconds) return false;
+      do {
+        this.nextDeadlineSeconds += interval;
+      } while (this.nextDeadlineSeconds <= source + 0.000001);
+      return true;
+    }
   }
 
   function targetVideoBitrate(width, height, framesPerSecond) {
@@ -554,7 +577,7 @@
     dragInOutputCoordinates,
     rescaleOutputTransform,
     wheelFactor,
-    shouldRenderMediaFrame,
+    MediaFrameSelector,
     targetVideoBitrate,
     videoBitrateProfile,
     adaptiveFrameRate,

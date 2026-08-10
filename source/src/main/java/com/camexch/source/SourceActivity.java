@@ -62,6 +62,7 @@ public class SourceActivity extends Activity {
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
     private boolean activityStarted;
+    private volatile boolean camPlayerRouteLocked;
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -105,23 +106,20 @@ public class SourceActivity extends Activity {
             registerReceiver(statusReceiver, filter);
         }
         receiverRegistered = true;
-        registerNetworkDiscovery();
-        startCamPlayerDiscovery();
+        SourceForegroundService service = SourceForegroundService.getInstance();
+        camPlayerRouteLocked = service != null && service.isCamPlayerSessionActive();
+        if (camPlayerRouteLocked) {
+            camPlayerDiscoveryLabel.setText("Cam Player route locked for active session");
+        } else {
+            registerNetworkDiscovery();
+            startCamPlayerDiscovery();
+        }
     }
 
     @Override
     protected void onStop() {
         activityStarted = false;
-        if (camPlayerDiscovery != null) {
-            camPlayerDiscovery.stop();
-        }
-        if (connectivityManager != null && networkCallback != null) {
-            try {
-                connectivityManager.unregisterNetworkCallback(networkCallback);
-            } catch (IllegalArgumentException ignored) {
-            }
-            networkCallback = null;
-        }
+        stopNetworkDiscovery();
         if (receiverRegistered) {
             unregisterReceiver(statusReceiver);
             receiverRegistered = false;
@@ -313,6 +311,7 @@ public class SourceActivity extends Activity {
             getSharedPreferences(CAM_PLAYER_PREFERENCES, MODE_PRIVATE).edit()
                     .putString(PREF_CAM_PLAYER_ADDRESS, uriText)
                     .apply();
+            lockCamPlayerRoute(uriText);
         } else {
             if (selectedUri == null) {
                 showError("Choose a file first");
@@ -400,12 +399,13 @@ public class SourceActivity extends Activity {
     }
 
     private void startCamPlayerDiscovery() {
-        if (diagnosticsOnly || camPlayerInput == null) return;
+        if (diagnosticsOnly || camPlayerInput == null || camPlayerRouteLocked) return;
         camPlayerDiscoveryLabel.setText("Looking for Cam Player...");
         if (camPlayerDiscovery == null) {
             camPlayerDiscovery = new CamPlayerDiscovery(this, new CamPlayerDiscovery.Listener() {
                 @Override
                 public void onEndpoint(String name, String address) {
+                    if (camPlayerRouteLocked) return;
                     AppLog.info(SourceActivity.this,
                             "Cam Player discovered name=" + name + " address=" + address);
                     selectDiscoveredAddress(name, address);
@@ -415,6 +415,7 @@ public class SourceActivity extends Activity {
                 public void onError(String message) {
                     AppLog.info(SourceActivity.this, message);
                     runOnUiThread(() -> {
+                        if (camPlayerRouteLocked) return;
                         camPlayerDiscoveryLabel.setText(message);
                     });
                 }
@@ -431,6 +432,7 @@ public class SourceActivity extends Activity {
             public void onAvailable(Network network) {
                 runOnUiThread(() -> {
                     if (!activityStarted) return;
+                    if (camPlayerRouteLocked) return;
                     AppLog.info(SourceActivity.this, "Network available; refreshing Cam Player discovery");
                     startCamPlayerDiscovery();
                 });
@@ -440,7 +442,9 @@ public class SourceActivity extends Activity {
     }
 
     private void selectDiscoveredAddress(String name, String address) {
+        if (camPlayerRouteLocked) return;
         networkExecutor.execute(() -> {
+            if (camPlayerRouteLocked) return;
             String selected = address;
             String route = "Wi-Fi";
             try {
@@ -475,6 +479,7 @@ public class SourceActivity extends Activity {
                     .putString(PREF_CAM_PLAYER_ADDRESS, endpoint)
                     .apply();
             runOnUiThread(() -> {
+                if (camPlayerRouteLocked) return;
                 camPlayerInput.setText(endpoint);
                 camPlayerDiscoveryLabel.setText(name + " via " + selectedRoute + " at " + endpoint);
             });
@@ -487,6 +492,32 @@ public class SourceActivity extends Activity {
         startServiceCompat(intent);
         AppLog.info(this, "Stop requested");
         statusLabel.setText("Idle");
+        camPlayerRouteLocked = false;
+        if (activityStarted) {
+            registerNetworkDiscovery();
+            startCamPlayerDiscovery();
+        }
+    }
+
+    private void lockCamPlayerRoute(String endpoint) {
+        camPlayerRouteLocked = true;
+        stopNetworkDiscovery();
+        camPlayerDiscoveryLabel.setText("Route locked: " + endpoint);
+        AppLog.info(this, "Cam Player route locked endpoint=" + endpoint
+                + " fallback=false discovery=false");
+    }
+
+    private void stopNetworkDiscovery() {
+        if (camPlayerDiscovery != null) {
+            camPlayerDiscovery.stop();
+        }
+        if (connectivityManager != null && networkCallback != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback);
+            } catch (IllegalArgumentException ignored) {
+            }
+            networkCallback = null;
+        }
     }
 
     private void startServiceCompat(Intent intent) {

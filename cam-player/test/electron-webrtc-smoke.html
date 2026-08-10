@@ -59,15 +59,18 @@
       context.fillText(`static-${cycle}`, 24, Math.round(height / 2));
     };
     drawStaticFrame();
-    const stream = canvas.captureStream(0);
-    const track = stream.getVideoTracks()[0];
+    const track = new MediaStreamTrackGenerator({ kind: "video" });
+    const writer = track.writable.getWriter();
+    const stream = new MediaStream([track]);
+    let timestampUs = 0;
+    let writeChain = Promise.resolve();
     const present = () => {
-      // Production performs a real GPU redraw. requestFrame() alone can be lost
-      // when the encoder starts after the canvas was last painted.
       drawStaticFrame();
-      track.requestFrame();
+      const frame = new VideoFrame(canvas, { timestamp: timestampUs, duration: 100000 });
+      timestampUs += 100000;
+      writeChain = writeChain.then(() => writer.write(frame)).finally(() => frame.close());
     };
-    progress(`cycle=${cycle} capture track state=${track.readyState}`);
+    progress(`cycle=${cycle} generated track state=${track.readyState}`);
     track.contentHint = "detail";
     const senderPeer = new RTCPeerConnection({ iceServers: [] });
     const receiverPeer = new RTCPeerConnection({ iceServers: [] });
@@ -142,6 +145,25 @@
         `cycle ${cycle} static heartbeat stalled at ${firstHeartbeatFrames} frames`,
       );
     }
+    if (cycle === 1) {
+      canvas.width = 480;
+      canvas.height = 640;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        present();
+        await wait(100);
+        stats = await outboundStats(senderPeer);
+        if (stats.width === 480 && stats.height === 640
+            && video.videoWidth === 480 && video.videoHeight === 640) break;
+      }
+      if (stats.width !== 480 || stats.height !== 640
+          || video.videoWidth !== 480 || video.videoHeight !== 640) {
+        throw new Error(
+          `cycle ${cycle} live resize failed encoded=${stats.width}x${stats.height} `
+            + `decoded=${video.videoWidth}x${video.videoHeight}`,
+        );
+      }
+      progress(`cycle=${cycle} live resize decoded=480x640 track=${track.id}`);
+    }
     clearInterval(bootstrapTimer);
     progress(`cycle=${cycle} encoded frames=${stats.frames}`);
 
@@ -150,6 +172,7 @@
     remoteTrack.stop();
     senderPeer.close();
     receiverPeer.close();
+    await writer.close().catch(() => {});
     stream.getTracks().forEach((candidate) => candidate.stop());
     return { cycle, width, height, frames: stats.frames };
   }
@@ -158,8 +181,9 @@
     progress("latest-frame cadence begin fps=24");
     canvas.width = 640;
     canvas.height = 480;
-    const stream = canvas.captureStream(0);
-    const track = stream.getVideoTracks()[0];
+    const track = new MediaStreamTrackGenerator({ kind: "video" });
+    const writer = track.writable.getWriter();
+    const stream = new MediaStream([track]);
     const senderPeer = new RTCPeerConnection({ iceServers: [] });
     const receiverPeer = new RTCPeerConnection({ iceServers: [] });
     const remoteTrackPromise = new Promise((resolve) => {
@@ -178,10 +202,14 @@
     const remoteTrack = await remoteTrackPromise;
     video.srcObject = new MediaStream([remoteTrack]);
     let latestFrame = 0;
+    let timestampUs = 0;
+    let writeChain = Promise.resolve();
     const paintLatest = () => {
       context.fillStyle = `rgb(${latestFrame % 255},40,80)`;
       context.fillRect(0, 0, canvas.width, canvas.height);
-      track.requestFrame();
+      const frame = new VideoFrame(canvas, { timestamp: timestampUs, duration: 41667 });
+      timestampUs += 41667;
+      writeChain = writeChain.then(() => writer.write(frame)).finally(() => frame.close());
     };
     const bootstrap = setInterval(paintLatest, 40);
     await video.play();
@@ -246,6 +274,7 @@
     remoteTrack.stop();
     senderPeer.close();
     receiverPeer.close();
+    await writer.close().catch(() => {});
     stream.getTracks().forEach((candidate) => candidate.stop());
     return { cycle: "latest-frame-24", frames: presentedAt.length, p95Ms: p95 };
   }
