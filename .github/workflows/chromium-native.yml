@@ -39,7 +39,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, chromium]
     timeout-minutes: 720
     env:
-      CHROMIUM_WORK_ROOT: ${{ runner.tool_cache }}/camexch-native-chromium
+      CHROMIUM_WORK_ROOT: ${{ github.workspace }}/../camexch-native-chromium
 
     steps:
       - name: Checkout CamExch
