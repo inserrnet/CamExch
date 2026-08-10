@@ -9,7 +9,7 @@ Last reviewed: 2026-08-10
 
 Relevant deployed engines at the time of review:
 
-- Cam Player 0.6.4: Electron 39.2.7 / Chromium 142.0.7444.235.
+- Cam Player 0.6.5: Electron 39.2.7 / Chromium 142.0.7444.235.
 - Browser 0.6.21: Android System WebView 150.0.7871.181.
 
 The specifications and Chromium main branch can change. Recheck the linked

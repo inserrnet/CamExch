@@ -249,6 +249,15 @@ or WebRTC change.
 
 ## Generated Frame Transport
 
+- Playing video has exactly one frame publisher: the decoded-frame callback.
+  The frame pacer must reject playing-video submissions and may publish only a
+  paused frame, photo, or Motion-updated static composition. Do not restore a
+  second timer-driven playing-video path.
+- The Browser SOURCE route has exactly one shared latest-frame worker for the
+  incoming receiver track. Construct its processor with `maxBufferSize: 1`, do
+  frame reads/writes in the worker, and give sites clones of its generated
+  output track. Never create one worker or queue per `getUserMedia()` request.
+
 - Never construct a `VideoFrame` directly from the production WebGL canvas when
   its context uses `preserveDrawingBuffer: false`. Copy the just-rendered back
   buffer to the reusable 2D transfer surface first.
@@ -279,6 +288,11 @@ the Browser offer to the phone's local USB address and the Player answer to the
 computer's USB address. A route mismatch is a network failure, never an encoder
 or codec failure. Do not expose a SOURCE track to a page before the selected ICE
 pair is validated, and never retain or reattach an ended SOURCE track.
+
+Cam Player may listen on all interfaces only while waiting for Source
+discovery. After Source presses Start, `/lock-route` must rebind port 8791 to
+the local address that accepted that Source connection, stop Bonjour, and
+disable interface fallback. `/release` restores discovery listening.
 
 ## Release Gate
 

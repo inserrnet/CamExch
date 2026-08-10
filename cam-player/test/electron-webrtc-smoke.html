@@ -3,6 +3,7 @@
 <canvas id="source"></canvas>
 <video id="remote" muted autoplay playsinline></video>
 <script src="../lib/frame-pacer.js"></script>
+<script src="../lib/frame-publish-policy.js"></script>
 <script>
   "use strict";
 
@@ -251,7 +252,14 @@
     let latestFrame = 0;
     let timestampUs = 0;
     let writeChain = Promise.resolve();
-    const transmitLatest = (tick) => {
+    let playing = false;
+    let pacerPlayingSubmissions = 0;
+    const transmitLatest = (owner, tick) => {
+      const publishState = { sourceKind: "video", playing };
+      if (!CamFramePublishPolicy.accepts(owner, publishState)) {
+        if (owner === "pacer" && playing) pacerPlayingSubmissions += 1;
+        return;
+      }
       producerGl.clearColor((latestFrame % 255) / 255, 40 / 255, 80 / 255, 1);
       producerGl.clear(producerGl.COLOR_BUFFER_BIT);
       producerGl.flush();
@@ -261,7 +269,9 @@
       timestampUs += durationUs;
       writeChain = writeChain.then(() => writer.write(frame)).finally(() => frame.close());
     };
-    const productionPacer = new CamFramePacer.Pacer({ onTick: transmitLatest });
+    const productionPacer = new CamFramePacer.Pacer({
+      onTick: (tick) => transmitLatest("pacer", tick),
+    });
     productionPacer.configure({ active: true, fps: 30, immediate: true, reason: "motion-pause" });
     await video.play();
     const capturedFrame = await new Promise((resolve, reject) => {
@@ -304,12 +314,14 @@
       video.requestVideoFrameCallback(observe);
     };
     video.requestVideoFrameCallback(observe);
-    // Exercise the production transition that previously left a motion sender
-    // and heartbeat competing with playback.
-    productionPacer.configure({ active: true, fps: 24, immediate: true, reason: "play" });
+    // Exercise the production transition: the static pacer stops and decoded
+    // callbacks become the only playing-video publisher.
+    playing = true;
+    productionPacer.configure({ active: false, fps: 24, reason: "play" });
     for (let index = 1; index <= 72; index += 1) {
       latestFrame = index;
-      await wait(index % 2 === 0 ? 10 : 73);
+      transmitLatest("decoded", { intervalMs: 1000 / 24 });
+      await wait(1000 / 24);
     }
     await wait(500);
     productionPacer.configure({ active: false, fps: 24, reason: "complete" });
@@ -321,6 +333,9 @@
     // Shared GitHub runners use software WebGL and can miss one 24 FPS presentation slot.
     if (presentedAt.length < 55 || p95 > 85) {
       throw new Error(`latest-frame cadence unstable frames=${presentedAt.length} p95Ms=${p95}`);
+    }
+    if (pacerPlayingSubmissions !== 0) {
+      throw new Error(`playing video received ${pacerPlayingSubmissions} pacer submissions`);
     }
     video.srcObject = null;
     remoteTrack.stop();

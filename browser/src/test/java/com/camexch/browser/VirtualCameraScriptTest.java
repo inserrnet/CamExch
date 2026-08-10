@@ -86,6 +86,14 @@ public class VirtualCameraScriptTest {
     }
 
     @Test
+    public void sourceNegotiationKeepsVp8AsAnInteroperableFallback() {
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "const preferred=h264.concat(vp8,hevc,vp9)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "preferred=H264 fallback=VP8"));
+    }
+
+    @Test
     public void sourceNegotiationIsAsynchronousAndRouteAware() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "beginAnswerOffer"));
@@ -140,15 +148,21 @@ public class VirtualCameraScriptTest {
     }
 
     @Test
-    public void sourcePreservesTheNativeRemoteTrackForSiteCompatibility() {
+    public void sourceUsesABoundedWorkerAndKeepsDirectCompatibilityFallback() {
         assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "if(route==='SOURCE')return createSourceDirectProxy(initialStream)"));
+                "createSourceLatestFrameProxy(initialStream)"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "maxBufferSize:1"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "worker.postMessage({readable:processor.readable,writable:generator.writable}"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "shared source latest-frame path active"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "shared source latest-frame unavailable; receiver clone fallback"));
+        assertTrue(VirtualCameraScript.SCRIPT.contains(
+                "sharedFrameController=bounded"));
         assertTrue(VirtualCameraScript.SCRIPT.contains(
                 "source direct track enabled; Canvas proxy bypassed"));
-        assertTrue(VirtualCameraScript.SCRIPT.contains(
-                "route==='NATIVE'||route==='SOURCE'||isHighResolutionRear"));
-        assertFalse(VirtualCameraScript.SCRIPT.contains(
-                "if(route==='SOURCE')return createStableProxy(initialStream)"));
     }
 
     @Test

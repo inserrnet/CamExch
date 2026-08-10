@@ -58,6 +58,10 @@ final class CamPlayerClient {
         post("/release", new JSONObject(), CONNECT_TIMEOUT_MS);
     }
 
+    JSONObject lockRoute() throws Exception {
+        return post("/lock-route", new JSONObject(), CONNECT_TIMEOUT_MS);
+    }
+
     JSONObject motionConfig() throws Exception {
         HttpURLConnection connection = open("/motion-config", "GET", CONNECT_TIMEOUT_MS);
         try {

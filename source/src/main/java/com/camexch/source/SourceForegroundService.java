@@ -54,7 +54,6 @@ public class SourceForegroundService extends Service {
     private static final String CHANNEL_ID = "virtual_camera_source";
     private static final int NOTIFICATION_ID = 1001;
 
-    private MjpegServer server;
     private WebRtcSessionPublisher publisher;
     private H264FrameBridge directBridge;
     private ExoPlayer player;
@@ -126,13 +125,6 @@ public class SourceForegroundService extends Service {
         AppLog.info(this, "SourceForegroundService.onCreate");
         createChannel();
         updateForegroundTypes(false);
-        try {
-            server = new MjpegServer(() -> publisher, () -> mode);
-            server.start();
-            AppLog.info(this, "Local bridge started on 127.0.0.1:" + MjpegServer.PORT);
-        } catch (Throwable throwable) {
-            reportError("Local server", throwable);
-        }
     }
 
     @Override
@@ -156,10 +148,6 @@ public class SourceForegroundService extends Service {
         camPlayerExecutor.shutdownNow();
         removePlaybackControls();
         releaseVideoPipeline();
-        if (server != null) {
-            server.stop();
-            server = null;
-        }
         super.onDestroy();
     }
 
@@ -338,6 +326,7 @@ public class SourceForegroundService extends Service {
                 try {
                     expectedClient.claim(Build.MANUFACTURER + " " + Build.MODEL);
                     org.json.JSONObject status = expectedClient.status();
+                    org.json.JSONObject routeLock = expectedClient.lockRoute();
                     synchronized (SourceForegroundService.this) {
                         if (camPlayerClient != expectedClient || !"Cam Player".equals(mode)) {
                             return;
@@ -351,7 +340,12 @@ public class SourceForegroundService extends Service {
                             + " output=" + status.optInt("outputWidth", 0) + "x"
                             + status.optInt("outputHeight", 0)
                             + " interfaces=" + String.valueOf(status.optJSONArray("interfaces")));
-                    startCamPlayerMotion(expectedClient);
+                    AppLog.info(this, "Cam Player listener locked address="
+                            + routeLock.optString("address", "unknown")
+                            + ":" + routeLock.optInt("port", 8791)
+                            + " fallback=false");
+                    new Handler(Looper.getMainLooper()).postDelayed(
+                            () -> startCamPlayerMotion(expectedClient), 250);
                 } catch (Throwable throwable) {
                     synchronized (SourceForegroundService.this) {
                         if (camPlayerClient != expectedClient || !"Cam Player".equals(mode)) {

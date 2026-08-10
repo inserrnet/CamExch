@@ -22,6 +22,10 @@ const ffmpegStaticPath = require("ffmpeg-static");
 const { decodeQrImage } = require("./lib/qr-decoder");
 const { cropForNormalized } = require("./lib/qr-selection");
 const { validateProfile } = require("./lib/motion-profile");
+const {
+  isDiscoveryAddress,
+  selectLockedAddress,
+} = require("./lib/server-route-policy");
 
 app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -35,6 +39,9 @@ let mainWindow;
 let server;
 let bonjour;
 let publication;
+let serverHost = "0.0.0.0";
+let serverTargetHost = "0.0.0.0";
+let serverTransition = Promise.resolve();
 let state = {
   outputWidth: 720,
   outputHeight: 1280,
@@ -452,9 +459,21 @@ async function handleRequest(request, response) {
       if (released) sourceOwner = null;
       log(`Source ownership release id=${deviceId || "missing"} released=${released}`);
       sendJson(response, 200, { ok: true, released });
+      if (released) setTimeout(() => rebindServer("0.0.0.0", "Source released route"), 50);
       return;
     }
     if (!requireSourceOwner(request, response)) return;
+    if (request.method === "POST" && requestUrl.pathname === "/lock-route") {
+      const socketAddress = request.socket.localAddress;
+      const localAddress = selectLockedAddress(socketAddress, localAddresses());
+      if (!localAddress) {
+        sendJson(response, 409, { error: `Selected local route is unavailable: ${socketAddress || "unknown"}` });
+        return;
+      }
+      sendJson(response, 200, { ok: true, address: localAddress, port: PORT });
+      setTimeout(() => rebindServer(localAddress, "Source locked active route"), 50);
+      return;
+    }
     if (request.method === "GET" && requestUrl.pathname === "/motion-config") {
       sendJson(response, 200, {
         liveMotion: liveMotionRequested,
@@ -562,26 +581,25 @@ async function handleRequest(request, response) {
 }
 
 function serverInfo() {
+  const addresses = isDiscoveryAddress(serverHost) ? localAddresses() : [serverHost];
+  const interfaces = localInterfaces().filter((entry) => addresses.includes(entry.address));
   return {
     port: PORT,
-    addresses: localAddresses(),
-    interfaces: localInterfaces(),
+    addresses,
+    interfaces,
+    lockedAddress: isDiscoveryAddress(serverHost) ? "" : serverHost,
   };
 }
 
-function createServer() {
-  refreshNetworkInterfaceDescriptions();
-  server = http.createServer((request, response) => {
-    handleRequest(request, response);
-  });
-  server.listen(PORT, "0.0.0.0", () => {
-    log(`LAN server listening port=${PORT} interfaces=${localInterfaces()
-      .map((entry) => `${entry.route}:${entry.name}:${entry.address}`)
-      .join(",")}`);
-    mainWindow?.webContents.send("server-info", serverInfo());
-  });
-  server.on("error", (error) => log(`LAN server failed ${error.stack || error}`));
+function stopBonjour() {
+  try { publication?.stop?.(); } catch (_) {}
+  try { bonjour?.destroy?.(); } catch (_) {}
+  publication = null;
+  bonjour = null;
+}
 
+function startBonjour() {
+  if (bonjour || !isDiscoveryAddress(serverHost)) return;
   bonjour = new Bonjour();
   publication = bonjour.publish({
     name: `Cam Player ${os.hostname()}`,
@@ -590,6 +608,47 @@ function createServer() {
     port: PORT,
     txt: { version: VERSION },
   });
+}
+
+function createServer(host = "0.0.0.0") {
+  refreshNetworkInterfaceDescriptions();
+  serverHost = host;
+  server = http.createServer((request, response) => {
+    handleRequest(request, response);
+  });
+  server.listen(PORT, host, () => {
+    const route = isDiscoveryAddress(host) ? "discovery" : "locked";
+    log(`LAN server listening route=${route} address=${host}:${PORT} interfaces=${serverInfo().interfaces
+      .map((entry) => `${entry.route}:${entry.name}:${entry.address}`).join(",")}`);
+    mainWindow?.webContents.send("server-info", serverInfo());
+    if (isDiscoveryAddress(host)) startBonjour();
+  });
+  server.on("error", (error) => log(`LAN server failed ${error.stack || error}`));
+}
+
+function rebindServer(host, reason) {
+  if (!host || host === serverTargetHost) return serverTransition;
+  serverTargetHost = host;
+  serverTransition = serverTransition.then(() => new Promise((resolve) => {
+    const previous = serverHost;
+    const previousServer = server;
+    server = null;
+    stopBonjour();
+    const start = () => {
+      createServer(host);
+      log(`LAN route rebound previous=${previous}:${PORT} active=${host}:${PORT} reason=${reason}`);
+      resolve();
+    };
+    if (!previousServer) {
+      start();
+      return;
+    }
+    previousServer.close(start);
+    previousServer.closeIdleConnections?.();
+  })).catch((error) => {
+    log(`LAN route rebind failed target=${host}:${PORT} ${error.stack || error}`);
+  });
+  return serverTransition;
 }
 
 function createWindow() {

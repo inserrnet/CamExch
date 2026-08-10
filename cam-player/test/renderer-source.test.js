@@ -26,13 +26,15 @@ test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("writes timestamped frames through one WebGL-safe frame pacer", () => {
+test("publishes each decoded video frame once and paces only static output", () => {
   assert.match(indexHtml, /src="\.\.\/lib\/frame-pacer\.js"/);
+  assert.match(indexHtml, /src="\.\.\/lib\/frame-publish-policy\.js"/);
   assert.match(renderer, /const framePacer = new CamFramePacer\.Pacer/);
   assert.match(renderer, /owner: "pacer"/);
-  assert.match(renderer, /if \(!framePacerSubmitting\)/);
-  assert.match(renderer, /owner=pacer required/);
-  assert.equal((renderer.match(/submitGeneratedFrame\(/g) || []).length, 2);
+  assert.match(renderer, /owner: "decoded"/);
+  assert.match(renderer, /CamFramePublishPolicy\.accepts/);
+  assert.doesNotMatch(renderer, /framePacerSubmitting/);
+  assert.equal((renderer.match(/submitGeneratedFrame\(/g) || []).length, 3);
   assert.doesNotMatch(renderer, /pausedFrameTimer/);
   assert.match(renderer, /frameTransferContext\.drawImage\(canvas/);
   assert.match(renderer, /canvas\.captureStream\(0\)/);
@@ -44,7 +46,7 @@ test("writes timestamped frames through one WebGL-safe frame pacer", () => {
   assert.match(renderer, /track\.writable\.getWriter\(\)/);
   assert.match(renderer, /new VideoFrame\(frameTransferCanvas/);
   assert.match(renderer, /outputTimeline\.nextStatic\(durationUs\)/);
-  assert.doesNotMatch(renderer, /outputTimeline\.nextVideo\(/);
+  assert.match(renderer, /outputTimeline\.nextVideo\(mediaTime, durationUs\)/);
   assert.match(renderer, /await writer\.write\(entry\.frame\)/);
   assert.match(renderer, /if \(pendingTrackFrame\) discardPendingTrackFrame\(""\)/);
   assert.match(renderer, /entry\.videoGeneration !== playbackGeneration/);

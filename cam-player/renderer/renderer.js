@@ -359,7 +359,6 @@ let trackFramesDropped = 0;
 let trackWriteFailures = 0;
 const outputTimeline = new CamOutputTimeline.Timeline();
 let frameTransportError = null;
-let framePacerSubmitting = false;
 let framePacerSourceSequence = 0;
 let framePacerLastSourceSequence = -1;
 let framePacerFreshFrames = 0;
@@ -805,14 +804,19 @@ async function flushGeneratedFrames() {
 }
 
 function submitGeneratedFrame(options = {}) {
-  if (!framePacerSubmitting) {
-    log(`Frame submission rejected owner=${options.owner || "unknown"}; owner=pacer required`);
+  const owner = options.owner || "unknown";
+  const publishState = { sourceKind, playing };
+  if (!CamFramePublishPolicy.accepts(owner, publishState)) {
+    log(`Frame submission rejected owner=${owner}; owner=${CamFramePublishPolicy.ownerFor(publishState)} required`);
     return false;
   }
   if (trackRestartPending || !canvasTrack || peers.size === 0) return false;
   const fps = Math.max(1, Number(options.fps) || effectiveMediaFps());
   const durationUs = Math.max(1, Math.round(1_000_000 / fps));
-  const timing = outputTimeline.nextStatic(durationUs);
+  const mediaTime = Number(options.mediaTime);
+  const timing = Number.isFinite(mediaTime)
+    ? outputTimeline.nextVideo(mediaTime, durationUs)
+    : outputTimeline.nextStatic(durationUs);
   if (frameTransport === "canvas-capture") {
     try {
       canvasTrack.requestFrame();
@@ -907,20 +911,15 @@ function reportFramePacer(reason = "periodic", force = false) {
 const framePacer = new CamFramePacer.Pacer({
   onTick: (tick) => {
     if (!sourceElement || !canvasTrack || peers.size === 0) return;
+    if (!CamFramePublishPolicy.accepts("pacer", { sourceKind, playing })) return;
     const fresh = framePacerSourceSequence !== framePacerLastSourceSequence;
     let submitted = false;
-    framePacerSubmitting = true;
-    try {
-      const rendered = renderFrame(true, null, { pacerTick: true, measureCadence: false });
-      if (rendered) {
-        submitted = submitGeneratedFrame({
-          owner: "pacer",
-          fps: tick.fps,
-          videoGeneration: sourceKind === "video" && playing ? playbackGeneration : null,
-        });
-      }
-    } finally {
-      framePacerSubmitting = false;
+    const rendered = renderFrame(true, null, { pacerTick: true, measureCadence: false });
+    if (rendered) {
+      submitted = submitGeneratedFrame({
+        owner: "pacer",
+        fps: tick.fps,
+      });
     }
     if (submitted) {
       if (fresh) framePacerFreshFrames += 1;
@@ -937,7 +936,8 @@ const framePacer = new CamFramePacer.Pacer({
 });
 
 function refreshFramePacer(reason, immediate = false) {
-  const active = Boolean(sourceElement && canvasTrack && peers.size > 0);
+  const active = Boolean(sourceElement && canvasTrack && peers.size > 0
+    && CamFramePublishPolicy.accepts("pacer", { sourceKind, playing }));
   framePacer.configure({
     active,
     fps: framePacerRate(),
@@ -1149,6 +1149,12 @@ function scheduleVideoFrame(generation = playbackGeneration) {
       reason: "decoded video frame",
     })) {
       cadenceRenderedFrames += 1;
+      submitGeneratedFrame({
+        owner: "decoded",
+        mediaTime,
+        fps: effectiveMediaFps(),
+        videoGeneration: generation,
+      });
       if (playbackNeedsKeyFrame) {
         playbackNeedsKeyFrame = false;
         scheduleKeyFrame("fresh playback frame", 0);
