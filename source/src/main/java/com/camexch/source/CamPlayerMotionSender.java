@@ -155,7 +155,6 @@ final class CamPlayerMotionSender implements SensorEventListener {
                             sentOnConnection = true;
                             reconnectDelayMs = RECONNECT_DELAY_MS;
                         }
-                        long nowMs = android.os.SystemClock.elapsedRealtime();
                         if (nowMs - metricsStartedMs >= 10_000L) {
                             float hz = sentCount * 1_000f / Math.max(1L, nowMs - metricsStartedMs);
                             AppLog.info(context, "Cam Player motion stream rateHz="
