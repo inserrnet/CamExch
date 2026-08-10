@@ -59,14 +59,44 @@
       context.fillText(`static-${cycle}`, 24, Math.round(height / 2));
     };
     drawStaticFrame();
+    let frameCanvas = canvas;
+    let drawFrameForTransport = drawStaticFrame;
+    if (cycle === 1) {
+      const webglCanvas = document.createElement("canvas");
+      const webgl = webglCanvas.getContext("webgl2", {
+        alpha: false,
+        antialias: false,
+        desynchronized: true,
+        preserveDrawingBuffer: false,
+      });
+      const transferCanvas = document.createElement("canvas");
+      const transferContext = transferCanvas.getContext("2d", {
+        alpha: false,
+        desynchronized: true,
+      });
+      if (!webgl || !transferContext) throw new Error("production WebGL transfer unavailable");
+      frameCanvas = transferCanvas;
+      drawFrameForTransport = () => {
+        webglCanvas.width = canvas.width;
+        webglCanvas.height = canvas.height;
+        transferCanvas.width = canvas.width;
+        transferCanvas.height = canvas.height;
+        webgl.viewport(0, 0, webglCanvas.width, webglCanvas.height);
+        webgl.clearColor(0.1, 0.7, 0.3, 1);
+        webgl.clear(webgl.COLOR_BUFFER_BIT);
+        webgl.flush();
+        transferContext.drawImage(webglCanvas, 0, 0, canvas.width, canvas.height);
+      };
+      progress("production WebGL to 2D transfer enabled preserveDrawingBuffer=false");
+    }
     const track = new MediaStreamTrackGenerator({ kind: "video" });
     const writer = track.writable.getWriter();
     const stream = new MediaStream([track]);
     let timestampUs = 0;
     let writeChain = Promise.resolve();
     const present = () => {
-      drawStaticFrame();
-      const frame = new VideoFrame(canvas, { timestamp: timestampUs, duration: 100000 });
+      drawFrameForTransport();
+      const frame = new VideoFrame(frameCanvas, { timestamp: timestampUs, duration: 100000 });
       timestampUs += 100000;
       writeChain = writeChain.then(() => writer.write(frame)).finally(() => frame.close());
     };
@@ -179,8 +209,24 @@
 
   async function runLatestFrameCadenceCycle() {
     progress("latest-frame cadence begin fps=24");
-    canvas.width = 640;
-    canvas.height = 480;
+    const producerCanvas = document.createElement("canvas");
+    producerCanvas.width = 640;
+    producerCanvas.height = 480;
+    const producerGl = producerCanvas.getContext("webgl2", {
+      alpha: false,
+      antialias: false,
+      preserveDrawingBuffer: false,
+    });
+    const transferCanvas = document.createElement("canvas");
+    transferCanvas.width = 640;
+    transferCanvas.height = 480;
+    const transferContext = transferCanvas.getContext("2d", {
+      alpha: false,
+      desynchronized: true,
+    });
+    if (!producerGl || !transferContext) {
+      throw new Error("Production WebGL transfer surfaces are unavailable");
+    }
     const track = new MediaStreamTrackGenerator({ kind: "video" });
     const writer = track.writable.getWriter();
     const stream = new MediaStream([track]);
@@ -205,9 +251,11 @@
     let timestampUs = 0;
     let writeChain = Promise.resolve();
     const paintLatest = () => {
-      context.fillStyle = `rgb(${latestFrame % 255},40,80)`;
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      const frame = new VideoFrame(canvas, { timestamp: timestampUs, duration: 41667 });
+      producerGl.clearColor((latestFrame % 255) / 255, 40 / 255, 80 / 255, 1);
+      producerGl.clear(producerGl.COLOR_BUFFER_BIT);
+      producerGl.flush();
+      transferContext.drawImage(producerCanvas, 0, 0);
+      const frame = new VideoFrame(transferCanvas, { timestamp: timestampUs, duration: 41667 });
       timestampUs += 41667;
       writeChain = writeChain.then(() => writer.write(frame)).finally(() => frame.close());
     };

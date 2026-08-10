@@ -234,6 +234,21 @@ or WebRTC change.
 | Follow-site enabled | Requested geometry follows physical orientation |
 | Five-minute run | At most one pending frame; no peer/encoder leak or memory climb |
 
+## Generated Frame Transport
+
+- Never construct a `VideoFrame` directly from the production WebGL canvas when
+  its context uses `preserveDrawingBuffer: false`. Copy the just-rendered back
+  buffer to the reusable 2D transfer surface first.
+- The Electron smoke test must exercise the production WebGL-to-transfer path,
+  remote WebRTC decode, live resize, repeated peers, `1500x2000`, `2400x3200`,
+  and a measured 24 FPS cadence cycle.
+- Keep at most one pending generated frame. Backpressure replaces an obsolete
+  pending frame; it must never build a playback queue.
+- Resolve every repeated site `configure` and `offer` from the same manual
+  resolution baseline. Identical constraints must produce identical geometry.
+- Do not mark a negotiated codec as failed unless the frame producer delivered
+  at least one input frame to that encoder attempt.
+
 For cadence tests, inspect at least decoded, rendered, submitted, skipped,
 repeated, late, encoder FPS, receiver FPS, dropped frames, packet loss, and
 freeze counters. A visually smooth preview alone is not proof that Browser sees

@@ -345,6 +345,12 @@ let droppedFileLoading = false;
 let stream = null;
 let canvasTrack = null;
 let trackWriter = null;
+let frameTransport = "none";
+const frameTransferCanvas = document.createElement("canvas");
+const frameTransferContext = frameTransferCanvas.getContext("2d", {
+  alpha: false,
+  desynchronized: true,
+});
 let trackWriteActive = false;
 let pendingTrackFrame = null;
 let trackRestartPending = false;
@@ -353,6 +359,7 @@ let trackFramesWritten = 0;
 let trackFramesDropped = 0;
 let trackWriteFailures = 0;
 const outputTimeline = new CamOutputTimeline.Timeline();
+let frameTransportError = null;
 let peers = new Map();
 let readyPeers = new Set();
 const peerMaintenance = new Map();
@@ -729,6 +736,22 @@ function closeVideoFrame(frame) {
   }
 }
 
+function createOutputVideoFrame(timestampUs, durationUs) {
+  if (!frameTransferContext) throw new Error("2D frame transfer canvas is unavailable");
+  if (frameTransferCanvas.width !== canvas.width
+      || frameTransferCanvas.height !== canvas.height) {
+    frameTransferCanvas.width = canvas.width;
+    frameTransferCanvas.height = canvas.height;
+  }
+  // Copy while the WebGL back buffer still contains the frame just drawn.
+  gl.flush();
+  frameTransferContext.drawImage(canvas, 0, 0, canvas.width, canvas.height);
+  return new VideoFrame(frameTransferCanvas, {
+    timestamp: timestampUs,
+    duration: durationUs,
+  });
+}
+
 function discardPendingTrackFrame(reason) {
   if (!pendingTrackFrame) return;
   closeVideoFrame(pendingTrackFrame.frame);
@@ -774,20 +797,37 @@ async function flushGeneratedFrames() {
 }
 
 function submitGeneratedFrame(options = {}) {
-  if (trackRestartPending || !canvasTrack || !trackWriter || peers.size === 0) return false;
+  if (trackRestartPending || !canvasTrack || peers.size === 0) return false;
   const fps = Math.max(1, Number(options.fps) || effectiveMediaFps());
   const durationUs = Math.max(1, Math.round(1_000_000 / fps));
   const mediaTime = Number(options.mediaTime);
   const timing = Number.isFinite(mediaTime)
     ? outputTimeline.nextVideo(mediaTime, durationUs)
     : outputTimeline.nextStatic(durationUs);
+  if (frameTransport === "canvas-capture") {
+    try {
+      canvasTrack.requestFrame();
+      frameTransportError = null;
+      trackFramesCreated += 1;
+      trackFramesWritten += 1;
+      cadenceGeneratorWrites += 1;
+      if (playing && cadenceState === "playing") cadenceSubmittedFrames += 1;
+      submitGeneratedFrame.lastSubmittedAt = performance.now();
+      return true;
+    } catch (error) {
+      frameTransportError = error;
+      trackWriteFailures += 1;
+      log(`Canvas capture request failed count=${trackWriteFailures} ${error}`);
+      return false;
+    }
+  }
+  if (!trackWriter) return false;
   let frame;
   try {
-    frame = new VideoFrame(canvas, {
-      timestamp: timing.timestampUs,
-      duration: timing.durationUs,
-    });
+    frame = createOutputVideoFrame(timing.timestampUs, timing.durationUs);
+    frameTransportError = null;
   } catch (error) {
+    frameTransportError = error;
     videoFrameCaptureFailures += 1;
     if (videoFrameCaptureFailures === 1 || videoFrameCaptureFailures % 60 === 0) {
       log(`Generated VideoFrame capture failed count=${videoFrameCaptureFailures} ${error}`);
@@ -1056,7 +1096,7 @@ function stopPausedFrameHeartbeat() {
 
 function updatePausedFrameHeartbeat() {
   stopPausedFrameHeartbeat();
-  if (playing || !sourceElement || !canvasTrack || !trackWriter || peers.size === 0) return;
+  if (playing || !sourceElement || !canvasTrack || peers.size === 0) return;
   const state = motionMode.value === "off" ? "idle" : "motion";
   const idleFps = CamGeometry.adaptiveFrameRate(
     canvas.width,
@@ -1088,20 +1128,59 @@ function discardGeneratedStream(reason) {
   });
   stream = null;
   canvasTrack = null;
+  frameTransport = "none";
+  frameTransportError = null;
   trackRestartPending = false;
   log(`Generated media stream discarded reason=${reason}`);
 }
 
+function createFrameTransport(preferred = "generator-2d-transfer") {
+  if (preferred !== "canvas-capture"
+      && typeof MediaStreamTrackGenerator === "function"
+      && typeof VideoFrame === "function") {
+    let probe = null;
+    try {
+      probe = createOutputVideoFrame(0, 1);
+      closeVideoFrame(probe);
+      const track = new MediaStreamTrackGenerator({ kind: "video" });
+      return {
+        kind: "generator-2d-transfer",
+        stream: new MediaStream([track]),
+        track,
+        writer: track.writable.getWriter(),
+      };
+    } catch (error) {
+      closeVideoFrame(probe);
+      log(`Generated transport preflight failed; using canvas capture fallback ${error}`);
+    }
+  }
+  if (typeof canvas.captureStream !== "function") {
+    throw new Error("No supported WebRTC frame transport is available");
+  }
+  const capturedStream = canvas.captureStream(0);
+  const capturedTrack = capturedStream.getVideoTracks()[0];
+  if (!capturedTrack || typeof capturedTrack.requestFrame !== "function") {
+    capturedStream.getTracks().forEach((track) => track.stop());
+    throw new Error("Canvas capture fallback does not support explicit frame requests");
+  }
+  return {
+    kind: "canvas-capture",
+    stream: capturedStream,
+    track: capturedTrack,
+    writer: null,
+  };
+}
+
 function ensureStream() {
   if (stream) return stream;
-  if (typeof MediaStreamTrackGenerator !== "function" || typeof VideoFrame !== "function") {
-    throw new Error("MediaStreamTrackGenerator and VideoFrame are required");
-  }
-  canvasTrack = new MediaStreamTrackGenerator({ kind: "video" });
-  trackWriter = canvasTrack.writable.getWriter();
-  stream = new MediaStream([canvasTrack]);
+  frameTransportError = null;
+  const transport = createFrameTransport();
+  stream = transport.stream;
+  canvasTrack = transport.track;
+  trackWriter = transport.writer;
+  frameTransport = transport.kind;
   updateTrackContentHint("stream created");
-  log("Generated video track created transport=MediaStreamTrackGenerator");
+  log(`Generated video track created transport=${frameTransport}`);
   return stream;
 }
 
@@ -1213,6 +1292,11 @@ async function waitForFirstEncodedFrame(pc, id, expected, timeoutMs, preferredRo
   let lastCodec = "unknown";
   let encodedAtExpectedSize = false;
   while (performance.now() - startedAt < timeoutMs) {
+    if (frameTransportError) {
+      const producerError = new Error(`frame producer failed: ${frameTransportError}`);
+      producerError.frameProducer = true;
+      throw producerError;
+    }
     const report = await pc.getStats();
     const routeDetails = selectedCandidatePairDetails(report);
     const route = routeDetails?.route || "";
@@ -1517,9 +1601,10 @@ async function restartGeneratedTrack(reason, expectedPeerId) {
   if (!expectedSender || !peers.has(expectedPeerId)) {
     throw new Error(`Encoder restart superseded before replacement id=${expectedPeerId}`);
   }
-  const replacementTrack = new MediaStreamTrackGenerator({ kind: "video" });
-  const replacementWriter = replacementTrack.writable.getWriter();
-  const replacementStream = new MediaStream([replacementTrack]);
+  const replacement = createFrameTransport(frameTransport);
+  const replacementTrack = replacement.track;
+  const replacementWriter = replacement.writer;
+  const replacementStream = replacement.stream;
   try {
     replacementTrack.contentHint = desiredContentHint();
   } catch (_) {
@@ -1527,19 +1612,21 @@ async function restartGeneratedTrack(reason, expectedPeerId) {
   try {
     await expectedSender.replaceTrack(replacementTrack);
   } catch (error) {
-    Promise.resolve(replacementWriter.close()).catch(() => {});
+    Promise.resolve(replacementWriter?.close?.()).catch(() => {});
     replacementTrack.stop();
     throw error;
   }
   if (!peers.has(expectedPeerId)
       || peerMaintenance.get(expectedPeerId)?.sender !== expectedSender) {
-    Promise.resolve(replacementWriter.close()).catch(() => {});
+    Promise.resolve(replacementWriter?.close?.()).catch(() => {});
     replacementTrack.stop();
     throw new Error(`Encoder restart superseded after replacement id=${expectedPeerId}`);
   }
   stream = replacementStream;
   canvasTrack = replacementTrack;
   trackWriter = replacementWriter;
+  frameTransport = replacement.kind;
+  frameTransportError = null;
   trackRestartPending = false;
   discardPendingTrackFrame("");
   Promise.resolve(previousWriter?.close?.()).catch(() => {});
@@ -1553,7 +1640,8 @@ async function restartGeneratedTrack(reason, expectedPeerId) {
   });
   emitBootstrapFrames(`same-resolution restart ${reason}`, 2, 150);
   updatePausedFrameHeartbeat();
-  log(`Generated encoder track restarted output=${canvas.width}x${canvas.height} `
+  log(`Generated encoder track restarted transport=${frameTransport} `
+    + `output=${canvas.width}x${canvas.height} `
     + `peer=${expectedPeerId} previousTrack=${previousTrack?.id || "none"} `
     + `nextTrack=${replacementTrack.id}`);
 }
@@ -1740,6 +1828,7 @@ async function handleOffer(payload) {
       encoderStallReports: 0,
       encoderStallRecoveryActive: false,
       bitrateProfile: null,
+      inputFramesAtStart: trackFramesWritten,
       createdAt: performance.now(),
     });
     updateConnectionState();
@@ -1882,7 +1971,7 @@ async function handleOffer(payload) {
           preferredRoute,
         );
       } catch (firstError) {
-        if (firstError.routeOnly) throw firstError;
+        if (firstError.routeOnly || firstError.frameProducer) throw firstError;
         ensureOfferActive(id);
         log(`Encoder first attempt stalled id=${id}; retrying same resolution reason=`
           + `${firstError.message}`);
@@ -1918,12 +2007,17 @@ async function handleOffer(payload) {
         : codecChoice.codecs.length
           ? String(codecChoice.codecs[0].mimeType).toLowerCase()
           : "";
-      if (!error.routeOnly && failedMime) {
+      const maintenance = peerMaintenance.get(id);
+      const receivedInputFrames = trackFramesWritten > Number(maintenance?.inputFramesAtStart || 0);
+      if (!error.routeOnly && !error.frameProducer && receivedInputFrames && failedMime) {
         encoderFailures.set(outputKey, { mime: failedMime, at: performance.now() });
         log(`Encoder codec marked failed output=${outputKey} codec=${failedMime}`);
       } else if (error.routeOnly) {
         log(`Preferred route rejected without penalizing codec output=${outputKey} `
           + `codec=${failedMime || "unknown"}`);
+      } else if (!receivedInputFrames || error.frameProducer) {
+        log(`Encoder codec preserved because frame producer delivered no input `
+          + `output=${outputKey} codec=${failedMime || "unknown"}`);
       }
       log(`Encoder readiness failed id=${id} output=${canvas.width}x${canvas.height} `
         + `preferredCodec=${codecChoice.name} reason=${error.message}`);
@@ -2074,7 +2168,9 @@ function applySiteConfiguration(config, reason) {
   if (!followSiteToggle.checked || !config) {
     return { applied: false, width: canvas.width, height: canvas.height, reason: "follow site disabled" };
   }
-  const fallback = { width: canvas.width, height: canvas.height };
+  // Resolve every update from the user's manual baseline. Reusing the last
+  // site-selected output makes identical constraints shrink again on /offer.
+  const fallback = { width: manualOutput.width, height: manualOutput.height };
   const resolved = CamGeometry.resolveRequestedSize(
     config.constraints,
     config.orientation,

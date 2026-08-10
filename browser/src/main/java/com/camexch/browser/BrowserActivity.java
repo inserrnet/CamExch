@@ -492,7 +492,7 @@ public class BrowserActivity extends Activity {
         boolean rearAuthorized = nativeCameraAuthorizations.consume(
                 request.getOrigin().toString(), SystemClock.elapsedRealtime());
         if (rearAuthorized) {
-            AppLog.info(this, "Granted one-shot native rear camera request origin=" + request.getOrigin());
+            AppLog.info(this, "Granted one-shot native camera request origin=" + request.getOrigin());
             request.grant(requested);
             AppLog.info(this, "Microphone WebView permission decision=granted requested="
                     + requestsAudio + " nativeVideo=true");

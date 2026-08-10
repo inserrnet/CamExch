@@ -9,8 +9,8 @@ Last reviewed: 2026-08-10
 
 Relevant deployed engines at the time of review:
 
-- Cam Player 0.6.2: Electron 39.2.7 / Chromium 142.0.7444.235.
-- Browser 0.6.20: Android System WebView 150.0.7871.181.
+- Cam Player 0.6.3: Electron 39.2.7 / Chromium 142.0.7444.235.
+- Browser 0.6.21: Android System WebView 150.0.7871.181.
 
 The specifications and Chromium main branch can change. Recheck the linked
 sources when either runtime changes or before replacing timing logic.
@@ -52,10 +52,13 @@ media reload, or loop transition. Log unexpected duplicates or regressions.
 
 ## Generated Track Clock
 
-Cam Player creates a WebCodecs `VideoFrame` from the composed WebGL canvas and
-writes it to a `MediaStreamTrackGenerator`. This avoids the wall-clock timestamp
-replacement performed by `canvas.captureStream()` and keeps the MP4 timeline as
-the transport clock.
+Cam Player copies the composed WebGL back buffer immediately to a reusable 2D
+transfer canvas, creates a WebCodecs `VideoFrame` from that stable surface, and
+writes it to a `MediaStreamTrackGenerator`. A production WebGL canvas created
+with `preserveDrawingBuffer: false` is not itself a reliable `VideoFrame`
+source. The transfer avoids that failure while retaining the MP4 timeline as
+the transport clock. Explicit `canvas.captureStream(0)` is only a preflight
+fallback when the generated-track path is unavailable.
 
 Consequences for Cam Player:
 
@@ -71,6 +74,10 @@ Consequences for Cam Player:
   scheduler stops before playback begins.
 - Arbitrary even dimensions are carried by individual generated frames. A live
   resolution change does not restart a healthy track or peer connection.
+- Repeated site configuration and offer messages resolve geometry from the
+  user's manual baseline, not from a previous site-selected result.
+- A codec is marked failed only after frames reached its sender. A frame-producer
+  failure must never demote H.264 or HEVC.
 
 ## Receiver Buffering
 

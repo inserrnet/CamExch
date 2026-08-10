@@ -26,19 +26,20 @@ test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("writes timestamped decoded frames directly and keeps static sources alive", () => {
+test("writes timestamped frames through a WebGL-safe transfer surface", () => {
   assert.match(
     renderer,
     /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000 \/ idleFps\)/,
   );
-  assert.doesNotMatch(renderer, /canvas\.captureStream/);
-  assert.doesNotMatch(renderer, /requestFrame\(\)/);
+  assert.match(renderer, /frameTransferContext\.drawImage\(canvas/);
+  assert.match(renderer, /canvas\.captureStream\(0\)/);
+  assert.match(renderer, /canvasTrack\.requestFrame\(\)/);
   assert.doesNotMatch(renderer, /VideoFrameQueue/);
   assert.doesNotMatch(renderer, /startVideoTransportScheduler/);
   assert.match(renderer, /video\.requestVideoFrameCallback\(callback\)/);
   assert.match(renderer, /new MediaStreamTrackGenerator\(\{ kind: "video" \}\)/);
-  assert.match(renderer, /trackWriter = canvasTrack\.writable\.getWriter\(\)/);
-  assert.match(renderer, /new VideoFrame\(canvas, \{[\s\S]*timestamp: timing\.timestampUs/);
+  assert.match(renderer, /track\.writable\.getWriter\(\)/);
+  assert.match(renderer, /new VideoFrame\(frameTransferCanvas/);
   assert.match(renderer, /outputTimeline\.nextVideo\(mediaTime, durationUs\)/);
   assert.match(renderer, /await writer\.write\(entry\.frame\)/);
   assert.match(renderer, /if \(pendingTrackFrame\) discardPendingTrackFrame\(""\)/);
@@ -46,7 +47,7 @@ test("writes timestamped decoded frames directly and keeps static sources alive"
   assert.match(renderer, /stopPausedFrameHeartbeat\(\);[\s\S]*playing = true;[\s\S]*await video\.play\(\)/);
   assert.match(renderer, /video\.pause\(\);[\s\S]*discardPendingTrackFrame\(""\)[\s\S]*reportPlaybackCadence\("pause"/);
   assert.match(renderer, /CamGeometry\.adaptiveFrameRate\(/);
-  assert.match(renderer, /!canvasTrack \|\| !trackWriter \|\| peers\.size === 0/);
+  assert.match(renderer, /!canvasTrack \|\| peers\.size === 0/);
   assert.match(
     renderer,
     /const sender = pc\.addTrack[\s\S]*updatePausedFrameHeartbeat\(\)/,
@@ -57,7 +58,7 @@ test("writes timestamped decoded frames directly and keeps static sources alive"
   assert.match(renderer, /generatorWrites=\$\{cadenceGeneratorWrites\}/);
   assert.match(renderer, /generatorDrops=\$\{cadenceGeneratorDrops\}/);
   assert.match(renderer, /cadence reason=\$\{reason\}/);
-  assert.match(renderer, /Generated video track created transport=MediaStreamTrackGenerator/);
+  assert.match(renderer, /Generated video track created transport=\$\{frameTransport\}/);
 });
 
 test("mirrors the transmitted source and cached background on the GPU", () => {
@@ -154,7 +155,7 @@ test("uses content-aware adaptive sender profiles and bounded keyframes", () => 
   assert.doesNotMatch(renderer, /fallbackAllowed = \/\^\(output\|media loaded\|playback started/);
   assert.doesNotMatch(renderer, /scheduleKeyFrame\("source zoom"\)/);
   assert.doesNotMatch(renderer, /scheduleKeyFrame\("source drag complete"\)/);
-  assert.match(renderer, /replacementTrack = new MediaStreamTrackGenerator/);
+  assert.match(renderer, /const replacement = createFrameTransport\(frameTransport\)/);
 });
 
 test("allows only one active WebRTC encoder", () => {
@@ -177,8 +178,8 @@ test("validates the final Player ICE route without filtering Android candidates"
   assert.match(renderer, /preferredRouteHost\(preferredRoute\)/);
   assert.match(renderer, /routeDetails\?\.localAddress === preferredHost/);
   assert.match(renderer, /WebRTC final route validated/);
-  assert.match(renderer, /if \(firstError\.routeOnly\) throw firstError/);
-  assert.match(renderer, /if \(!error\.routeOnly && failedMime\)/);
+  assert.match(renderer, /firstError\.routeOnly \|\| firstError\.frameProducer/);
+  assert.match(renderer, /!error\.frameProducer && receivedInputFrames && failedMime/);
   assert.match(renderer, /Preferred route rejected without penalizing codec/);
   assert.match(renderer, /if \(!\(sourceKind === "video" && playing\)\) renderFrame\(true\)/);
 });
@@ -194,7 +195,7 @@ test("changes live output geometry atomically without restarting the generated t
   assert.match(renderer, /function applyOutputSize\(width, height, reason, options = \{\}\)/);
   assert.doesNotMatch(renderer, /scheduleGeneratedTrackRestart\(`output \$\{reason\}`\)/);
   assert.match(renderer, /scheduleSenderQualityRefresh\(`output \$\{reason\}`\)/);
-  assert.match(renderer, /new VideoFrame\(canvas/);
+  assert.match(renderer, /new VideoFrame\(frameTransferCanvas/);
 });
 
 test("recovers from an unexpected software VP9 fallback", () => {

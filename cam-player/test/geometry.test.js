@@ -114,6 +114,23 @@ test("does not change an active size already inside min/max ranges", () => {
   assert.equal(resolved.height, 1600);
 });
 
+test("resolves repeated range constraints from the same manual baseline", () => {
+  const constraints = {
+    video: {
+      width: { min: 720, max: 1920 },
+      height: { min: 720, max: 1080 },
+    },
+  };
+  const manual = { width: 1920, height: 2400 };
+  const configured = geometry.resolveRequestedSize(constraints, "portrait", manual);
+  const offered = geometry.resolveRequestedSize(constraints, "portrait", manual);
+  assert.deepEqual(
+    { width: configured.width, height: configured.height },
+    { width: 1080, height: 1920 },
+  );
+  assert.deepEqual(offered, configured);
+});
+
 test("applies a refined exact square aspect ratio inside the original site ranges", () => {
   const first = geometry.resolveRequestedSize({
     video: {
