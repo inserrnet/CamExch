@@ -7,6 +7,7 @@ const {
   relativeEuler,
   remapForDisplay,
   sensorToDisplayRotation,
+  modePolicy,
 } = require("../lib/handheld-motion");
 
 function axisAngle(axis, radians) {
@@ -19,6 +20,17 @@ function axisAngle(axis, radians) {
     axis[2] * sine,
   ];
 }
+
+test("keeps preview-only motion out of the outgoing composition", () => {
+  assert.deepEqual(modePolicy("preview"), {
+    controllerEnabled: true,
+    outputEnabled: false,
+    previewOnly: true,
+  });
+  assert.equal(modePolicy("live").outputEnabled, true);
+  assert.equal(modePolicy("recorded").outputEnabled, true);
+  assert.equal(modePolicy("off").controllerEnabled, false);
+});
 
 test("finds phone rotation relative to the recentered quaternion", () => {
   const euler = relativeEuler([1, 0, 0, 0], axisAngle([1, 0, 0], 0.05));
@@ -202,6 +214,21 @@ test("live mode ignores accelerometer-only samples", () => {
   assert.ok(Math.abs(output.panX) < 1e-6);
   assert.ok(Math.abs(output.panY) < 1e-6);
   assert.equal(output.translationTracked, false);
+});
+
+test("live mode falls back to rotation while ARCore position is unavailable", () => {
+  const controller = new Controller();
+  controller.configure({ enabled: true, liveTranslation: true, motion: 100, stabilization: 0 });
+  controller.ingest({ quaternion: [1, 0, 0, 0], trackingSource: "sensors" }, 0);
+  for (let index = 1; index <= 8; index += 1) {
+    controller.ingest({
+      quaternion: axisAngle([0, 1, 0], 0.12),
+      trackingSource: "sensors",
+    }, index * 33);
+  }
+  const output = controller.output(1080, 1920);
+  assert.equal(output.translationTracked, false);
+  assert.ok(Math.abs(output.panX) > 5);
 });
 
 test("a stationary ARCore pose never accumulates drift", () => {

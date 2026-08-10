@@ -217,6 +217,16 @@ Historical regressions:
   folder button, and use the agreed date/time naming format.
 - Recorded Motion and Live Motion are opt-in. Disabled motion produces no hidden
   transform updates or unnecessary camera/sensor load.
+- Preview-only Motion is a local UI transform. It must never enable Motion in the
+  outgoing composition, create a peer, submit a frame, or start an encoder. Its
+  amber indicator remains visible for the entire preview-only session.
+- Record Motion starts the Source capture request before waiting for samples. Its
+  three-second countdown starts only after a valid ARCore sample with X/Y/Z position
+  arrives; sensor-only fallback samples must never be saved as a translated profile.
+- Motion profiles with translation use schema version 2 and preserve position plus
+  orientation. Version 1 rotation-only profiles remain readable.
+- ARCore `PAUSED` must not silence the motion stream. Source falls back to rotation
+  sensors while ARCore initializes or recovers, and logs the tracking failure reason.
 - Motion processing must not reduce playing-video FPS or continue to hold Android
   camera resources after it is disabled.
 - Network interface labels and addresses are generated from current interfaces;

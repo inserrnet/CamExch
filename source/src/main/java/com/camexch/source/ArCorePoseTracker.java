@@ -17,6 +17,7 @@ import com.google.ar.core.Frame;
 import com.google.ar.core.Pose;
 import com.google.ar.core.Session;
 import com.google.ar.core.TrackingState;
+import com.google.ar.core.TrackingFailureReason;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -38,6 +39,8 @@ final class ArCorePoseTracker {
     private EGLSurface eglSurface = EGL14.EGL_NO_SURFACE;
     private int cameraTexture;
     private TrackingState lastTrackingState;
+    private TrackingFailureReason lastTrackingFailureReason;
+    private long pausedSinceMs;
 
     ArCorePoseTracker(Context context, Listener listener) {
         this.context = context.getApplicationContext();
@@ -102,11 +105,15 @@ final class ArCorePoseTracker {
             Frame frame = session.update();
             Camera camera = frame.getCamera();
             TrackingState state = camera.getTrackingState();
-            if (state != lastTrackingState) {
+            TrackingFailureReason failureReason = camera.getTrackingFailureReason();
+            if (state != lastTrackingState || failureReason != lastTrackingFailureReason) {
                 lastTrackingState = state;
-                AppLog.info(context, "ARCore tracking state=" + state);
+                lastTrackingFailureReason = failureReason;
+                AppLog.info(context, "ARCore tracking state=" + state
+                        + " reason=" + failureReason);
             }
             if (state == TrackingState.TRACKING) {
+                pausedSinceMs = 0L;
                 Pose pose = camera.getPose();
                 float[] xyzw = pose.getRotationQuaternion();
                 listener.onPose(
@@ -114,6 +121,16 @@ final class ArCorePoseTracker {
                         pose.getTranslation(),
                         new float[]{xyzw[3], xyzw[0], xyzw[1], xyzw[2]}
                 );
+            } else {
+                long nowMs = android.os.SystemClock.elapsedRealtime();
+                if (pausedSinceMs == 0L) pausedSinceMs = nowMs;
+                boolean restartable = failureReason == TrackingFailureReason.NONE
+                        || failureReason == TrackingFailureReason.BAD_STATE
+                        || failureReason == TrackingFailureReason.CAMERA_UNAVAILABLE;
+                if (restartable && nowMs - pausedSinceMs >= 10_000L) {
+                    throw new IllegalStateException("ARCore tracking remained paused reason="
+                            + failureReason);
+                }
             }
             Handler activeHandler = handler;
             if (activeHandler != null) activeHandler.postDelayed(this::update, 16L);
@@ -207,5 +224,7 @@ final class ArCorePoseTracker {
         eglSurface = EGL14.EGL_NO_SURFACE;
         eglContext = EGL14.EGL_NO_CONTEXT;
         lastTrackingState = null;
+        lastTrackingFailureReason = null;
+        pausedSinceMs = 0L;
     }
 }

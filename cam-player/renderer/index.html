@@ -28,6 +28,9 @@
     <section id="preview" class="preview" tabindex="0" aria-label="Output preview">
       <canvas id="outputCanvas" width="720" height="1280"></canvas>
       <div id="emptyState">Open a video or photo</div>
+      <div id="motionPreviewIndicator" class="motion-preview-indicator" hidden>
+        Motion preview only - not sent to site
+      </div>
     </section>
 
     <aside class="settings">
@@ -63,6 +66,7 @@
             <option value="off">Off</option>
             <option value="live">Live phone</option>
             <option value="recorded">Recorded profile</option>
+            <option value="preview">Preview only</option>
           </select>
         </label>
         <label class="toggle wide">

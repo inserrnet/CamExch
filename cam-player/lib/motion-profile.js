@@ -8,7 +8,8 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const PROFILE_VERSION = 1;
+  const PROFILE_VERSION = 2;
+  const LEGACY_PROFILE_VERSION = 1;
   const RECORDING_DURATION_MS = 30_000;
   const SAMPLE_INTERVAL_MS = 1000 / 30;
   const MIN_PROFILE_DURATION_MS = 25_000;
@@ -34,6 +35,12 @@
     ));
   }
 
+  function normalizeOptionalVector(value) {
+    if (!Array.isArray(value) || value.length < 3) return null;
+    const normalized = value.slice(0, 3).map(Number);
+    return normalized.every(Number.isFinite) ? normalized : null;
+  }
+
   function interpolateQuaternion(leftValue, rightValue, amount) {
     const left = normalizeQuaternion(leftValue) || [1, 0, 0, 0];
     let right = normalizeQuaternion(rightValue) || left;
@@ -55,12 +62,16 @@
       const time = Number(raw?.t);
       const quaternion = normalizeQuaternion(raw?.quaternion);
       if (!Number.isFinite(time) || time < 0 || !quaternion || time <= previousTime) continue;
+      const position = normalizeOptionalVector(raw.position);
       cleaned.push({
         t: time,
         quaternion,
         gyro: normalizeVector(raw.gyro),
         acceleration: normalizeVector(raw.acceleration),
         displayRotation: Math.round(clamp(raw.displayRotation, 0, 3)),
+        sensorToDisplayRotation: Math.round(clamp(raw.sensorToDisplayRotation, 0, 3)),
+        trackingSource: position && raw.trackingSource === "arcore" ? "arcore" : "sensors",
+        ...(position ? { position } : {}),
       });
       previousTime = time;
     }
@@ -70,12 +81,22 @@
   function sampleBetween(left, right, time) {
     const span = Math.max(1e-6, right.t - left.t);
     const amount = clamp((time - left.t) / span, 0, 1);
+    const leftPosition = normalizeOptionalVector(left.position);
+    const rightPosition = normalizeOptionalVector(right.position);
+    const position = leftPosition && rightPosition
+      ? interpolateVector(leftPosition, rightPosition, amount)
+      : leftPosition || rightPosition;
     return {
       t: Math.round(time),
       quaternion: interpolateQuaternion(left.quaternion, right.quaternion, amount),
       gyro: interpolateVector(left.gyro, right.gyro, amount),
       acceleration: interpolateVector(left.acceleration, right.acceleration, amount),
       displayRotation: amount < 0.5 ? left.displayRotation : right.displayRotation,
+      sensorToDisplayRotation: amount < 0.5
+        ? left.sensorToDisplayRotation || 0
+        : right.sensorToDisplayRotation || 0,
+      trackingSource: position ? "arcore" : "sensors",
+      ...(position ? { position } : {}),
     };
   }
 
@@ -87,6 +108,9 @@
       gyro: sample.gyro.map(round),
       acceleration: sample.acceleration.map(round),
       displayRotation: sample.displayRotation,
+      sensorToDisplayRotation: sample.sensorToDisplayRotation || 0,
+      trackingSource: sample.position ? "arcore" : "sensors",
+      ...(sample.position ? { position: sample.position.map(round) } : {}),
     };
   }
 
@@ -122,6 +146,9 @@
         quaternion: interpolateQuaternion(sample.quaternion, first.quaternion, eased),
         gyro: interpolateVector(sample.gyro, first.gyro, eased),
         acceleration: interpolateVector(sample.acceleration, first.acceleration, eased),
+        position: sample.position && first.position
+          ? interpolateVector(sample.position, first.position, eased)
+          : sample.position,
         displayRotation: eased < 0.5 ? sample.displayRotation : first.displayRotation,
       });
     });
@@ -153,12 +180,23 @@
   }
 
   function validateProfile(profile) {
-    if (!profile || Number(profile.version) !== PROFILE_VERSION) return false;
+    if (!profile || ![LEGACY_PROFILE_VERSION, PROFILE_VERSION].includes(Number(profile.version))) {
+      return false;
+    }
     if (!Array.isArray(profile.samples) || profile.samples.length < MIN_PROFILE_SAMPLES) return false;
     if (!Number.isFinite(Number(profile.durationMs)) || Number(profile.durationMs) < MIN_PROFILE_DURATION_MS) {
       return false;
     }
     return cleanSamples(profile.samples).length === profile.samples.length;
+  }
+
+  function profileHasTranslation(profile) {
+    return Number(profile?.version) >= PROFILE_VERSION
+      && Array.isArray(profile?.samples)
+      && profile.samples.some((sample) => (
+        sample?.trackingSource === "arcore"
+        && normalizeOptionalVector(sample.position)
+      ));
   }
 
   class Player {
@@ -188,12 +226,14 @@
     MIN_PROFILE_DURATION_MS,
     MIN_PROFILE_SAMPLES,
     PROFILE_VERSION,
+    LEGACY_PROFILE_VERSION,
     RECORDING_DURATION_MS,
     SAMPLE_INTERVAL_MS,
     Player,
     cleanSamples,
     interpolateQuaternion,
     prepareProfile,
+    profileHasTranslation,
     validateProfile,
   };
 }));

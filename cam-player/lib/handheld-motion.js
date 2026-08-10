@@ -82,6 +82,15 @@
     return (1 - display + 4) % 4;
   }
 
+  function modePolicy(mode) {
+    const value = ["live", "recorded", "preview"].includes(mode) ? mode : "off";
+    return {
+      controllerEnabled: value !== "off",
+      outputEnabled: value === "live" || value === "recorded",
+      previewOnly: value === "preview",
+    };
+  }
+
   class Controller {
     constructor() {
       this.enabled = false;
@@ -111,11 +120,11 @@
       if (!sample || !Array.isArray(sample.quaternion) || sample.quaternion.length < 4) {
         return this.output();
       }
-      if (this.liveTranslation && !validPosition(sample)) {
-        return this.output();
-      }
       this.latest = sample;
-      if (!this.baseline || (this.liveTranslation && !this.baselinePosition)) this.recenter();
+      if (!this.baseline
+          || (this.liveTranslation && validPosition(sample) && !this.baselinePosition)) {
+        this.recenter();
+      }
       if (!this.enabled) return this.output();
 
       const now = Number(timestampMs);
@@ -139,7 +148,7 @@
         this.smoothed[axis] += (rotationTarget[axis] - this.smoothed[axis]) * alpha;
       }
 
-      if (this.liveTranslation) {
+      if (this.liveTranslation && validPosition(sample) && this.baselinePosition) {
         const worldDelta = sample.position.slice(0, 3).map(
           (value, index) => Number(value) - this.baselinePosition[index],
         );
@@ -192,9 +201,10 @@
         ? clamp(Math.exp(-translationZ * 0.6 * gain * translationResidual), 0.75, 1.35)
         : 1;
       const translationGain = Math.min(width, height) * 1.2 * gain * translationResidual;
+      const useTranslation = this.liveTranslation && this.translationTracked;
       return {
-        panX: this.liveTranslation ? translationX * translationGain : -y * Math.max(1, width) * 0.7,
-        panY: this.liveTranslation ? -translationY * translationGain : x * Math.max(1, height) * 0.7,
+        panX: useTranslation ? translationX * translationGain : -y * Math.max(1, width) * 0.7,
+        panY: useTranslation ? -translationY * translationGain : x * Math.max(1, height) * 0.7,
         roll: -z * 0.9,
         scale: overscan * depthScale,
         depthScale,
@@ -210,6 +220,6 @@
   return {
     Controller, normalizeQuaternion, multiply, relativeQuaternion,
     rotateVector, relativeEuler, remapForDisplay, remapVectorForDisplay,
-    sensorToDisplayRotation,
+    sensorToDisplayRotation, modePolicy,
   };
 }));

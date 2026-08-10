@@ -6,6 +6,7 @@ const {
   Player,
   RECORDING_DURATION_MS,
   prepareProfile,
+  profileHasTranslation,
   validateProfile,
 } = require("../lib/motion-profile");
 
@@ -20,7 +21,7 @@ function axisAngle(axis, radians) {
   ];
 }
 
-function recordedSamples(durationMs = RECORDING_DURATION_MS, fps = 30) {
+function recordedSamples(durationMs = RECORDING_DURATION_MS, fps = 30, withPosition = false) {
   const samples = [];
   const interval = 1000 / fps;
   for (let time = 0; time <= durationMs; time += interval) {
@@ -31,6 +32,9 @@ function recordedSamples(durationMs = RECORDING_DURATION_MS, fps = 30) {
       gyro: [0, wave, 0],
       acceleration: [0.01, 0, 0],
       displayRotation: 0,
+      sensorToDisplayRotation: 1,
+      trackingSource: withPosition ? "arcore" : "sensors",
+      ...(withPosition ? { position: [wave, wave * 0.5, wave * -0.25] } : {}),
     });
   }
   return samples;
@@ -38,11 +42,28 @@ function recordedSamples(durationMs = RECORDING_DURATION_MS, fps = 30) {
 
 test("prepares a compact valid 30 second motion profile", () => {
   const profile = prepareProfile(recordedSamples(), { name: "Document steady" });
-  assert.equal(profile.version, 1);
+  assert.equal(profile.version, 2);
   assert.equal(profile.name, "Document steady");
   assert.ok(profile.durationMs >= 29_900);
   assert.ok(profile.samples.length >= 890 && profile.samples.length <= 910);
   assert.ok(validateProfile(profile));
+});
+
+test("preserves ARCore translation through profile preparation and playback", () => {
+  const profile = prepareProfile(recordedSamples(RECORDING_DURATION_MS, 30, true));
+  assert.equal(profileHasTranslation(profile), true);
+  assert.equal(profile.samples.every((sample) => sample.position?.length === 3), true);
+  const sample = new Player(profile).sampleAt(5000);
+  assert.equal(sample.trackingSource, "arcore");
+  assert.equal(sample.position.length, 3);
+});
+
+test("keeps version 1 rotation-only profiles compatible", () => {
+  const profile = prepareProfile(recordedSamples());
+  profile.version = 1;
+  profile.samples = profile.samples.map(({ position, ...sample }) => sample);
+  assert.equal(validateProfile(profile), true);
+  assert.equal(profileHasTranslation(profile), false);
 });
 
 test("rejects an incomplete sensor recording", () => {

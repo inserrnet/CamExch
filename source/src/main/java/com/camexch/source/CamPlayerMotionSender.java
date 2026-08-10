@@ -41,10 +41,12 @@ final class CamPlayerMotionSender implements SensorEventListener {
     private volatile Sample latestSensor;
     private volatile Sample latestArCore;
     private volatile boolean arCoreRequested;
+    private volatile boolean captureRequested;
     private volatile boolean streamRequested;
     private volatile boolean sensorsActive;
     private volatile long sendIntervalMs = 500L;
     private volatile long nextArCoreStartMs;
+    private volatile long latestArCoreAtMs;
     private volatile float[] gyro = new float[]{0f, 0f, 0f};
     private volatile float[] acceleration = new float[]{0f, 0f, 0f};
     private volatile HttpURLConnection activeConnection;
@@ -138,7 +140,11 @@ final class CamPlayerMotionSender implements SensorEventListener {
                 try (OutputStream output = connection.getOutputStream()) {
                     while (running.get() && streamRequested
                             && !Thread.currentThread().isInterrupted()) {
-                        Sample sample = arCoreRequested ? latestArCore : latestSensor;
+                        long nowMs = android.os.SystemClock.elapsedRealtime();
+                        Sample arCore = latestArCore;
+                        boolean useArCore = MotionSamplePolicy.useArCore(
+                                arCoreRequested, arCore != null, latestArCoreAtMs, nowMs);
+                        Sample sample = useArCore ? arCore : latestSensor;
                         if (sample != null && sample.sequence != sentSequence) {
                             byte[] payload = (sample.toJson().toString() + "\n")
                                     .getBytes(StandardCharsets.UTF_8);
@@ -184,7 +190,9 @@ final class CamPlayerMotionSender implements SensorEventListener {
         if (!running.get()) return;
         try {
             JSONObject config = client.motionConfig();
-            boolean requested = config.optBoolean("liveMotion", false);
+            boolean requestedLive = config.optBoolean("liveMotion", false);
+            boolean requestedCapture = config.optBoolean("captureMotion", false);
+            boolean requested = requestedLive || requestedCapture;
             boolean requestedStream = config.optBoolean("streamMotion", false);
             long requestedInterval = config.optLong("sampleIntervalMs",
                     config.optBoolean("streamMotion", false) ? SEND_INTERVAL_MS : 500L);
@@ -192,7 +200,13 @@ final class CamPlayerMotionSender implements SensorEventListener {
             if (requested != arCoreRequested) {
                 arCoreRequested = requested;
                 latestArCore = null;
-                AppLog.info(context, "Cam Player ARCore requested=" + requested);
+                latestArCoreAtMs = 0L;
+                AppLog.info(context, "Cam Player ARCore requested=" + requested
+                        + " live=" + requestedLive + " capture=" + requestedCapture);
+            }
+            if (requestedCapture != captureRequested) {
+                captureRequested = requestedCapture;
+                AppLog.info(context, "Cam Player motion capture requested=" + requestedCapture);
             }
             if (requestedStream != streamRequested) {
                 streamRequested = requestedStream;
@@ -275,6 +289,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
                 latestArCore = Sample.arCore(
                         sequence.incrementAndGet(), timestampNs, position, quaternion,
                         displayRotation(), sensorToDisplayRotation());
+                latestArCoreAtMs = android.os.SystemClock.elapsedRealtime();
             }
 
             @Override
@@ -294,6 +309,7 @@ final class CamPlayerMotionSender implements SensorEventListener {
         ArCorePoseTracker tracker = arCoreTracker;
         arCoreTracker = null;
         latestArCore = null;
+        latestArCoreAtMs = 0L;
         if (tracker != null) tracker.stop();
     }
 

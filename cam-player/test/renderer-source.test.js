@@ -260,8 +260,8 @@ test("recovers a stalled encoder with a new generated track at the same resoluti
 test("isolates media transitions and keeps motion frames active while paused", () => {
   assert.match(renderer, /let mediaLoading = false/);
   assert.match(renderer, /if \(mediaLoading \|\| !sourceElement\) return false/);
-  assert.match(renderer, /motionMode\.value !== "off"/);
-  assert.match(renderer, /const state = motionIsEnabled\(\) \? "motion" : "idle"/);
+  assert.match(renderer, /function outputMotionIsEnabled/);
+  assert.match(renderer, /const state = outputMotionIsEnabled\(\) \? "motion" : "idle"/);
   const handheldScheduler = renderer.slice(
     renderer.indexOf("function scheduleHandheldRender"),
     renderer.indexOf("function applyMotionSettings"),
@@ -269,6 +269,14 @@ test("isolates media transitions and keeps motion frames active while paused", (
   assert.match(handheldScheduler, /framePacerSourceSequence \+= 1/);
   assert.match(handheldScheduler, /wakeFramePacer\("handheld state updated"\)/);
   assert.doesNotMatch(handheldScheduler, /renderFrame\(/);
+});
+
+test("keeps preview-only motion local and visibly marked", () => {
+  assert.match(renderer, /CamHandheld\.modePolicy\(motionMode\.value\)\.outputEnabled/);
+  assert.match(renderer, /function scheduleMotionPreview/);
+  assert.match(renderer, /preview\.classList\.toggle\("motion-preview", active\)/);
+  assert.match(renderer, /motionPreviewIndicator\.hidden = !active/);
+  assert.match(renderer, /motionPreviewSourceMode/);
 });
 
 test("reloads the renderer after WebGL context loss", () => {

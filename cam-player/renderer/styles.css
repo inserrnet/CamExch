@@ -124,6 +124,30 @@ main {
   box-shadow: inset 0 0 0 3px #45b97c;
 }
 
+.preview.motion-preview {
+  box-shadow: inset 0 0 0 4px #f0ad28;
+}
+
+.motion-preview-indicator {
+  position: absolute;
+  z-index: 4;
+  top: 10px;
+  left: 50%;
+  max-width: calc(100% - 28px);
+  transform: translateX(-50%);
+  padding: 8px 12px;
+  border: 1px solid #ffd36a;
+  border-radius: 4px;
+  background: #8a5700;
+  color: #fff7df;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
 .preview.drag-over::after {
   content: "Drop media to open";
   position: absolute;

@@ -3,6 +3,7 @@
 const canvas = document.getElementById("outputCanvas");
 const preview = document.getElementById("preview");
 const emptyState = document.getElementById("emptyState");
+const motionPreviewIndicator = document.getElementById("motionPreviewIndicator");
 const video = document.getElementById("videoSource");
 const image = document.getElementById("imageSource");
 const widthInput = document.getElementById("widthInput");
@@ -384,6 +385,7 @@ let handheldSamples = 0;
 let handheldMetricsStartedAt = performance.now();
 let latestPhoneMotionAt = 0;
 let latestPhoneSample = null;
+let latestArCoreMotionAt = 0;
 let motionProfiles = [];
 let activeMotionProfile = null;
 let recordedMotionPlayer = null;
@@ -393,6 +395,9 @@ let motionRecording = null;
 let motionProfileSaveTimer = null;
 let liveMotionSettings = { motion: 35, stabilization: 55 };
 let motionModeBeforeLive = "off";
+let motionModePrevious = "off";
+let motionPreviewSourceMode = "recorded";
+let motionPreviewFrameId = null;
 let transforms = {
   portrait: { scale: 1, panX: 0, panY: 0 },
   landscape: { scale: 1, panX: 0, panY: 0 },
@@ -616,9 +621,34 @@ function applyPreviewTransform() {
   const availableWidth = preview.clientWidth;
   const availableHeight = preview.clientHeight;
   const fit = Math.min(availableWidth / canvas.width, availableHeight / canvas.height);
-  const scale = Math.max(0.0001, fit * previewZoom);
+  const baseScale = Math.max(0.0001, fit * previewZoom);
+  const policy = CamHandheld.modePolicy(motionMode.value);
+  const motion = policy.previewOnly && sourceElement
+    ? handheldController.output(canvas.width, canvas.height)
+    : { panX: 0, panY: 0, roll: 0, scale: 1 };
+  const scale = baseScale * motion.scale;
+  const motionPanX = motion.panX * baseScale;
+  const motionPanY = -motion.panY * baseScale;
   canvas.style.transform =
-    `translate(calc(-50% + ${previewPanX}px), calc(-50% + ${previewPanY}px)) scale(${scale})`;
+    `translate(calc(-50% + ${previewPanX + motionPanX}px), `
+    + `calc(-50% + ${previewPanY + motionPanY}px)) `
+    + `rotate(${-motion.roll}rad) scale(${scale})`;
+}
+
+function scheduleMotionPreview() {
+  if (!CamHandheld.modePolicy(motionMode.value).previewOnly) return;
+  if (motionPreviewFrameId != null) return;
+  motionPreviewFrameId = requestAnimationFrame(() => {
+    motionPreviewFrameId = null;
+    applyPreviewTransform();
+  });
+}
+
+function syncMotionPreviewIndicator() {
+  const active = CamHandheld.modePolicy(motionMode.value).previewOnly;
+  preview.classList.toggle("motion-preview", active);
+  motionPreviewIndicator.hidden = !active;
+  applyPreviewTransform();
 }
 
 function showFullFrame() {
@@ -877,7 +907,7 @@ function framePacerRate() {
       canvas.width, canvas.height, configured, "interaction",
     );
   }
-  const state = motionIsEnabled() ? "motion" : "idle";
+  const state = outputMotionIsEnabled() ? "motion" : "idle";
   return CamGeometry.adaptiveFrameRate(
     canvas.width,
     canvas.height,
@@ -971,7 +1001,9 @@ function renderFrame(force, frameMetadata = null, options = {}) {
   if (!uploadSource(options.sourceFrame || sourceElement)) return false;
   const size = sourceDimensions();
   const t = transform();
-  const handheld = handheldController.output(canvas.width, canvas.height);
+  const handheld = outputMotionIsEnabled()
+    ? handheldController.output(canvas.width, canvas.height)
+    : { panX: 0, panY: 0, roll: 0, scale: 1 };
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.useProgram(program);
   bindQuad(program);
@@ -1178,7 +1210,7 @@ function stopPausedFrameHeartbeat() {
 }
 
 function updatePausedFrameHeartbeat() {
-  const state = playing ? "playing" : motionIsEnabled() ? "motion" : "idle";
+  const state = playing ? "playing" : outputMotionIsEnabled() ? "motion" : "idle";
   refreshFramePacer(`${state} cadence`, true);
   log(`Frame pacer configured state=${state} fps=${framePacerRate().toFixed(2)} `
     + `output=${canvas.width}x${canvas.height}`);
@@ -2518,8 +2550,12 @@ document.getElementById("mirrorButton").addEventListener("click", (event) => {
   log(`Source horizontal mirror=${sourceMirrored}`);
   event.currentTarget.blur();
 });
-function motionIsEnabled() {
-  return motionMode.value !== "off";
+function motionControllerIsEnabled() {
+  return CamHandheld.modePolicy(motionMode.value).controllerEnabled;
+}
+
+function outputMotionIsEnabled() {
+  return CamHandheld.modePolicy(motionMode.value).outputEnabled;
 }
 
 function syncLiveMotionToggle() {
@@ -2527,7 +2563,13 @@ function syncLiveMotionToggle() {
 }
 
 function scheduleHandheldRender(now = performance.now()) {
-  if (!motionIsEnabled() || !sourceElement || playing) return;
+  const policy = CamHandheld.modePolicy(motionMode.value);
+  if (!policy.controllerEnabled || !sourceElement) return;
+  if (policy.previewOnly) {
+    scheduleMotionPreview();
+    return;
+  }
+  if (playing) return;
   const configuredFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
   const motionFps = Math.min(
     configuredFps,
@@ -2561,7 +2603,7 @@ function startRecordedMotion(profile) {
   handheldController = new CamHandheld.Controller();
   handheldController.configure({
     enabled: true,
-    liveTranslation: false,
+    liveTranslation: CamMotionProfile.profileHasTranslation(profile),
     motion: Number(motionInput.value),
     stabilization: Number(stabilizationInput.value),
   });
@@ -2633,15 +2675,24 @@ async function activateRecordedProfile() {
 async function configureHandheld(reason, persist = true) {
   motionValue.value = motionInput.value;
   stabilizationValue.value = stabilizationInput.value;
-  await window.camPlayer.setLiveMotionRequested(motionMode.value === "live");
-  if (motionMode.value === "recorded") {
+  const policy = CamHandheld.modePolicy(motionMode.value);
+  const previewUsesProfile = policy.previewOnly
+    && motionPreviewSourceMode === "recorded"
+    && Boolean(motionProfileSelect.value);
+  await window.camPlayer.setLiveMotionRequested(
+    motionMode.value === "live"
+      || (policy.previewOnly && motionPreviewSourceMode === "live"),
+  );
+  if (motionMode.value === "recorded" || previewUsesProfile) {
     await activateRecordedProfile();
   } else {
     stopRecordedMotion();
     handheldController = new CamHandheld.Controller();
     handheldController.configure({
-      enabled: motionMode.value === "live",
-      liveTranslation: motionMode.value === "live",
+      enabled: motionMode.value === "live"
+        || (policy.previewOnly && motionPreviewSourceMode === "live"),
+      liveTranslation: motionMode.value === "live"
+        || (policy.previewOnly && motionPreviewSourceMode === "live"),
       motion: Number(motionInput.value),
       stabilization: Number(stabilizationInput.value),
     });
@@ -2649,9 +2700,9 @@ async function configureHandheld(reason, persist = true) {
       handheldController.ingest(latestPhoneSample, performance.now());
       handheldController.recenter();
     }
-    if (motionMode.value === "live") {
+    if (motionMode.value === "live" || policy.previewOnly) {
       handheldStatus.textContent = latestPhoneSample?.trackingSource === "arcore"
-        ? "ARCore phone tracking active"
+        ? policy.previewOnly ? "Previewing live phone motion" : "ARCore phone tracking active"
         : "Waiting for ARCore phone tracking";
     } else {
       handheldStatus.textContent = latestPhoneMotionAt > 0
@@ -2660,6 +2711,7 @@ async function configureHandheld(reason, persist = true) {
     }
   }
   renderFrame(true);
+  syncMotionPreviewIndicator();
   if (persist) {
     savePreferences();
     log(`Handheld configured mode=${motionMode.value} profile=${motionProfileSelect.value || "none"} `
@@ -2688,14 +2740,21 @@ function scheduleActiveProfileSettingsSave() {
 
 motionMode.addEventListener("change", async () => {
   try {
+    if (motionMode.value === "preview") {
+      motionPreviewSourceMode = ["live", "recorded"].includes(motionModePrevious)
+        ? motionModePrevious
+        : motionProfileSelect.value ? "recorded" : "live";
+    }
     if (motionMode.value !== "live") motionModeBeforeLive = motionMode.value;
     syncLiveMotionToggle();
     if (motionMode.value === "live") applyMotionSettings(liveMotionSettings.motion, liveMotionSettings.stabilization);
     await configureHandheld("mode");
+    motionModePrevious = motionMode.value;
   } catch (error) {
     motionMode.value = "off";
     syncLiveMotionToggle();
     await configureHandheld("mode failure");
+    motionModePrevious = motionMode.value;
     showToast(error.message || String(error));
   }
 });
@@ -2711,6 +2770,7 @@ liveMotionToggle.addEventListener("change", async () => {
   }
   try {
     await configureHandheld("live toggle");
+    motionModePrevious = motionMode.value;
   } catch (error) {
     motionMode.value = "off";
     syncLiveMotionToggle();
@@ -2720,19 +2780,24 @@ liveMotionToggle.addEventListener("change", async () => {
   syncLiveMotionToggle();
 });
 motionProfileSelect.addEventListener("change", async () => {
-  if (motionMode.value === "recorded") await configureHandheld("profile");
+  if (motionMode.value === "recorded"
+      || (motionMode.value === "preview" && motionPreviewSourceMode === "recorded")) {
+    await configureHandheld("profile");
+  }
   else savePreferences();
 });
 function updateMotionStrengthPreview() {
   motionValue.value = motionInput.value;
   stabilizationValue.value = stabilizationInput.value;
   handheldController.configure({
-    enabled: motionIsEnabled(),
-    liveTranslation: motionMode.value === "live",
+    enabled: motionControllerIsEnabled(),
+    liveTranslation: motionMode.value === "live"
+      || (motionMode.value === "preview" && motionPreviewSourceMode === "live"),
     motion: Number(motionInput.value),
     stabilization: Number(stabilizationInput.value),
   });
   renderFrame(true);
+  scheduleMotionPreview();
 }
 
 motionInput.addEventListener("input", updateMotionStrengthPreview);
@@ -2754,6 +2819,7 @@ stabilizationInput.addEventListener("change", () => {
 recenterButton.addEventListener("click", () => {
   handheldController.recenter();
   renderFrame(true);
+  scheduleMotionPreview();
   log("Handheld recentered");
 });
 
@@ -2777,22 +2843,27 @@ function resetMotionRecordingUi() {
   clearInterval(motionRecordingTimer);
   motionRecordingTimer = null;
   motionRecording = null;
-  recordMotionButton.disabled = performance.now() - latestPhoneMotionAt > 2000;
+  updateRecordMotionAvailability();
   cancelMotionRecordingButton.hidden = true;
 }
 
 function cancelMotionRecording(reason = "cancelled") {
   if (!motionRecording) return;
+  const returnToPreview = motionRecording.returnMode === "preview";
   window.camPlayer.setMotionCaptureRequested(false).catch(() => {});
   resetMotionRecordingUi();
   motionRecordingStatus.hidden = true;
   handheldStatus.textContent = "Motion recording cancelled";
+  if (returnToPreview) {
+    configureHandheld("recording cancelled", false).catch((error) => log(String(error)));
+  }
   log(`Motion recording cancelled reason=${reason}`);
 }
 
 async function finishMotionRecording() {
   if (!motionRecording || motionRecording.phase === "processing") return;
   const samples = motionRecording.samples;
+  const returnMode = motionRecording.returnMode;
   motionRecording.phase = "processing";
   clearInterval(motionRecordingTimer);
   motionRecordingTimer = null;
@@ -2806,7 +2877,8 @@ async function finishMotionRecording() {
     });
     const summary = await window.camPlayer.saveMotionProfile(profile);
     await refreshMotionProfiles(summary.id);
-    motionMode.value = "recorded";
+    motionMode.value = returnMode === "preview" ? "preview" : "recorded";
+    if (motionMode.value === "preview") motionPreviewSourceMode = "recorded";
     await configureHandheld("recording completed");
     showMotionRecordingStatus("Motion profile saved");
     setTimeout(() => {
@@ -2827,6 +2899,16 @@ async function finishMotionRecording() {
 function updateMotionRecordingClock() {
   if (!motionRecording) return;
   const now = performance.now();
+  if (motionRecording.phase === "waiting") {
+    const waitedMs = now - motionRecording.requestedAt;
+    showMotionRecordingStatus(`Waiting for phone tracking... ${Math.floor(waitedMs / 1000)}s`);
+    if (waitedMs >= 20_000) {
+      const message = "ARCore tracking did not become ready";
+      cancelMotionRecording(message);
+      showToast(message);
+    }
+    return;
+  }
   if (motionRecording.phase === "countdown") {
     const remaining = Math.max(0, Math.ceil((motionRecording.startsAt - now) / 1000));
     showMotionRecordingStatus(`Starting in ${remaining}...`);
@@ -2841,7 +2923,7 @@ function updateMotionRecordingClock() {
     return;
   }
   if (motionRecording.phase !== "recording") return;
-  if (now - latestPhoneMotionAt > 2000) {
+  if (now - latestArCoreMotionAt > 2000) {
     const message = "Phone motion connection was lost";
     cancelMotionRecording(message);
     showToast(message);
@@ -2854,21 +2936,37 @@ function updateMotionRecordingClock() {
 }
 
 recordMotionButton.addEventListener("click", async () => {
-  if (performance.now() - latestPhoneMotionAt > 2000) {
+  if (!currentServerInfo?.sourceConnected) {
     showToast("Connect Source and start Cam Player mode first");
     return;
   }
   await window.camPlayer.setMotionCaptureRequested(true);
+  if (motionMode.value === "preview") {
+    stopRecordedMotion();
+    handheldController = new CamHandheld.Controller();
+    handheldController.configure({
+      enabled: true,
+      liveTranslation: true,
+      motion: Number(motionInput.value),
+      stabilization: Number(stabilizationInput.value),
+    });
+    if (latestPhoneSample) {
+      handheldController.ingest(latestPhoneSample, performance.now());
+      handheldController.recenter();
+    }
+    scheduleMotionPreview();
+  }
   motionRecording = {
-    phase: "countdown",
-    startsAt: performance.now() + 3000,
+    phase: "waiting",
+    requestedAt: performance.now(),
     samples: [],
+    returnMode: motionMode.value,
   };
   recordMotionButton.disabled = true;
   cancelMotionRecordingButton.hidden = false;
-  showMotionRecordingStatus("Starting in 3...");
+  showMotionRecordingStatus("Waiting for phone tracking...");
   motionRecordingTimer = setInterval(updateMotionRecordingClock, 100);
-  log("Motion recording countdown started seconds=3");
+  log("Motion recording requested waitingFor=arcore timeoutSeconds=20");
 });
 cancelMotionRecordingButton.addEventListener("click", () => cancelMotionRecording("user"));
 openProfilesFolderButton.addEventListener("click", async () => {
@@ -3054,6 +3152,11 @@ function applyServerInfo(info) {
   currentServerInfo = info;
   renderNetworkInfo();
   updateConnectionState();
+  updateRecordMotionAvailability();
+}
+
+function updateRecordMotionAvailability() {
+  recordMotionButton.disabled = Boolean(motionRecording) || !currentServerInfo?.sourceConnected;
 }
 
 function renderNetworkInfo() {
@@ -3071,10 +3174,21 @@ window.camPlayer.onHandheldMotion((sample) => {
   const now = performance.now();
   latestPhoneSample = sample;
   latestPhoneMotionAt = now;
+  const arCoreSample = sample?.trackingSource === "arcore"
+    && Array.isArray(sample.position)
+    && sample.position.length >= 3;
+  if (arCoreSample) latestArCoreMotionAt = now;
   handheldSamples += 1;
   recenterButton.disabled = false;
-  if (!motionRecording) recordMotionButton.disabled = false;
-  if (motionRecording?.phase === "recording") {
+  updateRecordMotionAvailability();
+  if (motionRecording?.phase === "waiting" && arCoreSample) {
+    motionRecording.phase = "countdown";
+    motionRecording.startsAt = now + 3000;
+    motionRecording.samples = [];
+    showMotionRecordingStatus("Starting in 3...");
+    log("Motion recording tracking ready countdownSeconds=3");
+  }
+  if (motionRecording?.phase === "recording" && arCoreSample) {
     const elapsed = now - motionRecording.startedAt;
     if (elapsed >= 0 && elapsed <= CamMotionProfile.RECORDING_DURATION_MS) {
       motionRecording.samples.push({
@@ -3082,15 +3196,20 @@ window.camPlayer.onHandheldMotion((sample) => {
         quaternion: Array.from(sample.quaternion || []),
         gyro: Array.from(sample.gyro || []),
         acceleration: Array.from(sample.acceleration || []),
+        position: Array.from(sample.position || []),
         t: elapsed,
       });
     }
   }
-  if (motionMode.value === "live") {
+  if (motionMode.value === "live"
+      || (motionMode.value === "preview"
+        && (motionPreviewSourceMode === "live" || motionRecording))) {
     handheldController.ingest(sample, now);
-    handheldStatus.textContent = sample.trackingSource === "arcore"
-      ? "ARCore phone tracking active"
-      : "Waiting for ARCore phone tracking";
+    handheldStatus.textContent = motionMode.value === "preview"
+      ? motionRecording ? "Recording motion preview" : "Previewing live phone motion"
+      : sample.trackingSource === "arcore"
+        ? "ARCore phone tracking active"
+        : "Waiting for ARCore phone tracking";
     scheduleHandheldRender(now);
   } else if (motionMode.value === "off") {
     handheldStatus.textContent = "Phone motion available";
@@ -3131,6 +3250,7 @@ async function initialize() {
   };
   await refreshMotionProfiles(preferences.selectedMotionProfileId);
   motionMode.value = "off";
+  motionModePrevious = motionMode.value;
   motionModeBeforeLive = motionMode.value === "recorded" ? "recorded" : "off";
   if (motionMode.value === "recorded" && !motionProfileSelect.value) motionMode.value = "off";
   syncLiveMotionToggle();
@@ -3141,7 +3261,7 @@ async function initialize() {
     applyMotionSettings(liveMotionSettings.motion, liveMotionSettings.stabilization);
   }
   recenterButton.disabled = true;
-  recordMotionButton.disabled = true;
+  updateRecordMotionAvailability();
   try {
     manualOutput = {
       width: Number(preferences.width) || 720,

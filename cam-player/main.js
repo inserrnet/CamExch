@@ -443,6 +443,7 @@ async function handleRequest(request, response) {
         claimedAt: Date.now(),
         lastSeenAt: Date.now(),
       };
+      mainWindow?.webContents.send("server-info", serverInfo());
       if (previous && previous !== deviceId) {
         mainWindow?.webContents.send("source-close", {
           sessionId: "",
@@ -457,6 +458,7 @@ async function handleRequest(request, response) {
       const deviceId = sourceDeviceId(request);
       const released = Boolean(sourceOwner && sourceOwner.deviceId === deviceId);
       if (released) sourceOwner = null;
+      if (released) mainWindow?.webContents.send("server-info", serverInfo());
       log(`Source ownership release id=${deviceId || "missing"} released=${released}`);
       sendJson(response, 200, { ok: true, released });
       if (released) setTimeout(() => rebindServer("0.0.0.0", "Source released route"), 50);
@@ -588,6 +590,8 @@ function serverInfo() {
     addresses,
     interfaces,
     lockedAddress: isDiscoveryAddress(serverHost) ? "" : serverHost,
+    sourceConnected: Boolean(sourceOwner),
+    sourceDeviceName: sourceOwner?.deviceName || "",
   };
 }
 
@@ -821,7 +825,11 @@ ipcMain.handle("set-live-motion-requested", (_event, enabled) => {
   return liveMotionRequested;
 });
 ipcMain.handle("set-motion-capture-requested", (_event, enabled) => {
-  motionCaptureRequested = enabled === true;
+  const requested = enabled === true;
+  if (requested !== motionCaptureRequested) {
+    motionCaptureRequested = requested;
+    log(`Motion capture request=${requested} tracking=arcore`);
+  }
   return motionCaptureRequested;
 });
 ipcMain.handle("get-memory-info", () => {
