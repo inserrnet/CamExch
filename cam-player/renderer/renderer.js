@@ -300,7 +300,6 @@ let backgroundSnapshotRotation = 0;
 let backgroundSnapshotMirrored = false;
 let videoFrameCallbackId = null;
 let videoFrameCaptureFailures = 0;
-let pausedFrameTimer = null;
 let timelineTimer = null;
 let cadenceStartedAt = 0;
 let cadenceState = "idle";
@@ -360,6 +359,16 @@ let trackFramesDropped = 0;
 let trackWriteFailures = 0;
 const outputTimeline = new CamOutputTimeline.Timeline();
 let frameTransportError = null;
+let framePacerSubmitting = false;
+let framePacerSourceSequence = 0;
+let framePacerLastSourceSequence = -1;
+let framePacerFreshFrames = 0;
+let framePacerRepeatedFrames = 0;
+let framePacerRejectedFrames = 0;
+let framePacerSkippedDeadlines = 0;
+let framePacerDriftTotalMs = 0;
+let framePacerDriftMaxMs = 0;
+let framePacerMetricsStartedAt = performance.now();
 let peers = new Map();
 let readyPeers = new Set();
 const peerMaintenance = new Map();
@@ -371,7 +380,6 @@ let recent = [];
 let currentServerInfo = null;
 let activeLocalAddress = "";
 let handheldController = new CamHandheld.Controller();
-let handheldRenderFrameId = null;
 let handheldLastRenderAt = 0;
 let handheldSamples = 0;
 let handheldMetricsStartedAt = performance.now();
@@ -797,13 +805,14 @@ async function flushGeneratedFrames() {
 }
 
 function submitGeneratedFrame(options = {}) {
+  if (!framePacerSubmitting) {
+    log(`Frame submission rejected owner=${options.owner || "unknown"}; owner=pacer required`);
+    return false;
+  }
   if (trackRestartPending || !canvasTrack || peers.size === 0) return false;
   const fps = Math.max(1, Number(options.fps) || effectiveMediaFps());
   const durationUs = Math.max(1, Math.round(1_000_000 / fps));
-  const mediaTime = Number(options.mediaTime);
-  const timing = Number.isFinite(mediaTime)
-    ? outputTimeline.nextVideo(mediaTime, durationUs)
-    : outputTimeline.nextStatic(durationUs);
+  const timing = outputTimeline.nextStatic(durationUs);
   if (frameTransport === "canvas-capture") {
     try {
       canvasTrack.requestFrame();
@@ -856,6 +865,92 @@ function submitGeneratedFrame(options = {}) {
 }
 submitGeneratedFrame.lastSubmittedAt = 0;
 
+function framePacerRate() {
+  if (sourceKind === "video" && playing) return effectiveMediaFps();
+  const configured = configuredMaximumFps();
+  if (sourceInteractionActive) {
+    return CamGeometry.adaptiveFrameRate(
+      canvas.width, canvas.height, configured, "interaction",
+    );
+  }
+  const state = motionIsEnabled() ? "motion" : "idle";
+  return CamGeometry.adaptiveFrameRate(
+    canvas.width,
+    canvas.height,
+    state === "motion" ? Math.min(30, configured) : configured,
+    state,
+  );
+}
+
+function reportFramePacer(reason = "periodic", force = false) {
+  const now = performance.now();
+  const elapsedMs = now - framePacerMetricsStartedAt;
+  if (!force && elapsedMs < 5000) return;
+  const frames = framePacerFreshFrames + framePacerRepeatedFrames;
+  log(`Frame pacer reason=${reason} owner=pacer targetFps=${framePacerRate().toFixed(2)} `
+    + `sentFps=${(frames / Math.max(0.001, elapsedMs / 1000)).toFixed(2)} `
+    + `fresh=${framePacerFreshFrames} repeated=${framePacerRepeatedFrames} `
+    + `rejected=${framePacerRejectedFrames} `
+    + `skippedDeadlines=${framePacerSkippedDeadlines} `
+    + `driftMs=${(frames ? framePacerDriftTotalMs / frames : 0).toFixed(2)}`
+    + `/${framePacerDriftMaxMs.toFixed(2)} state=${playing ? "playing" : "paused"} `
+    + `motion=${motionMode.value} output=${canvas.width}x${canvas.height}`);
+  framePacerFreshFrames = 0;
+  framePacerRepeatedFrames = 0;
+  framePacerRejectedFrames = 0;
+  framePacerSkippedDeadlines = 0;
+  framePacerDriftTotalMs = 0;
+  framePacerDriftMaxMs = 0;
+  framePacerMetricsStartedAt = now;
+}
+
+const framePacer = new CamFramePacer.Pacer({
+  onTick: (tick) => {
+    if (!sourceElement || !canvasTrack || peers.size === 0) return;
+    const fresh = framePacerSourceSequence !== framePacerLastSourceSequence;
+    let submitted = false;
+    framePacerSubmitting = true;
+    try {
+      const rendered = renderFrame(true, null, { pacerTick: true, measureCadence: false });
+      if (rendered) {
+        submitted = submitGeneratedFrame({
+          owner: "pacer",
+          fps: tick.fps,
+          videoGeneration: sourceKind === "video" && playing ? playbackGeneration : null,
+        });
+      }
+    } finally {
+      framePacerSubmitting = false;
+    }
+    if (submitted) {
+      if (fresh) framePacerFreshFrames += 1;
+      else framePacerRepeatedFrames += 1;
+      framePacerLastSourceSequence = framePacerSourceSequence;
+    } else {
+      framePacerRejectedFrames += 1;
+    }
+    framePacerSkippedDeadlines += tick.skipped;
+    framePacerDriftTotalMs += Math.max(0, tick.driftMs);
+    framePacerDriftMaxMs = Math.max(framePacerDriftMaxMs, tick.driftMs);
+    reportFramePacer();
+  },
+});
+
+function refreshFramePacer(reason, immediate = false) {
+  const active = Boolean(sourceElement && canvasTrack && peers.size > 0);
+  framePacer.configure({
+    active,
+    fps: framePacerRate(),
+    immediate,
+    reason,
+  });
+}
+
+function wakeFramePacer(reason) {
+  refreshFramePacer(reason, false);
+  framePacer.wake(reason);
+}
+
 function renderFrame(force, frameMetadata = null, options = {}) {
   if (mediaLoading || !sourceElement) return false;
   const now = performance.now();
@@ -895,39 +990,24 @@ function renderFrame(force, frameMetadata = null, options = {}) {
   gl.uniform1i(uniforms.mirrored, sourceMirrored ? 1 : 0);
   gl.uniform1f(uniforms.handheldRoll, handheld.roll);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
-  const shouldSubmit = options.submit == null
-    ? !(sourceKind === "video" && playing)
-    : options.submit;
-  if (shouldSubmit) {
-    submitGeneratedFrame({
-      mediaTime,
-      fps: options.fps,
-      videoGeneration: options.videoGeneration,
-    });
-  }
   const renderTimeMs = performance.now() - renderStartedAt;
   if (options.measureCadence !== false) {
     cadenceRenderTimeMs += renderTimeMs;
     cadenceMaxRenderTimeMs = Math.max(cadenceMaxRenderTimeMs, renderTimeMs);
   }
   lastRenderAt = now;
+  if (!options.pacerTick) {
+    framePacerSourceSequence += 1;
+    wakeFramePacer(options.reason || "composition updated");
+  }
   return true;
 }
 
 function emitBootstrapFrames(reason, count = 4, intervalMs = 80) {
-  if (sourceKind === "video" && playing) {
-    log(`Generated track bootstrap skipped during playback reason=${reason}`);
-    return;
-  }
-  let remaining = Math.max(1, count);
-  const emit = () => {
-    if (!canvasTrack || peers.size === 0) return;
-    renderFrame(true);
-    remaining -= 1;
-    if (remaining > 0) setTimeout(emit, intervalMs);
-  };
-  emit();
-  log(`Generated track bootstrap frames scheduled count=${count} reason=${reason}`);
+  refreshFramePacer(`bootstrap ${reason}`, true);
+  framePacer.wake(`bootstrap ${reason}`);
+  log(`Generated track bootstrap delegated to pacer reason=${reason} `
+    + `legacyCount=${count} legacyIntervalMs=${intervalMs}`);
 }
 
 function resetPlaybackCadence(state = playing ? "playing" : "idle") {
@@ -1066,9 +1146,7 @@ function scheduleVideoFrame(generation = playbackGeneration) {
     observeMediaFrameRate(metadata);
     sourceTextureDirty = true;
     if (renderFrame(false, metadata, {
-      submit: true,
-      fps: effectiveMediaFps(),
-      videoGeneration: generation,
+      reason: "decoded video frame",
     })) {
       cadenceRenderedFrames += 1;
       if (playbackNeedsKeyFrame) {
@@ -1090,32 +1168,20 @@ function scheduleVideoFrame(generation = playbackGeneration) {
 }
 
 function stopPausedFrameHeartbeat() {
-  clearInterval(pausedFrameTimer);
-  pausedFrameTimer = null;
+  framePacer.stop();
 }
 
 function updatePausedFrameHeartbeat() {
-  stopPausedFrameHeartbeat();
-  if (playing || !sourceElement || !canvasTrack || peers.size === 0) return;
-  const state = motionMode.value === "off" ? "idle" : "motion";
-  const idleFps = CamGeometry.adaptiveFrameRate(
-    canvas.width,
-    canvas.height,
-    state === "motion"
-      ? Math.min(30, Number(fpsInput.value) || 30)
-      : Number(fpsInput.value) || 30,
-    state,
-  );
-  renderFrame(true);
-  // A low-rate static heartbeat keeps paused video and photos observable as a
-  // live camera track without affecting the playing-video clock.
-  pausedFrameTimer = setInterval(() => renderFrame(true), 1000 / idleFps);
-  log(`Paused/photo camera heartbeat state=${state} fps=${idleFps} `
+  const state = playing ? "playing" : motionIsEnabled() ? "motion" : "idle";
+  refreshFramePacer(`${state} cadence`, true);
+  log(`Frame pacer configured state=${state} fps=${framePacerRate().toFixed(2)} `
     + `output=${canvas.width}x${canvas.height}`);
 }
 
 function discardGeneratedStream(reason) {
   if (!stream) return;
+  framePacer.stop();
+  reportFramePacer(`stream discarded ${reason}`, true);
   discardPendingTrackFrame("");
   const previousWriter = trackWriter;
   trackWriter = null;
@@ -1536,11 +1602,13 @@ async function play() {
   resetPlaybackCadence("playing");
   mediaFrameSelector.reset();
   outputTimeline.beginGeneration(video.currentTime || 0);
+  refreshFramePacer("playback starting", true);
   try {
     await video.play();
     if (generation !== playbackGeneration || !playing) return;
     updateTrackContentHint("playback started");
     scheduleVideoFrame(generation);
+    refreshFramePacer("playback started", true);
     updateOutputLabel();
     log("Playback started");
   } catch (error) {
@@ -1560,6 +1628,7 @@ function pause() {
   discardPendingTrackFrame("");
   reportPlaybackCadence("pause", true);
   playing = false;
+  framePacer.stop();
   playbackNeedsKeyFrame = false;
   stopVideoFrameLoop();
   resetPlaybackCadence("paused");
@@ -2452,7 +2521,7 @@ function syncLiveMotionToggle() {
 }
 
 function scheduleHandheldRender(now = performance.now()) {
-  if (!motionIsEnabled() || !sourceElement || playing || handheldRenderFrameId != null) return;
+  if (!motionIsEnabled() || !sourceElement || playing) return;
   const configuredFps = Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
   const motionFps = Math.min(
     configuredFps,
@@ -2465,11 +2534,9 @@ function scheduleHandheldRender(now = performance.now()) {
     ) * 1.5),
   );
   if (now - handheldLastRenderAt < 1000 / motionFps) return;
-  handheldRenderFrameId = requestAnimationFrame(() => {
-    handheldRenderFrameId = null;
-    handheldLastRenderAt = performance.now();
-    renderFrame(true);
-  });
+  handheldLastRenderAt = now;
+  framePacerSourceSequence += 1;
+  wakeFramePacer("handheld state updated");
 }
 
 function stopRecordedMotion() {
@@ -2832,9 +2899,13 @@ video.addEventListener("seeking", () => {
   const generation = playbackGeneration;
   stopVideoFrameLoop();
   discardPendingTrackFrame("");
+  framePacer.stop();
   outputTimeline.beginGeneration(video.currentTime || 0);
   mediaFrameSelector.reset();
-  if (playing) scheduleVideoFrame(generation);
+  if (playing) {
+    scheduleVideoFrame(generation);
+    refreshFramePacer("video seeking", true);
+  }
   log(`Playback generation advanced reason=seek generation=${generation} `
     + `positionMs=${Math.round(video.currentTime * 1000)}`);
 });
@@ -3115,7 +3186,6 @@ canvas.addEventListener("webglcontextlost", (event) => {
 });
 
 window.addEventListener("beforeunload", () => {
-  if (handheldRenderFrameId != null) cancelAnimationFrame(handheldRenderFrameId);
   clearInterval(recordedMotionTimer);
   clearInterval(motionRecordingTimer);
   clearTimeout(motionProfileSaveTimer);

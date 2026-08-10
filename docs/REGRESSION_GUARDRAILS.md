@@ -39,16 +39,23 @@ schedulers, sessions, or routes can conflict in the complete pipeline.
 These rules are release blockers.
 
 - While a video is playing, `metadata.mediaTime` is the master clock for source
-  frame order; callback arrival time must not become the WebRTC capture order.
-- `requestVideoFrameCallback()` is the only playing-video submission owner.
-- Each accepted callback writes one timestamped `VideoFrame` from the composed
-  canvas to a single `MediaStreamTrackGenerator`.
-- `canvas.captureStream()`, `requestFrame()`, and a separate playing-video
-  transport timer are forbidden in Cam Player.
+  frame selection and order; callback arrival time must not decide which source
+  frames survive an FPS reduction.
+- One deadline-based frame pacer is the sole generated-track submission owner in
+  every state: playing, paused, photo, Motion, interaction, and bootstrap.
+- `requestVideoFrameCallback()` may update only the latest source composition.
+  Motion and UI interaction may update only the latest transform/composition.
+  None of them may create, request, or write a transport frame directly.
+- The pacer writes at most one timestamped `VideoFrame` per deadline to one
+  `MediaStreamTrackGenerator`; missed deadlines are skipped, never replayed as
+  catch-up bursts.
+- The normal production path must not mix `canvas.captureStream()` or
+  `requestFrame()` with generated-track writes. Canvas capture is allowed only
+  as the single fallback transport when `MediaStreamTrackGenerator` is absent.
 - Generator backpressure may retain at most one not-yet-written latest frame.
   Replacing it closes the old frame; stale frames are never replayed later.
-- Source zoom, pan, mirror, rotation, and motion transform the selected frame
-  without creating another playing-video submission or changing media time.
+- Source zoom, pan, mirror, rotation, and motion transform the latest selected
+  frame without creating another submission clock.
 - Maximum FPS is a ceiling, not a forced output rate. Reduction is based on
   source `mediaTime`, never callback wall time or an encoder-side timer.
 - A source below the ceiling keeps its native cadence: `24 -> 24`, `30 -> 30`,
@@ -57,8 +64,9 @@ These rules are release blockers.
   example `60 -> 30`; it must not use callback arrival time for frame selection.
 - Cadence logs include decoded, rendered, generated, written, replaced, encoded,
   and sent frame rates plus timestamp spacing and write backpressure.
-- Output timestamps remain strictly monotonic across pause, play, seek, loop,
-  media replacement, and resolution changes while preserving source spacing.
+- Output timestamps come from the pacer's single monotonic timebase and remain
+  strictly increasing across pause, play, seek, loop, media replacement, FPS
+  changes, and resolution changes.
 - GPU texture storage is allocated only when dimensions change. Ordinary frames
   update existing texture storage.
 - Decide whether a frame is needed before expensive upload, composition, and
@@ -78,6 +86,11 @@ Historical regressions:
   `decodedFps=23.8 renderedFps=23.8 skipped=0`.
 - Any new scheduler must preserve both fixes in the complete renderer-to-WebRTC
   path, not merely leave the old helper functions present but bypassed.
+- Cam Player `0.6.3` exposed a later ownership regression: paused heartbeat and
+  Motion could keep submitting while playback also submitted decoded callbacks,
+  producing roughly 46 FPS from a 24 FPS source and bursty Browser decode. The
+  renderer must retain exactly one call site for `submitGeneratedFrame()` plus
+  its declaration, and that call site must belong to the frame pacer.
 
 ## Pause, Photo, And Heartbeat Contract
 
@@ -85,11 +98,11 @@ Historical regressions:
 - A paused video continues to expose the exact visible pause frame to Browser.
 - Moving the source while paused updates the transmitted composed frame.
 - A photo remains available as a live camera source without continuous decoding.
-- A heartbeat may keep paused video or a photo alive, but it must be separate
-  from playing-video cadence.
-- Starting playback disables the paused/static scheduler immediately.
-- Pausing playback disables the playing scheduler immediately and retains the
-  most recently presented frame.
+- The same pacer supplies the low-rate paused/photo heartbeat; a second timer is
+  forbidden.
+- Starting or pausing playback reconfigures that pacer atomically and resets its
+  next deadline; it never leaves the previous state's clock running.
+- Pausing retains the most recently presented frame.
 - Motion can update a paused/photo composition at its required rate, but must not
   silently cap subsequent video playback or leave another scheduler active.
 
@@ -240,8 +253,9 @@ or WebRTC change.
   its context uses `preserveDrawingBuffer: false`. Copy the just-rendered back
   buffer to the reusable 2D transfer surface first.
 - The Electron smoke test must exercise the production WebGL-to-transfer path,
-  remote WebRTC decode, live resize, repeated peers, `1500x2000`, `2400x3200`,
-  and a measured 24 FPS cadence cycle.
+  production frame pacer, a `Motion pause -> 24 FPS playback` transition, remote
+  WebRTC decode, live resize, repeated peers, `1500x2000`, `2400x3200`, and a
+  measured 24 FPS cadence cycle.
 - Keep at most one pending generated frame. Backpressure replaces an obsolete
   pending frame; it must never build a playback queue.
 - Resolve every repeated site `configure` and `offer` from the same manual

@@ -9,7 +9,7 @@ Last reviewed: 2026-08-10
 
 Relevant deployed engines at the time of review:
 
-- Cam Player 0.6.3: Electron 39.2.7 / Chromium 142.0.7444.235.
+- Cam Player 0.6.4: Electron 39.2.7 / Chromium 142.0.7444.235.
 - Browser 0.6.21: Android System WebView 150.0.7871.181.
 
 The specifications and Chromium main branch can change. Recheck the linked
@@ -36,8 +36,9 @@ sources when either runtime changes or before replacing timing logic.
 
 ## Decoded Video Clock
 
-`HTMLVideoElement.requestVideoFrameCallback()` is the Cam Player master clock
-while a video is playing. Its metadata exposes values needed for diagnostics:
+`HTMLVideoElement.requestVideoFrameCallback()` is the source-frame clock while
+a video is playing. It updates Cam Player's latest composition but does not own
+generated-track submission. Its metadata exposes values needed for diagnostics:
 
 - `mediaTime`: position on the source media timeline.
 - `presentedFrames`: cumulative frames submitted for composition by the media
@@ -52,26 +53,29 @@ media reload, or loop transition. Log unexpected duplicates or regressions.
 
 ## Generated Track Clock
 
-Cam Player copies the composed WebGL back buffer immediately to a reusable 2D
-transfer canvas, creates a WebCodecs `VideoFrame` from that stable surface, and
-writes it to a `MediaStreamTrackGenerator`. A production WebGL canvas created
-with `preserveDrawingBuffer: false` is not itself a reliable `VideoFrame`
-source. The transfer avoids that failure while retaining the MP4 timeline as
-the transport clock. Explicit `canvas.captureStream(0)` is only a preflight
+At each deadline, one frame pacer copies the latest composed WebGL back buffer
+to a reusable 2D transfer canvas, creates a WebCodecs `VideoFrame` from that
+stable surface, and writes it to a `MediaStreamTrackGenerator`. A production
+WebGL canvas created with `preserveDrawingBuffer: false` is not itself a reliable
+`VideoFrame` source. Explicit `canvas.captureStream(0)` is only a preflight
 fallback when the generated-track path is unavailable.
 
 Consequences for Cam Player:
 
-- Each accepted `requestVideoFrameCallback()` result produces at most one frame
-  whose timestamp is derived from `mediaTime`.
-- The output timeline preserves source spacing and remains monotonic across
-  seek, loop, pause/play, media replacement, and output-size changes.
-- There is no deadline scheduler and no playing `requestFrame()` call.
+- Each accepted `requestVideoFrameCallback()` result replaces the latest source
+  composition; it never writes a generated frame itself.
+- One deadline sequence owns every generated frame. It uses source FPS, bounded
+  by Maximum FPS, while playing and adaptive rates for paused/photo/Motion
+  states. Missed deadlines advance to the next future deadline without catch-up
+  writes.
+- The output timeline is derived only from this pacer and remains monotonic
+  across seek, loop, pause/play, media replacement, FPS changes, and output-size
+  changes.
 - Writable-stream backpressure retains at most one pending latest frame. A newer
   frame closes and replaces that pending frame instead of building latency.
 - A generation token rejects frames from an obsolete play, seek, or media load.
-- Pause/photo heartbeats use the same generator and monotonic timeline, but that
-  scheduler stops before playback begins.
+- Pause/photo heartbeat, Motion, interaction, bootstrap, and playback all use
+  the same pacer and generator. A second submission timer is forbidden.
 - Arbitrary even dimensions are carried by individual generated frames. A live
   resolution change does not restart a healthy track or peer connection.
 - Repeated site configuration and offer messages resolve geometry from the
@@ -141,10 +145,11 @@ not RTP packet jitter. Do not log it as `jitterMs`.
 For `Pause -> Play`:
 
 1. Enter a playback-starting state.
-2. Stop the paused/static heartbeat before calling `video.play()`.
+2. Stop the previous pacer deadline sequence before calling `video.play()`.
 3. If `video.play()` fails, restore paused state and heartbeat.
-4. Upload and compose each accepted fresh callback directly.
-5. Write one timestamped generated frame and close it after the write settles.
+4. Let each accepted fresh callback update only the latest composition.
+5. Start one playback-rate pacer sequence and write at most one current frame per
+   deadline; close it after the write settles.
 6. Keep transformations independent from transport backpressure and clear the
    one pending frame on pause, seek, loop, media replacement, and shutdown.
 

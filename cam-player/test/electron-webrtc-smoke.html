@@ -2,6 +2,7 @@
 <meta charset="utf-8">
 <canvas id="source"></canvas>
 <video id="remote" muted autoplay playsinline></video>
+<script src="../lib/frame-pacer.js"></script>
 <script>
   "use strict";
 
@@ -250,18 +251,19 @@
     let latestFrame = 0;
     let timestampUs = 0;
     let writeChain = Promise.resolve();
-    const paintLatest = () => {
+    const transmitLatest = (tick) => {
       producerGl.clearColor((latestFrame % 255) / 255, 40 / 255, 80 / 255, 1);
       producerGl.clear(producerGl.COLOR_BUFFER_BIT);
       producerGl.flush();
       transferContext.drawImage(producerCanvas, 0, 0);
-      const frame = new VideoFrame(transferCanvas, { timestamp: timestampUs, duration: 41667 });
-      timestampUs += 41667;
+      const durationUs = Math.round(tick.intervalMs * 1000);
+      const frame = new VideoFrame(transferCanvas, { timestamp: timestampUs, duration: durationUs });
+      timestampUs += durationUs;
       writeChain = writeChain.then(() => writer.write(frame)).finally(() => frame.close());
     };
-    const bootstrap = setInterval(paintLatest, 40);
+    const productionPacer = new CamFramePacer.Pacer({ onTick: transmitLatest });
+    productionPacer.configure({ active: true, fps: 30, immediate: true, reason: "motion-pause" });
     await video.play();
-    clearInterval(bootstrap);
     const capturedFrame = await new Promise((resolve, reject) => {
       video.requestVideoFrameCallback((_now, metadata) => {
         try {
@@ -272,7 +274,7 @@
           reject(error);
         }
       });
-      paintLatest();
+      productionPacer.wake("bootstrap");
     });
     const uploadCanvas = document.createElement("canvas");
     uploadCanvas.width = capturedFrame.displayWidth;
@@ -302,13 +304,15 @@
       video.requestVideoFrameCallback(observe);
     };
     video.requestVideoFrameCallback(observe);
-    const transport = setInterval(paintLatest, 1000 / 24);
+    // Exercise the production transition that previously left a motion sender
+    // and heartbeat competing with playback.
+    productionPacer.configure({ active: true, fps: 24, immediate: true, reason: "play" });
     for (let index = 1; index <= 72; index += 1) {
       latestFrame = index;
       await wait(index % 2 === 0 ? 10 : 73);
     }
     await wait(500);
-    clearInterval(transport);
+    productionPacer.configure({ active: false, fps: 24, reason: "complete" });
     observing = false;
     const intervals = presentedAt.slice(1).map((value, index) => value - presentedAt[index])
       .sort((a, b) => a - b);

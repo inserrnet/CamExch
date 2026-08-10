@@ -26,11 +26,14 @@ test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
-test("writes timestamped frames through a WebGL-safe transfer surface", () => {
-  assert.match(
-    renderer,
-    /pausedFrameTimer = setInterval\(\(\) => renderFrame\(true\), 1000 \/ idleFps\)/,
-  );
+test("writes timestamped frames through one WebGL-safe frame pacer", () => {
+  assert.match(indexHtml, /src="\.\.\/lib\/frame-pacer\.js"/);
+  assert.match(renderer, /const framePacer = new CamFramePacer\.Pacer/);
+  assert.match(renderer, /owner: "pacer"/);
+  assert.match(renderer, /if \(!framePacerSubmitting\)/);
+  assert.match(renderer, /owner=pacer required/);
+  assert.equal((renderer.match(/submitGeneratedFrame\(/g) || []).length, 2);
+  assert.doesNotMatch(renderer, /pausedFrameTimer/);
   assert.match(renderer, /frameTransferContext\.drawImage\(canvas/);
   assert.match(renderer, /canvas\.captureStream\(0\)/);
   assert.match(renderer, /canvasTrack\.requestFrame\(\)/);
@@ -40,7 +43,8 @@ test("writes timestamped frames through a WebGL-safe transfer surface", () => {
   assert.match(renderer, /new MediaStreamTrackGenerator\(\{ kind: "video" \}\)/);
   assert.match(renderer, /track\.writable\.getWriter\(\)/);
   assert.match(renderer, /new VideoFrame\(frameTransferCanvas/);
-  assert.match(renderer, /outputTimeline\.nextVideo\(mediaTime, durationUs\)/);
+  assert.match(renderer, /outputTimeline\.nextStatic\(durationUs\)/);
+  assert.doesNotMatch(renderer, /outputTimeline\.nextVideo\(/);
   assert.match(renderer, /await writer\.write\(entry\.frame\)/);
   assert.match(renderer, /if \(pendingTrackFrame\) discardPendingTrackFrame\(""\)/);
   assert.match(renderer, /entry\.videoGeneration !== playbackGeneration/);
@@ -255,7 +259,14 @@ test("isolates media transitions and keeps motion frames active while paused", (
   assert.match(renderer, /let mediaLoading = false/);
   assert.match(renderer, /if \(mediaLoading \|\| !sourceElement\) return false/);
   assert.match(renderer, /motionMode\.value !== "off"/);
-  assert.match(renderer, /motionMode\.value === "off" \? "idle" : "motion"/);
+  assert.match(renderer, /const state = motionIsEnabled\(\) \? "motion" : "idle"/);
+  const handheldScheduler = renderer.slice(
+    renderer.indexOf("function scheduleHandheldRender"),
+    renderer.indexOf("function applyMotionSettings"),
+  );
+  assert.match(handheldScheduler, /framePacerSourceSequence \+= 1/);
+  assert.match(handheldScheduler, /wakeFramePacer\("handheld state updated"\)/);
+  assert.doesNotMatch(handheldScheduler, /renderFrame\(/);
 });
 
 test("reloads the renderer after WebGL context loss", () => {
@@ -270,7 +281,7 @@ test("migrates the output ceiling to 60 FPS without duplicating media frames", (
   assert.match(renderer, /preferences\.preferencesVersion\) >= 2 \? preferences\.fps \|\| 60 : 60/);
 });
 
-test("keeps sender pacing unset while media timestamps control cadence", () => {
+test("keeps sender pacing unset while the frame pacer controls cadence", () => {
   assert.match(renderer, /const configuredFps = configuredMaximumFps\(\)/);
   assert.match(renderer, /const contentFps = sourceKind === "video" \? effectiveMediaFps\(\) : configuredFps/);
   assert.match(renderer, /delete encoding\.maxFramerate/);
