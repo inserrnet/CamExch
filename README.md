@@ -95,6 +95,11 @@ Browser, Source, and Cam Player use asynchronous signaling with session/request 
 
 The repository includes `.github/workflows/android.yml`.
 
+The isolated native Chromium replacement is documented in
+`chromium-native/README.md`. Its intentionally manual workflow is
+`.github/workflows/chromium-native.yml`; it requires a large GitHub runner and
+does not modify the legacy WebView applications.
+
 Manual local build, if Gradle is available:
 
 ```bash

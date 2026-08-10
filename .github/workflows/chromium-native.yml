@@ -1,0 +1,69 @@
+name: CamExch Native Chromium Prototype
+
+on:
+  push:
+    paths:
+      - ".github/workflows/chromium-native.yml"
+      - "chromium-native/**"
+      - "docs/REGRESSION_GUARDRAILS.md"
+  pull_request:
+    paths:
+      - ".github/workflows/chromium-native.yml"
+      - "chromium-native/**"
+      - "docs/REGRESSION_GUARDRAILS.md"
+  workflow_dispatch:
+
+concurrency:
+  group: camexch-native-chromium
+  cancel-in-progress: false
+
+jobs:
+  overlay-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CamExch
+        uses: actions/checkout@v4
+
+      - name: Test version-pinned overlay
+        run: python3 chromium-native/scripts/test_overlay.py
+
+      - name: Validate configuration
+        run: |
+          test -s chromium-native/VERSION
+          test -s chromium-native/args.gn
+          test -s chromium-native/tests/native_camera_test.html
+
+  chromium-android:
+    if: github.event_name == 'workflow_dispatch'
+    needs: overlay-tests
+    runs-on: [self-hosted, linux, x64, chromium]
+    timeout-minutes: 720
+    env:
+      CHROMIUM_WORK_ROOT: ${{ runner.tool_cache }}/camexch-native-chromium
+
+    steps:
+      - name: Checkout CamExch
+        uses: actions/checkout@v4
+
+      - name: Check runner capacity
+        run: |
+          free -h
+          df -h
+          mkdir -p "$CHROMIUM_WORK_ROOT"
+          available_kb=$(df --output=avail -k "$CHROMIUM_WORK_ROOT" | tail -1 | tr -d ' ')
+          if [[ "$available_kb" -lt 157286400 ]]; then
+            echo "At least 150 GiB free is required for Chromium." >&2
+            exit 1
+          fi
+
+      - name: Sync, patch, and build Chromium
+        run: bash chromium-native/scripts/bootstrap_and_build.sh "$CHROMIUM_WORK_ROOT" "$GITHUB_WORKSPACE"
+
+      - name: Upload native prototype APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: camexch-native-chromium-arm64
+          retention-days: 14
+          path: |
+            chromium-native/artifacts/*.apk
+            chromium-native/artifacts/SHA256SUMS.txt

@@ -9,3 +9,6 @@ local.properties
 *.iml
 node_modules/
 dist/
+chromium-native/artifacts/
+__pycache__/
+*.py[cod]

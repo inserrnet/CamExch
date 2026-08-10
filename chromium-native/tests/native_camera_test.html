@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CamExch native camera test</title>
+<style>
+  body { margin: 0; padding: 16px; font: 16px sans-serif; background: #151719; color: #f5f7f8; }
+  button { min-height: 44px; margin-right: 8px; }
+  video { display: block; width: 100%; max-height: 65vh; margin-top: 16px; background: #000; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>
+<button id="start">Start camera</button><button id="record" disabled>Record 10 s</button>
+<video id="video" autoplay muted playsinline></video>
+<pre id="status">Idle</pre>
+<script>
+  let stream;
+  const status = document.querySelector('#status');
+  document.querySelector('#start').onclick = async () => {
+    stream?.getTracks().forEach(track => track.stop());
+    stream = await navigator.mediaDevices.getUserMedia({audio: false, video: true});
+    document.querySelector('#video').srcObject = stream;
+    const track = stream.getVideoTracks()[0];
+    status.textContent = JSON.stringify({
+      devices: await navigator.mediaDevices.enumerateDevices(),
+      label: track.label,
+      settings: track.getSettings(),
+      capabilities: track.getCapabilities()
+    }, null, 2);
+    document.querySelector('#record').disabled = false;
+  };
+  document.querySelector('#record').onclick = () => {
+    const recorder = new MediaRecorder(stream);
+    let bytes = 0;
+    recorder.ondataavailable = event => { bytes += event.data.size; };
+    recorder.onstop = () => { status.textContent += `\nMediaRecorder bytes=${bytes}`; };
+    recorder.start(1000);
+    setTimeout(() => recorder.stop(), 10000);
+  };
+</script>
+</html>

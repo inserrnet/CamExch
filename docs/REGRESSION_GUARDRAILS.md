@@ -294,5 +294,22 @@ Do not publish artifacts until all of the following are true:
 - Any unverified device-only behavior is clearly reported before asking the user
   to install and test a build.
 
+## Native Chromium Migration Gate
+
+- The legacy WebView implementation is frozen on branch
+  `legacy-webview-0.6.22`; native-browser work must not alter its Browser,
+  Source, or Cam Player behavior.
+- The first native prototype uses Chromium's own `VideoCaptureDevice` pipeline.
+  It must not install the legacy `getUserMedia`, `enumerateDevices`, Canvas, or
+  receiver-`RTCPeerConnection` substitution in page JavaScript.
+- Do not connect Cam Player until the upstream native test device passes
+  discovery, constraints, MediaRecorder, repeated open/close, and five-minute
+  stability checks on the target phone.
+- Keep the Chromium revision pinned. An upstream source-shape mismatch is a hard
+  build failure and requires review; patch scripts must never guess.
+- The final Cam Player receiver will replace the test frame producer behind the
+  same native capture interface. It must not add a second page-facing track
+  owner or reintroduce the WebView hook.
+
 When a regression is discovered, add its invariant and a reproducing test here
 before or together with the fix. Do not rely on conversation history alone.
