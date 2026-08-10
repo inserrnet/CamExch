@@ -268,6 +268,12 @@ repeated, late, encoder FPS, receiver FPS, dropped frames, packet loss, and
 freeze counters. A visually smooth preview alone is not proof that Browser sees
 the same cadence.
 
+The Browser Media A/B diagnostic keeps one source stream alive for both phases:
+60 seconds of display-only playback followed by 60 seconds with MediaRecorder.
+It must stop automatically, discard recorder chunks after counting their bytes,
+and report displayed-frame cadence for both phases. Reacquiring the camera
+between phases invalidates the comparison.
+
 For a strict USB route, both SDP sides must be restricted before negotiation:
 the Browser offer to the phone's local USB address and the Player answer to the
 computer's USB address. A route mismatch is a network failure, never an encoder

@@ -27,6 +27,8 @@ import android.webkit.RenderProcessGoneDetail;
 import android.webkit.JavascriptInterface;
 import android.webkit.ConsoleMessage;
 import android.webkit.ValueCallback;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -41,6 +43,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewAssetLoader;
 import androidx.webkit.WebViewFeature;
 
 import org.json.JSONArray;
@@ -59,6 +62,8 @@ import java.util.concurrent.Future;
 
 public class BrowserActivity extends Activity {
     private static final String HOME_URL = "https://www.google.com/";
+    private static final String MEDIA_TEST_URL =
+            "https://appassets.androidplatform.net/assets/media_test.html";
     private static final int FILE_CHOOSER_REQUEST_CODE = 4107;
     private final List<Tab> tabs = new ArrayList<>();
     private FrameLayout webContainer;
@@ -79,6 +84,7 @@ public class BrowserActivity extends Activity {
     private final Handler diagnosticsHandler = new Handler(Looper.getMainLooper());
     private ValueCallback<Uri[]> fileChooserCallback;
     private WebView fileChooserOwner;
+    private WebViewAssetLoader assetLoader;
     private volatile String cameraInventoryJson;
     private final Runnable diagnosticsTask = new Runnable() {
         @Override
@@ -99,6 +105,9 @@ public class BrowserActivity extends Activity {
         }
         requestCameraPermissions();
         WebView.setWebContentsDebuggingEnabled(true);
+        assetLoader = new WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .build();
         buildUi();
         addTab(HOME_URL);
         try {
@@ -219,6 +228,7 @@ public class BrowserActivity extends Activity {
         backButton = smallButton("<");
         forwardButton = smallButton(">");
         Button reloadButton = smallButton("R");
+        Button mediaTestButton = smallButton("T");
         Button indicatorButton = smallButton("!");
 
         addressBar = new EditText(this);
@@ -231,6 +241,7 @@ public class BrowserActivity extends Activity {
         toolbar.addView(forwardButton);
         toolbar.addView(reloadButton);
         toolbar.addView(addressBar, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        toolbar.addView(mediaTestButton);
         toolbar.addView(indicatorButton);
         root.addView(toolbar);
 
@@ -266,6 +277,9 @@ public class BrowserActivity extends Activity {
                 webView.reload();
             }
         });
+        mediaTestButton.setContentDescription("Media A/B test");
+        mediaTestButton.setTooltipText("Media A/B test");
+        mediaTestButton.setOnClickListener(view -> openMediaTest());
         indicatorButton.setOnClickListener(view -> Toast.makeText(this, "Front Camera 4 source active", Toast.LENGTH_SHORT).show());
         indicatorButton.setOnLongClickListener(view -> {
             showLogDialog();
@@ -334,6 +348,17 @@ public class BrowserActivity extends Activity {
         rebuildTabs();
     }
 
+    private void openMediaTest() {
+        if (cameraRoutePreferences != null) {
+            cameraRoutePreferences.setMode(CameraRouteMode.SOURCE);
+        }
+        if (floatingCameraControls != null) {
+            floatingCameraControls.setMode(CameraRouteMode.SOURCE);
+        }
+        AppLog.info(this, "Opening Media A/B test route=SOURCE durationSec=60+60");
+        addTab(MEDIA_TEST_URL);
+    }
+
     private WebView createWebView() {
         WebView webView = new WebView(this);
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
@@ -349,6 +374,7 @@ public class BrowserActivity extends Activity {
         // token causes some sites to classify this otherwise current engine as unsupported.
         settings.setUserAgentString(null);
         webView.addJavascriptInterface(new JsLogBridge(), "CamExchLog");
+        webView.addJavascriptInterface(new MediaTestBridge(webView), "CamExchMediaTest");
         webView.addJavascriptInterface(sourceBridge, "CamExchBridge");
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(
@@ -418,6 +444,19 @@ public class BrowserActivity extends Activity {
             }
         });
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                WebResourceResponse response = assetLoader.shouldInterceptRequest(request.getUrl());
+                return response == null ? super.shouldInterceptRequest(view, request) : response;
+            }
+
+            @Override
+            @SuppressWarnings("deprecation")
+            public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+                WebResourceResponse response = assetLoader.shouldInterceptRequest(Uri.parse(url));
+                return response == null ? super.shouldInterceptRequest(view, url) : response;
+            }
+
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 AppLog.info(BrowserActivity.this, "Page started: " + LogSanitizer.sanitize(url));
@@ -714,6 +753,31 @@ public class BrowserActivity extends Activity {
         @JavascriptInterface
         public void log(String message) {
             AppLog.info(BrowserActivity.this, "JS " + message);
+        }
+    }
+
+    private final class MediaTestBridge {
+        private final WebView owner;
+
+        MediaTestBridge(WebView owner) {
+            this.owner = owner;
+        }
+
+        @JavascriptInterface
+        public void copyResults(String results) {
+            runOnUiThread(() -> {
+                String url = owner.getUrl();
+                if (url == null || !url.startsWith(MEDIA_TEST_URL)) {
+                    AppLog.info(BrowserActivity.this,
+                            "Rejected Media A/B clipboard request origin="
+                                    + LogSanitizer.sanitize(url));
+                    return;
+                }
+                ClipboardManager clipboard =
+                        (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                clipboard.setPrimaryClip(ClipData.newPlainText("CamExch Media A/B test", results));
+                Toast.makeText(BrowserActivity.this, "Test results copied", Toast.LENGTH_SHORT).show();
+            });
         }
     }
 

@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Media A/B test</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #111318; color: #f3f5f7; }
+    header, main { width: min(760px, 100%); margin: 0 auto; padding: 14px; }
+    header { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #343840; }
+    h1 { margin: 0; font-size: 19px; font-weight: 650; }
+    #stage { margin-left: auto; color: #9fd2ff; font-variant-numeric: tabular-nums; }
+    video { display: block; width: 100%; max-height: 52vh; margin: 0 0 14px; background: #000; object-fit: contain; }
+    .progress { height: 6px; margin-bottom: 14px; background: #343840; overflow: hidden; }
+    #bar { width: 0; height: 100%; background: #42a5f5; transition: width .2s linear; }
+    .actions { display: flex; gap: 8px; margin-bottom: 14px; }
+    button { min-height: 42px; padding: 0 16px; border: 1px solid #59616d; border-radius: 6px; font: inherit; }
+    button.primary { background: #1476c8; color: white; border-color: #1476c8; }
+    button:disabled { opacity: .45; }
+    #status { min-height: 44px; margin: 0 0 12px; line-height: 1.4; }
+    pre { min-height: 150px; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: #1b1f26; border: 1px solid #343840; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header><h1>Media A/B test</h1><div id="stage">Ready</div></header>
+  <main>
+    <video id="preview" autoplay muted playsinline></video>
+    <div class="progress"><div id="bar"></div></div>
+    <div class="actions">
+      <button id="run" class="primary">Run 60 + 60 sec</button>
+      <button id="cancel" disabled>Cancel</button>
+      <button id="copy" disabled>Copy results</button>
+    </div>
+    <p id="status">Phase A displays the source for 60 seconds. Phase B records the same stream for 60 seconds. The test stops automatically.</p>
+    <pre id="results">No results yet.</pre>
+  </main>
+  <script>
+  (() => {
+    'use strict';
+    const PHASE_MS = 60000;
+    const preview = document.getElementById('preview');
+    const runButton = document.getElementById('run');
+    const cancelButton = document.getElementById('cancel');
+    const copyButton = document.getElementById('copy');
+    const stage = document.getElementById('stage');
+    const status = document.getElementById('status');
+    const results = document.getElementById('results');
+    const bar = document.getElementById('bar');
+    let stream = null;
+    let recorder = null;
+    let phase = null;
+    let phaseStarted = 0;
+    let timer = 0;
+    let frameCallback = 0;
+    let cancelled = false;
+    let cancelPhaseWait = null;
+    let finalReport = '';
+
+    function nativeLog(message) {
+      try { window.CamExchLog && window.CamExchLog.log('Media A/B ' + message); } catch (_) {}
+    }
+
+    function percentile(values, ratio) {
+      if (!values.length) return 0;
+      const sorted = values.slice().sort((a, b) => a - b);
+      return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * ratio))];
+    }
+
+    function quality() {
+      try {
+        const q = preview.getVideoPlaybackQuality();
+        return { total: q.totalVideoFrames || 0, dropped: q.droppedVideoFrames || 0 };
+      } catch (_) { return { total: 0, dropped: 0 }; }
+    }
+
+    function newPhase(name) {
+      return {
+        name, startedAt: new Date().toISOString(), callbacks: 0, intervals: [],
+        repeatedMediaTime: 0, reversedMediaTime: 0, lastCallbackAt: 0,
+        lastMediaTime: -1, qualityStart: quality(), qualityEnd: null
+      };
+    }
+
+    function finishPhase(current) {
+      current.qualityEnd = quality();
+      const elapsedMs = performance.now() - phaseStarted;
+      const intervals = current.intervals;
+      return {
+        name: current.name,
+        elapsedMs: Math.round(elapsedMs),
+        displayedFrames: current.callbacks,
+        displayedFps: +(current.callbacks * 1000 / Math.max(1, elapsedMs)).toFixed(2),
+        intervalAvgMs: intervals.length ? +(intervals.reduce((a, b) => a + b, 0) / intervals.length).toFixed(2) : 0,
+        intervalP95Ms: +percentile(intervals, .95).toFixed(2),
+        intervalMaxMs: intervals.length ? +Math.max(...intervals).toFixed(2) : 0,
+        stallsOver100Ms: intervals.filter(v => v >= 100).length,
+        stallsOver200Ms: intervals.filter(v => v >= 200).length,
+        repeatedMediaTime: current.repeatedMediaTime,
+        reversedMediaTime: current.reversedMediaTime,
+        playbackTotalDelta: current.qualityEnd.total - current.qualityStart.total,
+        playbackDroppedDelta: current.qualityEnd.dropped - current.qualityStart.dropped
+      };
+    }
+
+    function onVideoFrame(now, metadata) {
+      if (phase) {
+        phase.callbacks++;
+        if (phase.lastCallbackAt) phase.intervals.push(now - phase.lastCallbackAt);
+        phase.lastCallbackAt = now;
+        const mediaTime = Number(metadata && metadata.mediaTime);
+        if (Number.isFinite(mediaTime) && phase.lastMediaTime >= 0) {
+          if (mediaTime === phase.lastMediaTime) phase.repeatedMediaTime++;
+          if (mediaTime < phase.lastMediaTime) phase.reversedMediaTime++;
+        }
+        if (Number.isFinite(mediaTime)) phase.lastMediaTime = mediaTime;
+      }
+      if (preview.requestVideoFrameCallback) frameCallback = preview.requestVideoFrameCallback(onVideoFrame);
+    }
+
+    function selectMimeType() {
+      const candidates = [
+        'video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm'
+      ];
+      return candidates.find(type => MediaRecorder.isTypeSupported(type)) || '';
+    }
+
+    function updateProgress() {
+      if (!phase) return;
+      const elapsed = performance.now() - phaseStarted;
+      const remaining = Math.max(0, Math.ceil((PHASE_MS - elapsed) / 1000));
+      const prefix = phase.name === 'A_display_only' ? 'A display only' : 'B MediaRecorder';
+      stage.textContent = prefix + '  ' + remaining + 's';
+      const overall = phase.name === 'A_display_only' ? elapsed : PHASE_MS + elapsed;
+      bar.style.width = Math.min(100, overall / (PHASE_MS * 2) * 100) + '%';
+    }
+
+    function stopTracks() {
+      if (stream) stream.getTracks().forEach(track => { try { track.stop(); } catch (_) {} });
+      stream = null;
+      preview.srcObject = null;
+    }
+
+    function resetRuntime() {
+      clearInterval(timer);
+      timer = 0;
+      cancelPhaseWait = null;
+      if (frameCallback && preview.cancelVideoFrameCallback) preview.cancelVideoFrameCallback(frameCallback);
+      frameCallback = 0;
+      phase = null;
+      if (recorder && recorder.state !== 'inactive') { try { recorder.stop(); } catch (_) {} }
+      recorder = null;
+      stopTracks();
+      runButton.disabled = false;
+      cancelButton.disabled = true;
+    }
+
+    function waitForPhase() {
+      return new Promise(resolve => {
+        const timeout = setTimeout(() => {
+          cancelPhaseWait = null;
+          resolve(true);
+        }, PHASE_MS);
+        cancelPhaseWait = () => {
+          clearTimeout(timeout);
+          cancelPhaseWait = null;
+          resolve(false);
+        };
+      });
+    }
+
+    async function runTest() {
+      runButton.disabled = true;
+      cancelButton.disabled = false;
+      copyButton.disabled = true;
+      results.textContent = 'Preparing source...';
+      finalReport = '';
+      cancelled = false;
+      bar.style.width = '0%';
+      const report = {
+        test: 'CamExch Media A/B', version: 1,
+        startedAt: new Date().toISOString(), durationSec: { phaseA: 60, phaseB: 60 },
+        userAgent: navigator.userAgent, phases: []
+      };
+      let recordedChunks = 0;
+      let recordedBytes = 0;
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('getUserMedia is unavailable');
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+        preview.srcObject = stream;
+        await preview.play();
+        const track = stream.getVideoTracks()[0];
+        report.track = { label: track.label, settings: track.getSettings ? track.getSettings() : {} };
+        nativeLog('started track=' + JSON.stringify(report.track));
+        if (preview.requestVideoFrameCallback) frameCallback = preview.requestVideoFrameCallback(onVideoFrame);
+
+        phase = newPhase('A_display_only');
+        phaseStarted = performance.now();
+        status.textContent = 'Phase A: displaying the source without MediaRecorder.';
+        timer = setInterval(updateProgress, 200);
+        if (!await waitForPhase() || cancelled) return;
+        report.phases.push(finishPhase(phase));
+        nativeLog('phase complete ' + JSON.stringify(report.phases[0]));
+
+        if (typeof MediaRecorder !== 'function') throw new Error('MediaRecorder is unavailable');
+        const mimeType = selectMimeType();
+        recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+        recorder.ondataavailable = event => {
+          if (event.data && event.data.size) { recordedChunks++; recordedBytes += event.data.size; }
+        };
+        recorder.start(1000);
+        report.recorder = { mimeType: recorder.mimeType || mimeType || 'browser default' };
+        phase = newPhase('B_media_recorder');
+        phaseStarted = performance.now();
+        status.textContent = 'Phase B: recording the same stream. No video file is retained.';
+        if (!await waitForPhase() || cancelled) return;
+        report.phases.push(finishPhase(phase));
+        await new Promise(resolve => {
+          const timeout = setTimeout(resolve, 2000);
+          recorder.onstop = () => { clearTimeout(timeout); resolve(); };
+          recorder.stop();
+        });
+        report.recorder.chunks = recordedChunks;
+        report.recorder.bytes = recordedBytes;
+        report.completedAt = new Date().toISOString();
+        const a = report.phases[0], b = report.phases[1];
+        report.comparison = {
+          displayedFpsChange: +(b.displayedFps - a.displayedFps).toFixed(2),
+          p95IntervalChangeMs: +(b.intervalP95Ms - a.intervalP95Ms).toFixed(2),
+          maxIntervalChangeMs: +(b.intervalMaxMs - a.intervalMaxMs).toFixed(2),
+          stallsOver100MsChange: b.stallsOver100Ms - a.stallsOver100Ms
+        };
+        finalReport = JSON.stringify(report, null, 2);
+        results.textContent = finalReport;
+        copyButton.disabled = false;
+        stage.textContent = 'Complete';
+        status.textContent = 'Test complete. Copy the results and send them with the Browser log.';
+        bar.style.width = '100%';
+        nativeLog('completed ' + JSON.stringify(report.comparison));
+      } catch (error) {
+        report.failedAt = new Date().toISOString();
+        report.error = String(error && (error.stack || error.message) || error);
+        finalReport = JSON.stringify(report, null, 2);
+        results.textContent = finalReport;
+        copyButton.disabled = false;
+        stage.textContent = 'Failed';
+        status.textContent = 'Test failed: ' + String(error && error.message || error);
+        nativeLog('failed ' + report.error);
+      } finally {
+        resetRuntime();
+      }
+    }
+
+    runButton.addEventListener('click', runTest);
+    cancelButton.addEventListener('click', () => {
+      cancelled = true;
+      if (cancelPhaseWait) cancelPhaseWait();
+      stage.textContent = 'Cancelled';
+      status.textContent = 'Test cancelled.';
+      nativeLog('cancelled');
+    });
+    copyButton.addEventListener('click', () => {
+      if (!finalReport) return;
+      if (window.CamExchMediaTest && window.CamExchMediaTest.copyResults) {
+        window.CamExchMediaTest.copyResults(finalReport);
+      } else if (navigator.clipboard) {
+        navigator.clipboard.writeText(finalReport);
+      }
+    });
+    addEventListener('pagehide', resetRuntime);
+  })();
+  </script>
+</body>
+</html>
