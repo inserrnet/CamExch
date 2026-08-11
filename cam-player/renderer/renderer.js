@@ -1138,7 +1138,7 @@ function renderFrame(force, frameMetadata = null, options = {}) {
     ((noiseFrameIndex * 17) % NOISE_TEXTURE_SIZE) / NOISE_TEXTURE_SIZE,
     ((noiseFrameIndex * 31) % NOISE_TEXTURE_SIZE) / NOISE_TEXTURE_SIZE,
   );
-  gl.uniform1f(uniforms.noiseAmount, (Number(noiseAmountInput.value) || 0) * 0.00035);
+  gl.uniform1f(uniforms.noiseAmount, configuredNoiseAmplitude());
   gl.uniform1f(uniforms.noiseColor, (Number(noiseColorInput.value) || 0) / 100);
   gl.uniform1f(uniforms.noiseLowLight, (Number(noiseLowLightInput.value) || 0) / 100);
   gl.uniform1f(uniforms.noisePattern, (Number(noisePatternInput.value) || 0) / 100);
@@ -1188,6 +1188,11 @@ function resetPlaybackCadence(state = playing ? "playing" : "idle") {
 
 function configuredMaximumFps() {
   return Math.max(1, Math.min(60, Number(fpsInput.value) || 30));
+}
+
+function configuredNoiseAmplitude() {
+  const normalized = Math.max(0, Math.min(100, Number(noiseAmountInput.value) || 0)) / 100;
+  return normalized * normalized * 0.1;
 }
 
 function effectiveMediaFps() {

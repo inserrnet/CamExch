@@ -163,6 +163,7 @@ test("adds signal-dependent camera noise in the existing final GPU pass", () => 
   assert.match(renderer, /fixedPattern = fixedNoise/);
   assert.match(renderer, /rowNoise = rowNoiseSample/);
   assert.match(renderer, /previousNoise = texture/);
+  assert.match(renderer, /normalized \* normalized \* 0\.1/);
   assert.match(renderer, /composed\.rgb = applyCameraNoise\(composed\.rgb, pixel\)/);
   assert.equal((renderer.match(/gl\.drawArrays\(gl\.TRIANGLES, 0, 6\)/g) || []).length, 4);
 });
