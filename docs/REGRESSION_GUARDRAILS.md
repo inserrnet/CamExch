@@ -131,6 +131,20 @@ Historical regressions:
 - Never change the manually selected Cam Player output resolution unless
   `Follow site and phone orientation` is enabled.
 - Maximum FPS and resolution controls are independent.
+
+### Camera noise
+
+- Camera noise is composed in the existing final WebGL fragment shader. It must
+  not add a CPU pixel pass, GPU readback, second canvas, second encoder, or a
+  second frame-submission timer. A bounded lookup texture may be generated once
+  when Player starts; never generate per-pixel random data on the CPU per frame.
+- Playing video keeps decoded-frame ownership and its native cadence. Enabling
+  noise must not cause the static frame pacer to submit playing-video frames.
+- Photos and paused video use the sole deadline-based frame pacer. Noise may
+  raise its static cadence only through the resolution-bounded noise rate; old
+  frames are still replaced rather than queued.
+- Noise-disabled rendering must remain a cheap shader branch and preserve the
+  existing image output.
 - With follow-site disabled, site constraints do not overwrite output size.
 - With follow-site enabled, apply the site's requested geometry in the phone's
   physical orientation and support live portrait/landscape changes without page

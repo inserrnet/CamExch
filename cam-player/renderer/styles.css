@@ -247,6 +247,14 @@ h2 {
   text-align: right;
 }
 
+.effect-controls[aria-disabled="true"] {
+  opacity: 0.48;
+}
+
+.effect-controls .effect-reset {
+  margin-top: 10px;
+}
+
 .dimension-row {
   display: grid;
   grid-template-columns: 1fr auto 1fr 34px;

@@ -150,6 +150,32 @@ test("keeps the rendering color space explicit and avoids sharpening bias", () =
   assert.match(renderer, /gl\.uniform1f\(uniforms\.lodBias, 0\)/);
 });
 
+test("adds signal-dependent camera noise in the existing final GPU pass", () => {
+  assert.match(indexHtml, /id="noiseToggle"/);
+  assert.match(indexHtml, /id="noiseAmountInput"/);
+  assert.match(indexHtml, /id="noiseColorInput"/);
+  assert.match(indexHtml, /id="noiseLowLightInput"/);
+  assert.match(indexHtml, /id="noisePatternInput"/);
+  assert.match(renderer, /vec3 applyCameraNoise/);
+  assert.match(renderer, /signalSigma = u_noise_amount/);
+  assert.match(renderer, /u_noise_texture/);
+  assert.match(renderer, /createNoiseTextureData/);
+  assert.match(renderer, /fixedPattern = fixedNoise/);
+  assert.match(renderer, /rowNoise = rowNoiseSample/);
+  assert.match(renderer, /previousNoise = texture/);
+  assert.match(renderer, /composed\.rgb = applyCameraNoise\(composed\.rgb, pixel\)/);
+  assert.equal((renderer.match(/gl\.drawArrays\(gl\.TRIANGLES, 0, 6\)/g) || []).length, 4);
+});
+
+test("animates static noise through the sole frame pacer without touching video cadence", () => {
+  assert.match(renderer, /if \(sourceKind === "video" && playing\) return effectiveMediaFps\(\)/);
+  assert.match(renderer, /if \(noiseToggle\.checked\)/);
+  assert.match(renderer, /pixels >= 7_000_000[\s\S]*Math\.min\(configured, 8\)/);
+  assert.match(renderer, /pixels >= 3_000_000[\s\S]*Math\.min\(configured, 12\)/);
+  assert.match(renderer, /pixels >= 1_500_000[\s\S]*Math\.min\(configured, 18\)/);
+  assert.doesNotMatch(renderer, /noiseTimer|noiseFrameTimer|setInterval\([^)]*noise/i);
+});
+
 test("uses content-aware adaptive sender profiles and bounded keyframes", () => {
   assert.match(renderer, /sourceKind === "video" \? "motion" : "detail"/);
   assert.match(renderer, /CamGeometry\.adaptiveFrameRate/);

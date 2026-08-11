@@ -50,6 +50,17 @@
         </label>
         <label>Background blur <input id="blurInput" type="range" min="0" max="100" value="40"></label>
         <label>Maximum FPS <input id="fpsInput" type="number" min="1" max="60" value="60"></label>
+        <label class="toggle wide">
+          <input id="noiseToggle" type="checkbox">
+          Camera noise
+        </label>
+        <div id="noiseControls" class="effect-controls" aria-label="Camera noise settings">
+          <label>Amount <span class="range-control"><input id="noiseAmountInput" type="range" min="0" max="100" value="18"><output id="noiseAmountValue">18</output></span></label>
+          <label>Color <span class="range-control"><input id="noiseColorInput" type="range" min="0" max="100" value="8"><output id="noiseColorValue">8</output></span></label>
+          <label>Low light <span class="range-control"><input id="noiseLowLightInput" type="range" min="0" max="100" value="25"><output id="noiseLowLightValue">25</output></span></label>
+          <label>Pattern <span class="range-control"><input id="noisePatternInput" type="range" min="0" max="100" value="4"><output id="noisePatternValue">4</output></span></label>
+          <button id="resetNoiseButton" class="command effect-reset">Reset noise</button>
+        </div>
       </section>
 
       <section>

@@ -10,6 +10,16 @@ const widthInput = document.getElementById("widthInput");
 const heightInput = document.getElementById("heightInput");
 const fpsInput = document.getElementById("fpsInput");
 const blurInput = document.getElementById("blurInput");
+const noiseToggle = document.getElementById("noiseToggle");
+const noiseControls = document.getElementById("noiseControls");
+const noiseAmountInput = document.getElementById("noiseAmountInput");
+const noiseColorInput = document.getElementById("noiseColorInput");
+const noiseLowLightInput = document.getElementById("noiseLowLightInput");
+const noisePatternInput = document.getElementById("noisePatternInput");
+const noiseAmountValue = document.getElementById("noiseAmountValue");
+const noiseColorValue = document.getElementById("noiseColorValue");
+const noiseLowLightValue = document.getElementById("noiseLowLightValue");
+const noisePatternValue = document.getElementById("noisePatternValue");
 const followSiteToggle = document.getElementById("followSiteToggle");
 const motionMode = document.getElementById("motionMode");
 const liveMotionToggle = document.getElementById("liveMotionToggle");
@@ -66,6 +76,7 @@ const fragmentSource = `#version 300 es
 precision highp float;
 uniform sampler2D u_texture;
 uniform sampler2D u_background;
+uniform sampler2D u_noise_texture;
 uniform vec2 u_output;
 uniform vec2 u_source;
 uniform float u_scale;
@@ -74,6 +85,12 @@ uniform vec2 u_pan;
 uniform int u_rotation;
 uniform int u_mirrored;
 uniform float u_handheld_roll;
+uniform int u_noise_enabled;
+uniform vec2 u_noise_offset;
+uniform float u_noise_amount;
+uniform float u_noise_color;
+uniform float u_noise_low_light;
+uniform float u_noise_pattern;
 in vec2 v_uv;
 out vec4 outColor;
 
@@ -103,6 +120,41 @@ vec2 applyHandheld(vec2 uv, vec2 displayed) {
   return rotatedPixels / safeDisplayed + 0.5;
 }
 
+vec3 applyCameraNoise(vec3 encodedColor, vec2 pixel) {
+  const float noiseSize = 512.0;
+  vec2 noiseUv = pixel / noiseSize;
+  vec2 stepOffset = vec2(17.0, 31.0) / noiseSize;
+  vec3 currentNoise = texture(u_noise_texture, noiseUv + u_noise_offset).rgb * 2.0 - 1.0;
+  vec3 previousNoise = texture(
+    u_noise_texture,
+    noiseUv + u_noise_offset - stepOffset
+  ).rgb * 2.0 - 1.0;
+  vec3 fixedNoise = texture(u_noise_texture, noiseUv + vec2(0.271, 0.619)).rgb
+    * 2.0 - 1.0;
+  float rowNoiseSample = texture(
+    u_noise_texture,
+    vec2(u_noise_offset.x + 0.413, pixel.y / noiseSize + u_noise_offset.y)
+  ).a * 2.0 - 1.0;
+  float temporal = mix(
+    previousNoise.r,
+    currentNoise.r,
+    0.82
+  );
+  float luminance = dot(encodedColor, vec3(0.2126, 0.7152, 0.0722));
+  float shadow = 1.0 - sqrt(clamp(luminance, 0.0, 1.0));
+  float signalSigma = u_noise_amount
+    * (0.35 + shadow * (0.9 + 1.8 * u_noise_low_light));
+  float fixedPattern = fixedNoise.r
+    * u_noise_amount * u_noise_pattern * 0.35;
+  float rowNoise = rowNoiseSample
+    * u_noise_amount * u_noise_low_light * 0.12;
+  vec3 channelNoise = currentNoise;
+  channelNoise -= vec3(dot(channelNoise, vec3(1.0 / 3.0)));
+  encodedColor += vec3(temporal * signalSigma + fixedPattern + rowNoise);
+  encodedColor += channelNoise * signalSigma * u_noise_color * 0.7;
+  return clamp(encodedColor, vec3(0.0), vec3(1.0));
+}
+
 void main() {
   vec2 pixel = v_uv * u_output;
   vec4 background = texture(u_background, v_uv);
@@ -113,7 +165,11 @@ void main() {
   vec2 handheldUv = applyHandheld(fgUv, displayed);
   bool inside = handheldUv.x >= 0.0 && handheldUv.x <= 1.0
     && handheldUv.y >= 0.0 && handheldUv.y <= 1.0;
-  outColor = inside ? sampleSource(handheldUv) : background;
+  vec4 composed = inside ? sampleSource(handheldUv) : background;
+  if (u_noise_enabled != 0) {
+    composed.rgb = applyCameraNoise(composed.rgb, pixel);
+  }
+  outColor = composed;
 }`;
 
 const blurFragmentSource = `#version 300 es
@@ -227,7 +283,43 @@ function createDetailTexture() {
   return created;
 }
 
+const NOISE_TEXTURE_SIZE = 512;
+let noiseSeed = (Math.floor(Math.random() * 0xffffffff) >>> 0) || 0x6d2b79f5;
+
+function createNoiseTextureData(seed) {
+  const data = new Uint8Array(NOISE_TEXTURE_SIZE * NOISE_TEXTURE_SIZE * 4);
+  let state = (Number(seed) >>> 0) || 0x6d2b79f5;
+  for (let index = 0; index < data.length; index += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    data[index] = state >>> 24;
+  }
+  return data;
+}
+
+function uploadNoiseTexture(target, seed) {
+  gl.bindTexture(gl.TEXTURE_2D, target);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    NOISE_TEXTURE_SIZE,
+    NOISE_TEXTURE_SIZE,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    createNoiseTextureData(seed),
+  );
+}
+
 const texture = createDetailTexture();
+const noiseTexture = gl.createTexture();
+uploadNoiseTexture(noiseTexture, noiseSeed);
 const backgroundSnapshotTexture = createLinearTexture();
 const backgroundPassTexture = createLinearTexture();
 const backgroundTexture = createLinearTexture();
@@ -248,6 +340,7 @@ gl.texImage2D(
 const uniforms = {
   texture: gl.getUniformLocation(program, "u_texture"),
   background: gl.getUniformLocation(program, "u_background"),
+  noiseTexture: gl.getUniformLocation(program, "u_noise_texture"),
   output: gl.getUniformLocation(program, "u_output"),
   source: gl.getUniformLocation(program, "u_source"),
   scale: gl.getUniformLocation(program, "u_scale"),
@@ -256,6 +349,12 @@ const uniforms = {
   rotation: gl.getUniformLocation(program, "u_rotation"),
   mirrored: gl.getUniformLocation(program, "u_mirrored"),
   handheldRoll: gl.getUniformLocation(program, "u_handheld_roll"),
+  noiseEnabled: gl.getUniformLocation(program, "u_noise_enabled"),
+  noiseOffset: gl.getUniformLocation(program, "u_noise_offset"),
+  noiseAmount: gl.getUniformLocation(program, "u_noise_amount"),
+  noiseColor: gl.getUniformLocation(program, "u_noise_color"),
+  noiseLowLight: gl.getUniformLocation(program, "u_noise_low_light"),
+  noisePattern: gl.getUniformLocation(program, "u_noise_pattern"),
 };
 const blurUniforms = {
   texture: gl.getUniformLocation(blurProgram, "u_texture"),
@@ -398,6 +497,7 @@ let motionModeBeforeLive = "off";
 let motionModePrevious = "off";
 let motionPreviewSourceMode = "recorded";
 let motionPreviewFrameId = null;
+let noiseFrameIndex = 0;
 let transforms = {
   portrait: { scale: 1, panX: 0, panY: 0 },
   landscape: { scale: 1, panX: 0, panY: 0 },
@@ -907,6 +1007,13 @@ function framePacerRate() {
       canvas.width, canvas.height, configured, "interaction",
     );
   }
+  if (noiseToggle.checked) {
+    const pixels = canvas.width * canvas.height;
+    if (pixels >= 7_000_000) return Math.min(configured, 8);
+    if (pixels >= 3_000_000) return Math.min(configured, 12);
+    if (pixels >= 1_500_000) return Math.min(configured, 18);
+    return Math.min(configured, 24);
+  }
   const state = outputMotionIsEnabled() ? "motion" : "idle";
   return CamGeometry.adaptiveFrameRate(
     canvas.width,
@@ -1013,6 +1120,9 @@ function renderFrame(force, frameMetadata = null, options = {}) {
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, backgroundTexture);
   gl.uniform1i(uniforms.background, 1);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, noiseTexture);
+  gl.uniform1i(uniforms.noiseTexture, 2);
   gl.uniform2f(uniforms.output, canvas.width, canvas.height);
   gl.uniform2f(uniforms.source, size.width, size.height);
   gl.uniform1f(uniforms.scale, t.scale * handheld.scale);
@@ -1021,6 +1131,17 @@ function renderFrame(force, frameMetadata = null, options = {}) {
   gl.uniform1i(uniforms.rotation, sourceRotation);
   gl.uniform1i(uniforms.mirrored, sourceMirrored ? 1 : 0);
   gl.uniform1f(uniforms.handheldRoll, handheld.roll);
+  if (noiseToggle.checked) noiseFrameIndex = (noiseFrameIndex + 1) % 1_000_000;
+  gl.uniform1i(uniforms.noiseEnabled, noiseToggle.checked ? 1 : 0);
+  gl.uniform2f(
+    uniforms.noiseOffset,
+    ((noiseFrameIndex * 17) % NOISE_TEXTURE_SIZE) / NOISE_TEXTURE_SIZE,
+    ((noiseFrameIndex * 31) % NOISE_TEXTURE_SIZE) / NOISE_TEXTURE_SIZE,
+  );
+  gl.uniform1f(uniforms.noiseAmount, (Number(noiseAmountInput.value) || 0) * 0.00035);
+  gl.uniform1f(uniforms.noiseColor, (Number(noiseColorInput.value) || 0) / 100);
+  gl.uniform1f(uniforms.noiseLowLight, (Number(noiseLowLightInput.value) || 0) / 100);
+  gl.uniform1f(uniforms.noisePattern, (Number(noisePatternInput.value) || 0) / 100);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
   const renderTimeMs = performance.now() - renderStartedAt;
   if (options.measureCadence !== false) {
@@ -1686,6 +1807,12 @@ function savePreferences() {
     height: manualOutput.height,
     fps: Number(fpsInput.value),
     blur: Number(blurInput.value),
+    cameraNoise: noiseToggle.checked,
+    noiseAmount: Number(noiseAmountInput.value),
+    noiseColor: Number(noiseColorInput.value),
+    noiseLowLight: Number(noiseLowLightInput.value),
+    noisePattern: Number(noisePatternInput.value),
+    noiseSeed,
     followSite: followSiteToggle.checked,
     loop: document.getElementById("loopToggle").checked,
     mirrored: sourceMirrored,
@@ -3112,6 +3239,49 @@ blurInput.addEventListener("change", () => {
   regenerateBackground("blur committed");
   savePreferences();
 });
+const noiseInputs = [
+  noiseAmountInput,
+  noiseColorInput,
+  noiseLowLightInput,
+  noisePatternInput,
+];
+
+function syncNoiseControls() {
+  noiseControls.setAttribute("aria-disabled", String(!noiseToggle.checked));
+  for (const input of noiseInputs) input.disabled = !noiseToggle.checked;
+  document.getElementById("resetNoiseButton").disabled = !noiseToggle.checked;
+  noiseAmountValue.value = noiseAmountInput.value;
+  noiseColorValue.value = noiseColorInput.value;
+  noiseLowLightValue.value = noiseLowLightInput.value;
+  noisePatternValue.value = noisePatternInput.value;
+}
+
+function applyNoiseControlChange(reason) {
+  syncNoiseControls();
+  renderFrame(true);
+  updatePausedFrameHeartbeat();
+  schedulePreferencesSave();
+  log(`Camera noise enabled=${noiseToggle.checked} amount=${noiseAmountInput.value} `
+    + `color=${noiseColorInput.value} lowLight=${noiseLowLightInput.value} `
+    + `pattern=${noisePatternInput.value} reason=${reason}`);
+}
+
+noiseToggle.addEventListener("change", () => applyNoiseControlChange("toggle"));
+for (const input of noiseInputs) {
+  input.addEventListener("input", () => {
+    syncNoiseControls();
+    renderFrame(true);
+    schedulePreferencesSave();
+  });
+  input.addEventListener("change", () => applyNoiseControlChange("control committed"));
+}
+document.getElementById("resetNoiseButton").addEventListener("click", () => {
+  noiseAmountInput.value = "18";
+  noiseColorInput.value = "8";
+  noiseLowLightInput.value = "25";
+  noisePatternInput.value = "4";
+  applyNoiseControlChange("reset");
+});
 document.getElementById("copyLogButton").addEventListener("click", async () => {
   await window.camPlayer.copyText(await window.camPlayer.readLog());
 });
@@ -3239,6 +3409,17 @@ async function initialize() {
     Number(preferences.preferencesVersion) >= 2 ? preferences.fps || 60 : 60,
   );
   blurInput.value = String(preferences.blur ?? 40);
+  noiseToggle.checked = preferences.cameraNoise === true;
+  noiseAmountInput.value = String(preferences.noiseAmount ?? 18);
+  noiseColorInput.value = String(preferences.noiseColor ?? 8);
+  noiseLowLightInput.value = String(preferences.noiseLowLight ?? 25);
+  noisePatternInput.value = String(preferences.noisePattern ?? 4);
+  const storedNoiseSeed = Number(preferences.noiseSeed) >>> 0;
+  if (storedNoiseSeed) {
+    noiseSeed = storedNoiseSeed;
+    uploadNoiseTexture(noiseTexture, noiseSeed);
+  }
+  syncNoiseControls();
   followSiteToggle.checked = !!preferences.followSite;
   document.getElementById("loopToggle").checked = preferences.loop !== false;
   sourceMirrored = preferences.mirrored === true;
