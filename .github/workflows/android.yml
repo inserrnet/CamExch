@@ -42,6 +42,7 @@ jobs:
           path: |
             source/build/reports/lint-results-debug.*
             browser/build/reports/lint-results-debug.*
+            camera-diagnostics/build/reports/lint-results-debug.*
 
       - name: Build debug APKs
         run: gradle assembleDebug
@@ -53,6 +54,7 @@ jobs:
           path: |
             source/build/outputs/apk/debug/*.apk
             browser/build/outputs/apk/debug/*.apk
+            camera-diagnostics/build/outputs/apk/debug/*.apk
 
   cam-player:
     runs-on: windows-latest
