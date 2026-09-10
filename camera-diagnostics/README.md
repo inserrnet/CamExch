@@ -43,6 +43,8 @@ Useful lines:
 - `Camera2.getCameraCharacteristics` shows facing direction, hardware level, FPS ranges, and sensor size.
 - `ImageReader.newInstance` shows requested still/capture buffer sizes.
 - `SurfaceTexture.setDefaultBufferSize` shows preview buffer size.
-- `Camera2.createCaptureRequest` and `Camera2.createCaptureSession` show session lifecycle.
+- `CameraDeviceImpl.createCaptureSession` shows the real Android Camera2 session and its output surfaces.
+- `CaptureRequest.Builder.build` shows targets, requested FPS, AF/AE modes, crop, and JPEG settings.
+- `CameraCaptureSession.setRepeatingRequest` / `capture` show which requests Brave submits.
 
 For the first test pass, keep the rear camera physical and use this module only to confirm when the target app switches from document capture to front camera capture.

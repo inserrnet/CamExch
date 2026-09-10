@@ -2,8 +2,11 @@ package com.camexch.cameradiagnostics;
 
 import android.hardware.Camera;
 import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.params.OutputConfiguration;
 import android.media.ImageReader;
 import android.os.Build;
 import android.util.Log;
@@ -12,7 +15,10 @@ import android.util.Size;
 import android.view.Surface;
 
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -22,6 +28,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public final class CameraDiagnosticsModule implements IXposedHookLoadPackage {
     private static final String TAG = "CamExchCameraDiag";
+    private static final Set<String> LOGGED_ONCE = ConcurrentHashMap.newKeySet();
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -31,6 +38,8 @@ public final class CameraDiagnosticsModule implements IXposedHookLoadPackage {
         log(lpparam.packageName, "loaded process=" + lpparam.processName);
         hookCamera1(lpparam);
         hookCamera2(lpparam);
+        hookCamera2Implementations(lpparam);
+        hookCaptureRequests(lpparam);
         hookImageReader(lpparam);
         hookSurface(lpparam);
     }
@@ -87,7 +96,11 @@ public final class CameraDiagnosticsModule implements IXposedHookLoadPackage {
         hookAll("android.hardware.camera2.CameraManager", lpparam.classLoader, "getCameraIdList", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
-                log(lpparam.packageName, "Camera2.getCameraIdList result=" + Arrays.toString((Object[]) param.getResult()));
+                Object result = param.getResult();
+                if (result instanceof String[]) {
+                    logOnce(lpparam.packageName, "camera-id-list",
+                            "Camera2.getCameraIdList result=" + Arrays.toString((String[]) result));
+                }
             }
         });
 
@@ -96,8 +109,10 @@ public final class CameraDiagnosticsModule implements IXposedHookLoadPackage {
             protected void afterHookedMethod(MethodHookParam param) {
                 Object result = param.getResult();
                 if (result instanceof CameraCharacteristics) {
-                    log(lpparam.packageName, "Camera2.getCameraCharacteristics id=" + param.args[0]
-                            + " " + describeCharacteristics((CameraCharacteristics) result));
+                    String cameraId = String.valueOf(param.args[0]);
+                    logOnce(lpparam.packageName, "characteristics-" + cameraId,
+                            "Camera2.getCameraCharacteristics id=" + cameraId
+                                    + " " + describeCharacteristics((CameraCharacteristics) result));
                 }
             }
         });
@@ -136,6 +151,99 @@ public final class CameraDiagnosticsModule implements IXposedHookLoadPackage {
                 }
             });
         }
+    }
+
+    private static void hookCamera2Implementations(XC_LoadPackage.LoadPackageParam lpparam) {
+        String cameraDeviceImpl = "android.hardware.camera2.impl.CameraDeviceImpl";
+        hookSessionMethod(cameraDeviceImpl, "createCaptureSession", lpparam);
+        hookSessionMethod(cameraDeviceImpl, "createCaptureSessionByOutputConfigurations", lpparam);
+        hookSessionMethod(cameraDeviceImpl, "createReprocessableCaptureSession", lpparam);
+        hookSessionMethod(cameraDeviceImpl, "createReprocessableCaptureSessionByConfigurations", lpparam);
+        hookSessionMethod(cameraDeviceImpl, "createConstrainedHighSpeedCaptureSession", lpparam);
+        hookSessionMethod(cameraDeviceImpl, "createCustomCaptureSession", lpparam);
+
+        hookAll(cameraDeviceImpl, lpparam.classLoader, "createCaptureRequest", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                log(lpparam.packageName, "CameraDeviceImpl.createCaptureRequest camera="
+                        + cameraDeviceId(param.thisObject)
+                        + " template=" + firstArg(param.args));
+            }
+        });
+
+        String sessionImpl = "android.hardware.camera2.impl.CameraCaptureSessionImpl";
+        hookCaptureSessionMethod(sessionImpl, "setRepeatingRequest", lpparam);
+        hookCaptureSessionMethod(sessionImpl, "setSingleRepeatingRequest", lpparam);
+        hookCaptureSessionMethod(sessionImpl, "setRepeatingBurst", lpparam);
+        hookCaptureSessionMethod(sessionImpl, "setRepeatingBurstRequests", lpparam);
+        hookCaptureSessionMethod(sessionImpl, "capture", lpparam);
+        hookCaptureSessionMethod(sessionImpl, "captureSingleRequest", lpparam);
+        hookCaptureSessionMethod(sessionImpl, "captureBurst", lpparam);
+        hookCaptureSessionMethod(sessionImpl, "captureBurstRequests", lpparam);
+        hookSimpleSessionMethod(sessionImpl, "stopRepeating", lpparam);
+        hookSimpleSessionMethod(sessionImpl, "abortCaptures", lpparam);
+        hookSimpleSessionMethod(sessionImpl, "close", lpparam);
+    }
+
+    private static void hookCaptureRequests(XC_LoadPackage.LoadPackageParam lpparam) {
+        hookAll("android.hardware.camera2.CaptureRequest$Builder", lpparam.classLoader, "addTarget", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                log(lpparam.packageName, "CaptureRequest.Builder.addTarget " + describeSurface(firstArg(param.args)));
+            }
+        });
+
+        hookAll("android.hardware.camera2.CaptureRequest$Builder", lpparam.classLoader, "removeTarget", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                log(lpparam.packageName, "CaptureRequest.Builder.removeTarget " + describeSurface(firstArg(param.args)));
+            }
+        });
+
+        hookAll("android.hardware.camera2.CaptureRequest$Builder", lpparam.classLoader, "build", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (param.getResult() instanceof CaptureRequest) {
+                    log(lpparam.packageName, "CaptureRequest.Builder.build "
+                            + describeCaptureRequest((CaptureRequest) param.getResult()));
+                }
+            }
+        });
+    }
+
+    private static void hookSessionMethod(String className, String methodName,
+            XC_LoadPackage.LoadPackageParam lpparam) {
+        hookAll(className, lpparam.classLoader, methodName, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                log(lpparam.packageName, "CameraDeviceImpl." + methodName
+                        + " camera=" + cameraDeviceId(param.thisObject)
+                        + " outputs=" + describeSessionArguments(param.args));
+            }
+        });
+    }
+
+    private static void hookCaptureSessionMethod(String className, String methodName,
+            XC_LoadPackage.LoadPackageParam lpparam) {
+        hookAll(className, lpparam.classLoader, methodName, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                log(lpparam.packageName, "CameraCaptureSession." + methodName
+                        + " session=" + sessionId(param.thisObject)
+                        + " requests=" + describeRequests(param.args));
+            }
+        });
+    }
+
+    private static void hookSimpleSessionMethod(String className, String methodName,
+            XC_LoadPackage.LoadPackageParam lpparam) {
+        hookAll(className, lpparam.classLoader, methodName, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                log(lpparam.packageName, "CameraCaptureSession." + methodName
+                        + " session=" + sessionId(param.thisObject));
+            }
+        });
     }
 
     private static void hookImageReader(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -184,9 +292,114 @@ public final class CameraDiagnosticsModule implements IXposedHookLoadPackage {
 
     private static String describeSurfaceList(Object value) {
         if (value instanceof List) {
-            return "count=" + ((List<?>) value).size() + " " + value;
+            return describeCollection((List<?>) value);
         }
         return String.valueOf(value);
+    }
+
+    private static String describeSessionArguments(Object[] args) {
+        StringBuilder result = new StringBuilder();
+        for (Object arg : args) {
+            if (arg instanceof Collection) {
+                appendDescription(result, describeCollection((Collection<?>) arg));
+            } else if (arg instanceof Surface) {
+                appendDescription(result, describeSurface(arg));
+            } else if (Build.VERSION.SDK_INT >= 24 && arg instanceof OutputConfiguration) {
+                appendDescription(result, describeOutputConfiguration((OutputConfiguration) arg));
+            }
+        }
+        return result.length() == 0 ? "none args=" + args.length : result.toString();
+    }
+
+    private static String describeCollection(Collection<?> values) {
+        StringBuilder result = new StringBuilder("count=").append(values.size()).append('[');
+        boolean first = true;
+        for (Object value : values) {
+            if (!first) {
+                result.append(", ");
+            }
+            first = false;
+            if (value instanceof Surface) {
+                result.append(describeSurface(value));
+            } else if (Build.VERSION.SDK_INT >= 24 && value instanceof OutputConfiguration) {
+                result.append(describeOutputConfiguration((OutputConfiguration) value));
+            } else {
+                result.append(value == null ? "null" : value.getClass().getSimpleName());
+            }
+        }
+        return result.append(']').toString();
+    }
+
+    private static String describeOutputConfiguration(OutputConfiguration output) {
+        try {
+            return "OutputConfiguration{group=" + output.getSurfaceGroupId()
+                    + ", rotation=" + output.getRotation()
+                    + ", surfaces=" + describeCollection(output.getSurfaces()) + "}";
+        } catch (Throwable t) {
+            return "OutputConfiguration{" + t.getClass().getSimpleName() + "}";
+        }
+    }
+
+    private static String describeRequests(Object[] args) {
+        for (Object arg : args) {
+            if (arg instanceof CaptureRequest) {
+                return describeCaptureRequest((CaptureRequest) arg);
+            }
+            if (arg instanceof Collection) {
+                StringBuilder result = new StringBuilder();
+                for (Object value : (Collection<?>) arg) {
+                    if (value instanceof CaptureRequest) {
+                        appendDescription(result, describeCaptureRequest((CaptureRequest) value));
+                    }
+                }
+                if (result.length() > 0) {
+                    return result.toString();
+                }
+            }
+        }
+        return "none args=" + args.length;
+    }
+
+    private static String describeCaptureRequest(CaptureRequest request) {
+        return "targets=" + describeCollection(request.getTargets())
+                + " fps=" + request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE)
+                + " af=" + request.get(CaptureRequest.CONTROL_AF_MODE)
+                + " ae=" + request.get(CaptureRequest.CONTROL_AE_MODE)
+                + " crop=" + request.get(CaptureRequest.SCALER_CROP_REGION)
+                + " jpegOrientation=" + request.get(CaptureRequest.JPEG_ORIENTATION)
+                + " jpegQuality=" + request.get(CaptureRequest.JPEG_QUALITY);
+    }
+
+    private static String describeSurface(Object value) {
+        if (!(value instanceof Surface)) {
+            return String.valueOf(value);
+        }
+        Surface surface = (Surface) value;
+        return "Surface@" + Integer.toHexString(System.identityHashCode(surface))
+                + "{valid=" + surface.isValid() + "}";
+    }
+
+    private static String sessionId(Object session) {
+        if (session instanceof CameraCaptureSession) {
+            try {
+                return String.valueOf(((CameraCaptureSession) session).getDevice().getId())
+                        + "@" + Integer.toHexString(System.identityHashCode(session));
+            } catch (Throwable ignored) {
+                // Fall through to object identity when a vendor implementation is incomplete.
+            }
+        }
+        return Integer.toHexString(System.identityHashCode(session));
+    }
+
+    private static Object firstArg(Object[] args) {
+        return args.length == 0 ? null : args[0];
+    }
+
+    private static void appendDescription(StringBuilder result, String value) {
+        if (result.length() > 0) {
+            result.append(' ');
+        }
+        result.append(value);
     }
 
     private static String cameraDeviceId(Object cameraDevice) {
@@ -224,5 +437,11 @@ public final class CameraDiagnosticsModule implements IXposedHookLoadPackage {
         String line = "pkg=" + packageName + " " + message;
         Log.i(TAG, line);
         XposedBridge.log(TAG + " " + line);
+    }
+
+    private static void logOnce(String packageName, String key, String message) {
+        if (LOGGED_ONCE.add(packageName + ':' + key)) {
+            log(packageName, message);
+        }
     }
 }
