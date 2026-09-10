@@ -333,7 +333,7 @@ public final class CameraDiagnosticsModule implements IXposedHookLoadPackage {
     private static String describeOutputConfiguration(OutputConfiguration output) {
         try {
             return "OutputConfiguration{group=" + output.getSurfaceGroupId()
-                    + ", rotation=" + output.getRotation()
+                    + ", rotation=" + hiddenMethod(output, "getRotation")
                     + ", surfaces=" + describeCollection(output.getSurfaces()) + "}";
         } catch (Throwable t) {
             return "OutputConfiguration{" + t.getClass().getSimpleName() + "}";
@@ -361,13 +361,23 @@ public final class CameraDiagnosticsModule implements IXposedHookLoadPackage {
     }
 
     private static String describeCaptureRequest(CaptureRequest request) {
-        return "targets=" + describeCollection(request.getTargets())
+        Object targets = hiddenMethod(request, "getTargets");
+        return "targets=" + (targets instanceof Collection
+                ? describeCollection((Collection<?>) targets) : String.valueOf(targets))
                 + " fps=" + request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE)
                 + " af=" + request.get(CaptureRequest.CONTROL_AF_MODE)
                 + " ae=" + request.get(CaptureRequest.CONTROL_AE_MODE)
                 + " crop=" + request.get(CaptureRequest.SCALER_CROP_REGION)
                 + " jpegOrientation=" + request.get(CaptureRequest.JPEG_ORIENTATION)
                 + " jpegQuality=" + request.get(CaptureRequest.JPEG_QUALITY);
+    }
+
+    private static Object hiddenMethod(Object target, String methodName) {
+        try {
+            return XposedHelpers.callMethod(target, methodName);
+        } catch (Throwable t) {
+            return "unavailable:" + t.getClass().getSimpleName();
+        }
     }
 
     private static String describeSurface(Object value) {
