@@ -214,13 +214,33 @@ class VirtualCameraPin final : public CSourceStream,
       width_ = info->bmiHeader.biWidth;
       height_ = std::abs(info->bmiHeader.biHeight);
       frame_duration_ = info->AvgTimePerFrame > 0 ? info->AvgTimePerFrame : kDefaultFrameDuration;
+      if (configured_format_.width <= 0 || configured_format_.height <= 0) {
+        configured_format_ = {width_, height_, FrameRate(frame_duration_)};
+      }
       reader_.SetNegotiated(width_, height_);
     }
     return result;
   }
 
+  HRESULT OnThreadCreate() override {
+    next_frame_start_ = -1;
+    return S_OK;
+  }
+
   HRESULT FillBuffer(IMediaSample* sample) override {
     if (!sample) return E_POINTER;
+    REFERENCE_TIME stream_time = 0;
+    if (SUCCEEDED(m_pFilter->StreamTime(stream_time))) {
+      if (next_frame_start_ < 0 || stream_time - next_frame_start_ > frame_duration_ * 2) {
+        next_frame_start_ = stream_time;
+      } else if (next_frame_start_ > stream_time) {
+        const auto delay_ms = static_cast<DWORD>(
+            std::max<REFERENCE_TIME>(1, (next_frame_start_ - stream_time + 9'999) / 10'000));
+        Sleep(delay_ms);
+      }
+    } else if (next_frame_start_ < 0) {
+      next_frame_start_ = 0;
+    }
     BYTE* data = nullptr;
     if (FAILED(sample->GetPointer(&data)) || !data) return E_FAIL;
     const LONG stride = width_ * 4;
@@ -230,11 +250,11 @@ class VirtualCameraPin final : public CSourceStream,
       std::memset(data, 0, bytes);
     }
     sample->SetActualDataLength(bytes);
-    REFERENCE_TIME start = frame_number_ * frame_duration_;
+    REFERENCE_TIME start = next_frame_start_;
     REFERENCE_TIME stop = start + frame_duration_;
     sample->SetTime(&start, &stop);
     sample->SetSyncPoint(TRUE);
-    ++frame_number_;
+    next_frame_start_ = stop;
     return S_OK;
   }
 
@@ -247,6 +267,7 @@ class VirtualCameraPin final : public CSourceStream,
     width_ = info->bmiHeader.biWidth;
     height_ = std::abs(info->bmiHeader.biHeight);
     frame_duration_ = info->AvgTimePerFrame > 0 ? info->AvgTimePerFrame : kDefaultFrameDuration;
+    configured_format_ = {width_, height_, FrameRate(frame_duration_)};
     reader_.SetNegotiated(width_, height_);
     IPin* connected = nullptr;
     if (SUCCEEDED(ConnectedTo(&connected)) && connected) {
@@ -321,9 +342,13 @@ class VirtualCameraPin final : public CSourceStream,
  private:
   std::vector<Format> Formats() {
     const Format source = reader_.SourceFormat();
-    std::vector<Format> formats = {source,
+    std::vector<Format> formats;
+    if (configured_format_.width > 0 && configured_format_.height > 0) {
+      formats.push_back(configured_format_);
+    }
+    formats.insert(formats.end(), {source,
       {640, 480, 30}, {1280, 720, 30}, {1920, 1080, 30},
-      {1080, 1920, 30}, {1920, 1920, 30}};
+      {1080, 1920, 30}, {1920, 1920, 30}});
     std::vector<Format> unique;
     for (auto format : formats) {
       format.width &= ~1L;
@@ -333,6 +358,11 @@ class VirtualCameraPin final : public CSourceStream,
       })) unique.push_back(format);
     }
     return unique;
+  }
+
+  static LONG FrameRate(REFERENCE_TIME duration) {
+    if (duration <= 0) return 30;
+    return std::clamp(static_cast<LONG>((10'000'000 + duration / 2) / duration), 1L, 60L);
   }
 
   static HRESULT BuildMediaType(const Format& format, CMediaType* media_type) {
@@ -361,7 +391,8 @@ class VirtualCameraPin final : public CSourceStream,
   LONG width_ = 1280;
   LONG height_ = 720;
   REFERENCE_TIME frame_duration_ = kDefaultFrameDuration;
-  LONGLONG frame_number_ = 0;
+  REFERENCE_TIME next_frame_start_ = -1;
+  Format configured_format_ = {0, 0, 0};
 };
 
 class VirtualCameraFilter final : public CSource {
