@@ -104,6 +104,13 @@ jobs:
           cmake --build native/build --config Release --parallel
           cmake --install native/build --config Release --prefix native/bin/x64
 
+      - name: Test Windows virtual camera
+        run: |
+          node test/virtual-camera-native-smoke.js `
+            native/bin/x64/CamPlayerVirtualCameraControl.exe `
+            native/bin/x64/CamPlayerVirtualCamera.dll `
+            node_modules/ffmpeg-static/ffmpeg.exe
+
       - name: Build portable Cam Player
         run: pnpm dist
 

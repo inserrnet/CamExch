@@ -223,24 +223,18 @@ class VirtualCameraPin final : public CSourceStream,
   }
 
   HRESULT OnThreadCreate() override {
-    next_frame_start_ = -1;
+    frame_number_ = 0;
+    next_delivery_time_ = static_cast<REFERENCE_TIME>(GetTickCount64()) * 10'000;
     return S_OK;
   }
 
   HRESULT FillBuffer(IMediaSample* sample) override {
     if (!sample) return E_POINTER;
-    CRefTime current_stream_time;
-    if (SUCCEEDED(m_pFilter->StreamTime(current_stream_time))) {
-      const REFERENCE_TIME stream_time = current_stream_time;
-      if (next_frame_start_ < 0 || stream_time - next_frame_start_ > frame_duration_ * 2) {
-        next_frame_start_ = stream_time;
-      } else if (next_frame_start_ > stream_time) {
-        const auto delay_ms = static_cast<DWORD>(
-            std::max<REFERENCE_TIME>(1, (next_frame_start_ - stream_time + 9'999) / 10'000));
-        Sleep(delay_ms);
-      }
-    } else if (next_frame_start_ < 0) {
-      next_frame_start_ = 0;
+    const REFERENCE_TIME wall_time = static_cast<REFERENCE_TIME>(GetTickCount64()) * 10'000;
+    if (wall_time - next_delivery_time_ > frame_duration_ * 2) {
+      next_delivery_time_ = wall_time;
+    } else if (next_delivery_time_ > wall_time) {
+      Sleep(static_cast<DWORD>((next_delivery_time_ - wall_time + 9'999) / 10'000));
     }
     BYTE* data = nullptr;
     if (FAILED(sample->GetPointer(&data)) || !data) return E_FAIL;
@@ -251,11 +245,12 @@ class VirtualCameraPin final : public CSourceStream,
       std::memset(data, 0, bytes);
     }
     sample->SetActualDataLength(bytes);
-    REFERENCE_TIME start = next_frame_start_;
+    REFERENCE_TIME start = frame_number_ * frame_duration_;
     REFERENCE_TIME stop = start + frame_duration_;
     sample->SetTime(&start, &stop);
     sample->SetSyncPoint(TRUE);
-    next_frame_start_ = stop;
+    ++frame_number_;
+    next_delivery_time_ += frame_duration_;
     return S_OK;
   }
 
@@ -392,7 +387,8 @@ class VirtualCameraPin final : public CSourceStream,
   LONG width_ = 1280;
   LONG height_ = 720;
   REFERENCE_TIME frame_duration_ = kDefaultFrameDuration;
-  REFERENCE_TIME next_frame_start_ = -1;
+  REFERENCE_TIME next_delivery_time_ = 0;
+  LONGLONG frame_number_ = 0;
   Format configured_format_ = {0, 0, 0};
 };
 
