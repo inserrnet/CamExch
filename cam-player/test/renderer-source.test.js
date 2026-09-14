@@ -18,6 +18,18 @@ const preload = fs.readFileSync(
   "utf8",
 );
 
+test("supports unrestricted requested site geometry and one-shot media-sized output", () => {
+  assert.match(indexHtml, /id="useRequestedResolutionWithoutLimitToggle"/);
+  assert.match(indexHtml, /id="autoMediaOutputToggle"/);
+  assert.match(renderer, /useRequestedResolutionWithoutLimit:/);
+  assert.match(renderer, /useRequestedResolutionWithoutLimitToggle\.checked/);
+  assert.match(renderer, /Site resolution limit bypassed requested=/);
+  assert.match(renderer, /if \(autoMediaOutputToggle\.checked\)/);
+  assert.match(renderer, /CamGeometry\.mediaOutputSize\(sourceWidth, sourceHeight\)/);
+  assert.match(renderer, /reason=media auto-size disabled/);
+  assert.match(renderer, /origin: "manual"/);
+});
+
 test("uses stable trilinear minification for downscaling", () => {
   assert.match(renderer, /gl\.LINEAR_MIPMAP_LINEAR/);
   assert.match(renderer, /gl\.generateMipmap\(gl\.TEXTURE_2D\)/);
@@ -53,7 +65,7 @@ test("publishes each decoded video frame once and paces only static output", () 
   assert.match(renderer, /stopPausedFrameHeartbeat\(\);[\s\S]*playing = true;[\s\S]*await video\.play\(\)/);
   assert.match(renderer, /video\.pause\(\);[\s\S]*discardPendingTrackFrame\(""\)[\s\S]*reportPlaybackCadence\("pause"/);
   assert.match(renderer, /CamGeometry\.adaptiveFrameRate\(/);
-  assert.match(renderer, /!canvasTrack \|\| peers\.size === 0/);
+  assert.match(renderer, /peers\.size === 0 && !virtualCameraRunning/);
   assert.match(
     renderer,
     /const sender = pc\.addTrack[\s\S]*updatePausedFrameHeartbeat\(\)/,
@@ -129,6 +141,74 @@ test("clears only the recent file history", () => {
   assert.match(renderer, /clearRecentButton\.disabled = recent\.length === 0/);
 });
 
+test("uses fixed-width settings columns without resizing the preview", () => {
+  const styles = fs.readFileSync(
+    path.join(__dirname, "..", "renderer", "styles.css"),
+    "utf8",
+  );
+  assert.match(indexHtml, /class="settings-columns"/);
+  assert.match(indexHtml, /data-column="main"/);
+  assert.match(indexHtml, /data-column="effects"/);
+  assert.match(indexHtml, /data-column="advanced"/);
+  assert.match(renderer, /collapsedColumns: settingsColumns/);
+  assert.match(renderer, /function setColumnCollapsed/);
+  assert.match(styles, /\.preview[\s\S]*position: relative;[\s\S]*flex: 1 1 auto/);
+  assert.match(styles, /\.settings[\s\S]*position: relative;[\s\S]*flex: 0 0 auto/);
+  assert.match(styles, /\.settings-column[\s\S]*flex: 0 0 320px/);
+  assert.match(renderer, /setSettingsWidth\(settingsViewWidth\(\)\)/);
+});
+
+test("publishes the final composition to a separately controlled Windows camera", () => {
+  const manager = fs.readFileSync(
+    path.join(__dirname, "..", "lib", "virtual-camera-manager.js"),
+    "utf8",
+  );
+  assert.match(indexHtml, /id="virtualCameraTabButton"/);
+  assert.match(indexHtml, /id="virtualCameraPanel"/);
+  assert.match(preload, /sendVirtualCameraFrame/);
+  assert.match(renderer, /frame\.copyTo\(pixels, \{ format: "RGBA" \}\)/);
+  assert.match(renderer, /virtualCameraFramePending/);
+  assert.match(renderer, /publishVirtualCameraFrame\(frame\.clone\(\)/);
+  assert.match(manager, /if \(this\.pendingAcknowledgement\) return Promise\.resolve\(false\)/);
+  assert.match(manager, /app\.asar\.unpacked/);
+});
+
+test("provides exact inverse 90 degree source rotations", () => {
+  assert.match(indexHtml, /id="rotateLeftButton"/);
+  assert.match(indexHtml, /id="rotateButton"/);
+  assert.match(renderer, /function rotateSource\(quarterTurns, reason\)/);
+  assert.match(renderer, /rotateSource\(-1, "left"\)/);
+  assert.match(renderer, /rotateSource\(1, "right"\)/);
+});
+
+test("keeps file logging without rendering a visible log window", () => {
+  assert.doesNotMatch(indexHtml, /id="logOutput"/);
+  assert.match(indexHtml, /id="copyLogButton"/);
+  assert.match(indexHtml, /id="clearLogButton"/);
+  assert.doesNotMatch(renderer, /appendLog/);
+});
+
+test("keeps Loop as a native checkbox while settings use ON OFF switches", () => {
+  const styles = fs.readFileSync(
+    path.join(__dirname, "..", "renderer", "styles.css"),
+    "utf8",
+  );
+  assert.match(indexHtml, /<label class="toggle"><input id="loopToggle" type="checkbox" checked> Loop<\/label>/);
+  assert.match(styles, /\.settings \.toggle input\[type="checkbox"\]/);
+  assert.doesNotMatch(styles, /\n\.toggle input\[type="checkbox"\]/);
+});
+
+test("keeps settings and preview in one native window", () => {
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const css = fs.readFileSync(path.join(__dirname, "..", "renderer", "styles.css"), "utf8");
+  assert.doesNotMatch(main, /parent: mainWindow/);
+  assert.doesNotMatch(main, /createSettingsWindow|placeSettingsWindow|showInactive/);
+  assert.doesNotMatch(main, /mainWindow\.on\("maximize"|mainWindow\.unmaximize/);
+  assert.match(main, /ipcMain\.on\("settings-width"/);
+  assert.match(css, /main \{\s+display: flex;/);
+  assert.match(css, /\.settings \{\s+position: relative;\s+flex: 0 0 auto;/);
+});
+
 test("uploads an unchanged source only when its texture is dirty", () => {
   assert.match(renderer, /if \(sourceTextureDirty\) \{/);
   assert.match(renderer, /sourceTextureDirty = false/);
@@ -156,6 +236,8 @@ test("adds signal-dependent camera noise in the existing final GPU pass", () => 
   assert.match(indexHtml, /id="noiseColorInput"/);
   assert.match(indexHtml, /id="noiseLowLightInput"/);
   assert.match(indexHtml, /id="noisePatternInput"/);
+  assert.match(indexHtml, /id="noisePersistenceInput"/);
+  assert.match(indexHtml, /id="noiseBandingInput"/);
   assert.match(renderer, /vec3 applyCameraNoise/);
   assert.match(renderer, /signalSigma = u_noise_amount/);
   assert.match(renderer, /u_noise_texture/);
@@ -163,14 +245,44 @@ test("adds signal-dependent camera noise in the existing final GPU pass", () => 
   assert.match(renderer, /fixedPattern = fixedNoise/);
   assert.match(renderer, /rowNoise = rowNoiseSample/);
   assert.match(renderer, /previousNoise = texture/);
+  assert.match(renderer, /u_noise_persistence/);
+  assert.match(renderer, /u_noise_banding/);
   assert.match(renderer, /normalized \* normalized \* 0\.1/);
   assert.match(renderer, /composed\.rgb = applyCameraNoise\(composed\.rgb, pixel\)/);
   assert.equal((renderer.match(/gl\.drawArrays\(gl\.TRIANGLES, 0, 6\)/g) || []).length, 4);
 });
 
+test("adds vignette and smooth AWB drift in the existing final GPU pass", () => {
+  assert.match(indexHtml, /id="vignetteToggle"/);
+  assert.match(indexHtml, /id="vignetteStrengthInput"/);
+  assert.match(indexHtml, /id="vignetteSizeInput"/);
+  assert.match(indexHtml, /id="vignetteFeatherInput"/);
+  assert.match(indexHtml, /id="awbToggle"/);
+  assert.match(indexHtml, /id="awbWarmthInput"/);
+  assert.match(indexHtml, /id="awbAmountInput"/);
+  assert.match(indexHtml, /id="awbSpeedInput"/);
+  assert.match(renderer, /vec3 applyVignette/);
+  assert.match(renderer, /vec3 applyAwb/);
+  assert.match(renderer, /configuredAwbBalance/);
+  assert.match(renderer, /composed\.rgb = applyVignette\(composed\.rgb\)/);
+  assert.match(renderer, /composed\.rgb = applyAwb\(composed\.rgb\)/);
+  assert.doesNotMatch(renderer, /awbTimer|vignetteTimer|setInterval\([^)]*(?:awb|vignette)/i);
+});
+
+test("adds persistent brightness and contrast in the existing final GPU pass", () => {
+  assert.match(indexHtml, /id="brightnessInput"[^>]*min="-100"[^>]*max="100"/);
+  assert.match(indexHtml, /id="contrastInput"[^>]*min="-100"[^>]*max="100"/);
+  assert.match(indexHtml, /id="resetColorAdjustmentButton"/);
+  assert.match(renderer, /vec3 applyColorAdjustment/);
+  assert.match(renderer, /composed\.rgb = applyColorAdjustment\(composed\.rgb\)/);
+  assert.match(renderer, /brightness: Number\(brightnessInput\.value\)/);
+  assert.match(renderer, /contrast: Number\(contrastInput\.value\)/);
+  assert.doesNotMatch(renderer, /colorAdjustmentTimer|setInterval\([^)]*(?:brightness|contrast)/i);
+});
+
 test("animates static noise through the sole frame pacer without touching video cadence", () => {
   assert.match(renderer, /if \(sourceKind === "video" && playing\) return effectiveMediaFps\(\)/);
-  assert.match(renderer, /if \(noiseToggle\.checked\)/);
+  assert.match(renderer, /if \(noiseToggle\.checked \|\| awbToggle\.checked\)/);
   assert.match(renderer, /pixels >= 7_000_000[\s\S]*Math\.min\(configured, 8\)/);
   assert.match(renderer, /pixels >= 3_000_000[\s\S]*Math\.min\(configured, 12\)/);
   assert.match(renderer, /pixels >= 1_500_000[\s\S]*Math\.min\(configured, 18\)/);
@@ -212,7 +324,13 @@ test("validates the final Player ICE route without filtering Android candidates"
   assert.match(renderer, /routeDetails\?\.localAddress === preferredHost/);
   assert.match(renderer, /WebRTC final route validated/);
   assert.match(renderer, /firstError\.routeOnly \|\| firstError\.frameProducer/);
-  assert.match(renderer, /!error\.frameProducer && receivedInputFrames && failedMime/);
+  assert.match(renderer, /const canceled = !peers\.has\(id\)/);
+  assert.match(renderer, /everConnected: false/);
+  assert.match(renderer, /maintenance\.everConnected = true/);
+  assert.match(renderer, /peerNeverConnected = !maintenance\?\.everConnected/);
+  assert.match(renderer, /\|\| peerNeverConnected/);
+  assert.match(renderer, /Encoder codec preserved because offer was canceled or abandoned/);
+  assert.match(renderer, /else if \(!error\.routeOnly && !error\.frameProducer && receivedInputFrames && failedMime\)/);
   assert.match(renderer, /Preferred route rejected without penalizing codec/);
   assert.match(renderer, /if \(!\(sourceKind === "video" && playing\)\) renderFrame\(true\)/);
 });
@@ -325,4 +443,29 @@ test("keeps sender pacing unset while the frame pacer controls cadence", () => {
   assert.doesNotMatch(renderer, /const configuredFps = effectiveMediaFps\(\)/);
   assert.doesNotMatch(renderer, /scheduleSenderQualityRefresh\(`interaction/);
   assert.doesNotMatch(renderer, /scheduleSenderQualityRefresh\("playback/);
+});
+
+test("shows measured output FPS separately from the configured maximum", () => {
+  assert.match(indexHtml, /id="outputValue"[^>]*>720(?:×|&times;)1280 @ 0\.0 FPS/);
+  assert.match(renderer, /function observeOutputFrame\(now = performance\.now\(\)\)/);
+  assert.match(renderer, /function refreshMeasuredOutputFps\(\)/);
+  assert.match(renderer, /fps: measuredOutputFps/);
+  assert.match(renderer, /maximumFps: Number\(fpsInput\.value\)/);
+  assert.doesNotMatch(
+    renderer,
+    /outputValue"\)\.textContent\s*=\s*[^;]*fpsInput\.value/,
+  );
+});
+
+test("uses one selectable motion profile directory across Player builds", () => {
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  assert.match(main, /PROFILE_CONFIG_DIRECTORY = path\.join\(app\.getPath\("appData"\), "cam-player"\)/);
+  assert.match(main, /PROFILE_CONFIG_PATH = path\.join\(PROFILE_CONFIG_DIRECTORY, "profile-storage\.json"\)/);
+  assert.match(main, /"Cam Player Quality Test", "motion-profiles\.json"/);
+  assert.match(main, /ipcMain\.handle\("select-profiles-folder"/);
+  assert.match(main, /properties: \["openDirectory", "createDirectory"\]/);
+  assert.doesNotMatch(main, /ipcMain\.handle\("open-profiles-folder"/);
+  assert.doesNotMatch(preload, /openProfilesFolder/);
+  assert.match(preload, /selectProfilesFolder/);
+  assert.match(indexHtml, /id="selectProfilesFolderButton"/);
 });

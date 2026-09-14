@@ -156,7 +156,7 @@
     };
   }
 
-  function resolveRequestedSize(constraints, orientation, fallback) {
+  function resolveRequestedSize(constraints, orientation, fallback, options = {}) {
     const video = constraints && constraints.video && constraints.video !== true
       ? constraints.video
       : {};
@@ -206,11 +206,15 @@
       || requestedHeight !== Math.round(rawHeight);
     const widthStrength = constraintStrength(widthConstraint);
     const heightStrength = constraintStrength(heightConstraint);
+    const useRequestedResolutionWithoutLimit =
+      options.useRequestedResolutionWithoutLimit === true;
     const baseReason = `${pair.source === "direct" ? "" : `${pair.source} `}`
       + `${widthStrength}/${heightStrength} ${orientation}`
       + (aspect.applied ? ` aspect=${aspect.ratio.toFixed(4)}` : "")
       + (normalized ? " H264-even" : "");
-    if (isMandatoryConstraint(pair) && isUltraHighResolution(oriented.width, oriented.height)) {
+    if (!useRequestedResolutionWithoutLimit
+      && isMandatoryConstraint(pair)
+      && isUltraHighResolution(oriented.width, oriented.height)) {
       return {
         width: fallback.width,
         height: fallback.height,
@@ -221,7 +225,7 @@
         reason: `${baseReason} exceeds stable mandatory encoder limit`,
       };
     }
-    const safe = isMandatoryConstraint(pair)
+    const safe = isMandatoryConstraint(pair) || useRequestedResolutionWithoutLimit
       ? { ...oriented, clamped: false }
       : fitOptionalSiteSize(oriented.width, oriented.height);
     if (safe.clamped) {
@@ -239,7 +243,13 @@
       width: safe.width,
       height: safe.height,
       applied: true,
-      reason: baseReason,
+      ...(useRequestedResolutionWithoutLimit ? {
+        requestedWidth: oriented.width,
+        requestedHeight: oriented.height,
+        unrestricted: true,
+      } : {}),
+      reason: baseReason
+        + (useRequestedResolutionWithoutLimit ? " requested resolution limit disabled" : ""),
     };
   }
 
@@ -322,19 +332,43 @@
     }
   }
 
-  function targetVideoBitrate(width, height, framesPerSecond) {
+  function mediaOutputSize(width, height) {
+    const even = (value, label) => {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error(`${label} must be a positive number`);
+      }
+      return Math.max(2, Math.ceil(parsed / 2) * 2);
+    };
+    return {
+      width: even(width, "Media width"),
+      height: even(height, "Media height"),
+    };
+  }
+
+  function targetVideoBitrate(width, height, framesPerSecond, qualityProfile = "standard") {
     const w = Math.max(2, Number(width) || 0);
     const h = Math.max(2, Number(height) || 0);
     const fps = Math.max(1, Math.min(60, Number(framesPerSecond) || 30));
-    const calculated = Math.round(w * h * fps * 0.22);
-    return Math.max(3_000_000, Math.min(28_000_000, calculated));
+    const qualityTest = qualityProfile === "quality-test";
+    const calculated = Math.round(w * h * fps * (qualityTest ? 0.45 : 0.22));
+    const floor = qualityTest ? 6_000_000 : 3_000_000;
+    const ceiling = qualityTest ? 45_000_000 : 28_000_000;
+    return Math.max(floor, Math.min(ceiling, calculated));
   }
 
-  function videoBitrateProfile(width, height, framesPerSecond) {
-    const maximum = targetVideoBitrate(width, height, framesPerSecond);
+  function videoBitrateProfile(width, height, framesPerSecond, qualityProfile = "standard") {
+    const maximum = targetVideoBitrate(width, height, framesPerSecond, qualityProfile);
+    const qualityTest = qualityProfile === "quality-test";
     return {
-      minimum: Math.min(maximum, Math.max(2_000_000, Math.round(maximum * 0.3))),
-      start: Math.min(maximum, Math.max(3_000_000, Math.round(maximum * 0.6))),
+      minimum: Math.min(maximum, Math.max(
+        qualityTest ? 4_000_000 : 2_000_000,
+        Math.round(maximum * (qualityTest ? 0.55 : 0.3)),
+      )),
+      start: Math.min(maximum, Math.max(
+        qualityTest ? 5_000_000 : 3_000_000,
+        Math.round(maximum * (qualityTest ? 0.85 : 0.6)),
+      )),
       maximum,
     };
   }
@@ -572,6 +606,7 @@
     constraintSpec,
     orientSize,
     resolveRequestedSize,
+    mediaOutputSize,
     fitTransform,
     zoomAroundPoint,
     dragInOutputCoordinates,

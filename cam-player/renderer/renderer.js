@@ -1,5 +1,14 @@
 "use strict";
 
+const qualityProfile = new URLSearchParams(window.location.search).get("qualityProfile") === "quality-test"
+  ? "quality-test"
+  : "standard";
+const qualityTestBadge = document.getElementById("qualityTestBadge");
+if (qualityProfile === "quality-test") {
+  qualityTestBadge.hidden = false;
+  document.title = "Cam Player Quality Test";
+}
+
 const canvas = document.getElementById("outputCanvas");
 const preview = document.getElementById("preview");
 const emptyState = document.getElementById("emptyState");
@@ -10,17 +19,45 @@ const widthInput = document.getElementById("widthInput");
 const heightInput = document.getElementById("heightInput");
 const fpsInput = document.getElementById("fpsInput");
 const blurInput = document.getElementById("blurInput");
+const brightnessInput = document.getElementById("brightnessInput");
+const contrastInput = document.getElementById("contrastInput");
+const brightnessValue = document.getElementById("brightnessValue");
+const contrastValue = document.getElementById("contrastValue");
+const vignetteToggle = document.getElementById("vignetteToggle");
+const vignetteControls = document.getElementById("vignetteControls");
+const vignetteStrengthInput = document.getElementById("vignetteStrengthInput");
+const vignetteSizeInput = document.getElementById("vignetteSizeInput");
+const vignetteFeatherInput = document.getElementById("vignetteFeatherInput");
+const vignetteStrengthValue = document.getElementById("vignetteStrengthValue");
+const vignetteSizeValue = document.getElementById("vignetteSizeValue");
+const vignetteFeatherValue = document.getElementById("vignetteFeatherValue");
+const awbToggle = document.getElementById("awbToggle");
+const awbControls = document.getElementById("awbControls");
+const awbWarmthInput = document.getElementById("awbWarmthInput");
+const awbAmountInput = document.getElementById("awbAmountInput");
+const awbSpeedInput = document.getElementById("awbSpeedInput");
+const awbWarmthValue = document.getElementById("awbWarmthValue");
+const awbAmountValue = document.getElementById("awbAmountValue");
+const awbSpeedValue = document.getElementById("awbSpeedValue");
 const noiseToggle = document.getElementById("noiseToggle");
 const noiseControls = document.getElementById("noiseControls");
 const noiseAmountInput = document.getElementById("noiseAmountInput");
 const noiseColorInput = document.getElementById("noiseColorInput");
 const noiseLowLightInput = document.getElementById("noiseLowLightInput");
 const noisePatternInput = document.getElementById("noisePatternInput");
+const noisePersistenceInput = document.getElementById("noisePersistenceInput");
+const noiseBandingInput = document.getElementById("noiseBandingInput");
 const noiseAmountValue = document.getElementById("noiseAmountValue");
 const noiseColorValue = document.getElementById("noiseColorValue");
 const noiseLowLightValue = document.getElementById("noiseLowLightValue");
 const noisePatternValue = document.getElementById("noisePatternValue");
+const noisePersistenceValue = document.getElementById("noisePersistenceValue");
+const noiseBandingValue = document.getElementById("noiseBandingValue");
 const followSiteToggle = document.getElementById("followSiteToggle");
+const useRequestedResolutionWithoutLimitToggle = document.getElementById(
+  "useRequestedResolutionWithoutLimitToggle",
+);
+const autoMediaOutputToggle = document.getElementById("autoMediaOutputToggle");
 const motionMode = document.getElementById("motionMode");
 const liveMotionToggle = document.getElementById("liveMotionToggle");
 const motionProfileSelect = document.getElementById("motionProfileSelect");
@@ -32,7 +69,7 @@ const recenterButton = document.getElementById("recenterButton");
 const recordMotionButton = document.getElementById("recordMotionButton");
 const cancelMotionRecordingButton = document.getElementById("cancelMotionRecordingButton");
 const deleteMotionProfileButton = document.getElementById("deleteMotionProfileButton");
-const openProfilesFolderButton = document.getElementById("openProfilesFolderButton");
+const selectProfilesFolderButton = document.getElementById("selectProfilesFolderButton");
 const motionRecordingStatus = document.getElementById("motionRecordingStatus");
 const handheldStatus = document.getElementById("handheldStatus");
 const timeline = document.getElementById("timeline");
@@ -40,9 +77,24 @@ const timeLabel = document.getElementById("timeLabel");
 const recentFiles = document.getElementById("recentFiles");
 const clearRecentButton = document.getElementById("clearRecentButton");
 const scanQrButton = document.getElementById("scanQrButton");
-const logOutput = document.getElementById("logOutput");
 const connectionStatus = document.getElementById("connectionStatus");
 const toast = document.getElementById("toast");
+const settingsColumns = Array.from(document.querySelectorAll(".settings-column"));
+const playerTabButton = document.getElementById("playerTabButton");
+const virtualCameraTabButton = document.getElementById("virtualCameraTabButton");
+const playerSettingsPanel = document.getElementById("playerSettingsPanel");
+const virtualCameraPanel = document.getElementById("virtualCameraPanel");
+const virtualCameraNotice = document.getElementById("virtualCameraNotice");
+const virtualCameraInstalledValue = document.getElementById("virtualCameraInstalledValue");
+const virtualCameraRunningValue = document.getElementById("virtualCameraRunningValue");
+const virtualCameraConsumersValue = document.getElementById("virtualCameraConsumersValue");
+const virtualCameraFormatValue = document.getElementById("virtualCameraFormatValue");
+const virtualCameraNameInput = document.getElementById("virtualCameraNameInput");
+const installVirtualCameraButton = document.getElementById("installVirtualCameraButton");
+const renameVirtualCameraButton = document.getElementById("renameVirtualCameraButton");
+const uninstallVirtualCameraButton = document.getElementById("uninstallVirtualCameraButton");
+const startVirtualCameraButton = document.getElementById("startVirtualCameraButton");
+const stopVirtualCameraButton = document.getElementById("stopVirtualCameraButton");
 let toastTimer = null;
 
 function showToast(message) {
@@ -85,12 +137,23 @@ uniform vec2 u_pan;
 uniform int u_rotation;
 uniform int u_mirrored;
 uniform float u_handheld_roll;
+uniform int u_color_adjustment_enabled;
+uniform vec2 u_color_adjustment;
+uniform int u_vignette_enabled;
+uniform float u_vignette_strength;
+uniform float u_vignette_size;
+uniform float u_vignette_feather;
+uniform int u_awb_enabled;
+uniform vec2 u_awb_balance;
 uniform int u_noise_enabled;
 uniform vec2 u_noise_offset;
+uniform vec2 u_noise_previous_offset;
 uniform float u_noise_amount;
 uniform float u_noise_color;
 uniform float u_noise_low_light;
 uniform float u_noise_pattern;
+uniform float u_noise_persistence;
+uniform float u_noise_banding;
 in vec2 v_uv;
 out vec4 outColor;
 
@@ -120,14 +183,44 @@ vec2 applyHandheld(vec2 uv, vec2 displayed) {
   return rotatedPixels / safeDisplayed + 0.5;
 }
 
+vec3 applyColorAdjustment(vec3 encodedColor) {
+  float contrastFactor = exp2(u_color_adjustment.y * 1.5);
+  return clamp(
+    (encodedColor - 0.5) * contrastFactor + 0.5 + u_color_adjustment.x * 0.5,
+    0.0,
+    1.0
+  );
+}
+
+vec3 applyVignette(vec3 encodedColor) {
+  vec2 centered = (v_uv - 0.5) * 2.0;
+  float radius = length(centered) * 0.70710678;
+  float inner = mix(0.18, 0.92, u_vignette_size);
+  float outer = min(1.15, inner + mix(0.08, 0.72, u_vignette_feather));
+  float mask = smoothstep(inner, outer, radius);
+  return encodedColor * (1.0 - mask * u_vignette_strength);
+}
+
+vec3 applyAwb(vec3 encodedColor) {
+  float temperature = u_awb_balance.x;
+  float tint = u_awb_balance.y;
+  vec3 gains = vec3(
+    1.0 + temperature * 0.22 - tint * 0.04,
+    1.0 + tint * 0.12,
+    1.0 - temperature * 0.22 - tint * 0.04
+  );
+  float luminance = dot(encodedColor, vec3(0.2126, 0.7152, 0.0722));
+  float highlightProtection = 1.0 - smoothstep(0.72, 1.0, luminance);
+  return clamp(encodedColor * mix(vec3(1.0), gains, 0.35 + 0.65 * highlightProtection), 0.0, 1.0);
+}
+
 vec3 applyCameraNoise(vec3 encodedColor, vec2 pixel) {
   const float noiseSize = 512.0;
   vec2 noiseUv = pixel / noiseSize;
-  vec2 stepOffset = vec2(17.0, 31.0) / noiseSize;
   vec3 currentNoise = texture(u_noise_texture, noiseUv + u_noise_offset).rgb * 2.0 - 1.0;
   vec3 previousNoise = texture(
     u_noise_texture,
-    noiseUv + u_noise_offset - stepOffset
+    noiseUv + u_noise_previous_offset
   ).rgb * 2.0 - 1.0;
   vec3 fixedNoise = texture(u_noise_texture, noiseUv + vec2(0.271, 0.619)).rgb
     * 2.0 - 1.0;
@@ -138,7 +231,7 @@ vec3 applyCameraNoise(vec3 encodedColor, vec2 pixel) {
   float temporal = mix(
     previousNoise.r,
     currentNoise.r,
-    0.82
+    1.0 - u_noise_persistence * 0.9
   );
   float luminance = dot(encodedColor, vec3(0.2126, 0.7152, 0.0722));
   float shadow = 1.0 - sqrt(clamp(luminance, 0.0, 1.0));
@@ -147,7 +240,7 @@ vec3 applyCameraNoise(vec3 encodedColor, vec2 pixel) {
   float fixedPattern = fixedNoise.r
     * u_noise_amount * u_noise_pattern * 0.35;
   float rowNoise = rowNoiseSample
-    * u_noise_amount * u_noise_low_light * 0.12;
+    * u_noise_amount * u_noise_banding * (0.08 + shadow * 0.24);
   vec3 channelNoise = currentNoise;
   channelNoise -= vec3(dot(channelNoise, vec3(1.0 / 3.0)));
   encodedColor += vec3(temporal * signalSigma + fixedPattern + rowNoise);
@@ -166,6 +259,15 @@ void main() {
   bool inside = handheldUv.x >= 0.0 && handheldUv.x <= 1.0
     && handheldUv.y >= 0.0 && handheldUv.y <= 1.0;
   vec4 composed = inside ? sampleSource(handheldUv) : background;
+  if (u_color_adjustment_enabled != 0) {
+    composed.rgb = applyColorAdjustment(composed.rgb);
+  }
+  if (u_vignette_enabled != 0) {
+    composed.rgb = applyVignette(composed.rgb);
+  }
+  if (u_awb_enabled != 0) {
+    composed.rgb = applyAwb(composed.rgb);
+  }
   if (u_noise_enabled != 0) {
     composed.rgb = applyCameraNoise(composed.rgb, pixel);
   }
@@ -349,12 +451,23 @@ const uniforms = {
   rotation: gl.getUniformLocation(program, "u_rotation"),
   mirrored: gl.getUniformLocation(program, "u_mirrored"),
   handheldRoll: gl.getUniformLocation(program, "u_handheld_roll"),
+  colorAdjustmentEnabled: gl.getUniformLocation(program, "u_color_adjustment_enabled"),
+  colorAdjustment: gl.getUniformLocation(program, "u_color_adjustment"),
+  vignetteEnabled: gl.getUniformLocation(program, "u_vignette_enabled"),
+  vignetteStrength: gl.getUniformLocation(program, "u_vignette_strength"),
+  vignetteSize: gl.getUniformLocation(program, "u_vignette_size"),
+  vignetteFeather: gl.getUniformLocation(program, "u_vignette_feather"),
+  awbEnabled: gl.getUniformLocation(program, "u_awb_enabled"),
+  awbBalance: gl.getUniformLocation(program, "u_awb_balance"),
   noiseEnabled: gl.getUniformLocation(program, "u_noise_enabled"),
   noiseOffset: gl.getUniformLocation(program, "u_noise_offset"),
+  noisePreviousOffset: gl.getUniformLocation(program, "u_noise_previous_offset"),
   noiseAmount: gl.getUniformLocation(program, "u_noise_amount"),
   noiseColor: gl.getUniformLocation(program, "u_noise_color"),
   noiseLowLight: gl.getUniformLocation(program, "u_noise_low_light"),
   noisePattern: gl.getUniformLocation(program, "u_noise_pattern"),
+  noisePersistence: gl.getUniformLocation(program, "u_noise_persistence"),
+  noiseBanding: gl.getUniformLocation(program, "u_noise_banding"),
 };
 const blurUniforms = {
   texture: gl.getUniformLocation(blurProgram, "u_texture"),
@@ -375,6 +488,11 @@ let sourceRotation = 0;
 let sourceMirrored = false;
 let currentFile = null;
 let memoryTimer = null;
+let outputFpsTimer = null;
+let outputFrameTimes = [];
+let measuredOutputFps = 0;
+let lastRuntimeMetricsLogAt = 0;
+let lastRuntimeMetricsSignature = "";
 let playing = false;
 let playbackGeneration = 0;
 let playbackNeedsKeyFrame = false;
@@ -457,6 +575,10 @@ let trackFramesCreated = 0;
 let trackFramesWritten = 0;
 let trackFramesDropped = 0;
 let trackWriteFailures = 0;
+let virtualCameraRunning = false;
+let virtualCameraFramePending = false;
+let virtualCameraStatusTimer = null;
+let virtualCameraLastNegotiatedSize = "";
 const outputTimeline = new CamOutputTimeline.Timeline();
 let frameTransportError = null;
 let framePacerSourceSequence = 0;
@@ -497,7 +619,10 @@ let motionModeBeforeLive = "off";
 let motionModePrevious = "off";
 let motionPreviewSourceMode = "recorded";
 let motionPreviewFrameId = null;
-let noiseFrameIndex = 0;
+let noiseFramePhase = 0;
+let noiseCurrentOffset = [0, 0];
+let noisePreviousOffset = [0, 0];
+const sensorEffectsStartedAt = performance.now();
 let transforms = {
   portrait: { scale: 1, panX: 0, panY: 0 },
   landscape: { scale: 1, panX: 0, panY: 0 },
@@ -510,18 +635,22 @@ function log(message) {
 async function logRuntimeMetrics() {
   try {
     const memory = await window.camPlayer.getMemoryInfo();
+    const now = Date.now();
+    const active = peers.size > 0 || sourceInteractionActive || Boolean(motionRecording);
+    const signature = `${peers.size}/${sourceKind || "none"}/${canvas.width}x${canvas.height}`
+      + `/${sourceInteractionActive}/${Boolean(motionRecording)}`;
+    if (!active && signature === lastRuntimeMetricsSignature
+        && now - lastRuntimeMetricsLogAt < 5 * 60 * 1000) {
+      return;
+    }
+    lastRuntimeMetricsLogAt = now;
+    lastRuntimeMetricsSignature = signature;
     log(`Runtime memory workingSetMb=${memory.workingSetMb} privateMb=${memory.privateMb} `
       + `processes=${memory.processes} peers=${peers.size} media=${sourceKind || "none"} `
       + `output=${canvas.width}x${canvas.height} interaction=${sourceInteractionActive}`);
   } catch (error) {
     log(`Runtime memory unavailable ${error}`);
   }
-}
-
-function appendLog(line) {
-  const lines = `${logOutput.textContent}${line}\n`.split("\n");
-  logOutput.textContent = lines.slice(-250).join("\n");
-  logOutput.scrollTop = logOutput.scrollHeight;
 }
 
 function orientationForSize(width = canvas.width, height = canvas.height) {
@@ -705,12 +834,14 @@ function scheduleBackgroundRegeneration(reason) {
 }
 
 function updateOutputLabel() {
+  const fpsText = measuredOutputFps > 0 ? measuredOutputFps.toFixed(1) : "0.0";
   document.getElementById("outputValue").textContent =
-    `${canvas.width}\u00d7${canvas.height} @ ${fpsInput.value}`;
+    `${canvas.width}\u00d7${canvas.height} @ ${fpsText} FPS`;
   window.camPlayer.updateState({
     outputWidth: canvas.width,
     outputHeight: canvas.height,
-    fps: Number(fpsInput.value),
+    fps: measuredOutputFps,
+    maximumFps: Number(fpsInput.value),
     file: currentFile?.path || "",
     playing,
     peerCount: peers.size,
@@ -742,6 +873,31 @@ function scheduleMotionPreview() {
     motionPreviewFrameId = null;
     applyPreviewTransform();
   });
+}
+
+function observeOutputFrame(now = performance.now()) {
+  outputFrameTimes.push(now);
+  const cutoff = now - 3000;
+  while (outputFrameTimes.length && outputFrameTimes[0] < cutoff) {
+    outputFrameTimes.shift();
+  }
+}
+
+function refreshMeasuredOutputFps() {
+  const now = performance.now();
+  const cutoff = now - 3000;
+  while (outputFrameTimes.length && outputFrameTimes[0] < cutoff) {
+    outputFrameTimes.shift();
+  }
+  if (outputFrameTimes.length < 2 || now - outputFrameTimes.at(-1) > 1250) {
+    measuredOutputFps = 0;
+  } else {
+    const elapsedMs = outputFrameTimes.at(-1) - outputFrameTimes[0];
+    measuredOutputFps = elapsedMs > 0
+      ? (outputFrameTimes.length - 1) * 1000 / elapsedMs
+      : 0;
+  }
+  updateOutputLabel();
 }
 
 function syncMotionPreviewIndicator() {
@@ -873,6 +1029,33 @@ function closeVideoFrame(frame) {
   }
 }
 
+async function publishVirtualCameraFrame(frame, fps, timestampUs) {
+  if (!virtualCameraRunning || virtualCameraFramePending || !frame) {
+    closeVideoFrame(frame);
+    return false;
+  }
+  virtualCameraFramePending = true;
+  try {
+    const width = frame.displayWidth;
+    const height = frame.displayHeight;
+    const pixels = new Uint8Array(width * height * 4);
+    await frame.copyTo(pixels, { format: "RGBA" });
+    return await window.camPlayer.sendVirtualCameraFrame({
+      width,
+      height,
+      fps,
+      timestampUs,
+      pixels,
+    });
+  } catch (error) {
+    if (virtualCameraRunning) log(`Virtual camera frame failed ${error}`);
+    return false;
+  } finally {
+    virtualCameraFramePending = false;
+    closeVideoFrame(frame);
+  }
+}
+
 function createOutputVideoFrame(timestampUs, durationUs) {
   if (!frameTransferContext) throw new Error("2D frame transfer canvas is unavailable");
   if (frameTransferCanvas.width !== canvas.width
@@ -940,7 +1123,7 @@ function submitGeneratedFrame(options = {}) {
     log(`Frame submission rejected owner=${owner}; owner=${CamFramePublishPolicy.ownerFor(publishState)} required`);
     return false;
   }
-  if (trackRestartPending || !canvasTrack || peers.size === 0) return false;
+  if (trackRestartPending || !canvasTrack || (peers.size === 0 && !virtualCameraRunning)) return false;
   const fps = Math.max(1, Number(options.fps) || effectiveMediaFps());
   const durationUs = Math.max(1, Math.round(1_000_000 / fps));
   const mediaTime = Number(options.mediaTime);
@@ -949,7 +1132,11 @@ function submitGeneratedFrame(options = {}) {
     : outputTimeline.nextStatic(durationUs);
   if (frameTransport === "canvas-capture") {
     try {
-      canvasTrack.requestFrame();
+      if (peers.size > 0) canvasTrack.requestFrame();
+      if (virtualCameraRunning && !virtualCameraFramePending) {
+        const frame = createOutputVideoFrame(timing.timestampUs, timing.durationUs);
+        publishVirtualCameraFrame(frame, fps, timing.timestampUs);
+      }
       frameTransportError = null;
       trackFramesCreated += 1;
       trackFramesWritten += 1;
@@ -977,6 +1164,9 @@ function submitGeneratedFrame(options = {}) {
     }
     return false;
   }
+  if (virtualCameraRunning && !virtualCameraFramePending) {
+    publishVirtualCameraFrame(frame.clone(), fps, timing.timestampUs);
+  }
   const now = performance.now();
   if (cadenceSubmittedFrames > 0 && cadenceState === "playing") {
     const previous = Number(options.previousSubmitAt) || submitGeneratedFrame.lastSubmittedAt;
@@ -988,6 +1178,10 @@ function submitGeneratedFrame(options = {}) {
   submitGeneratedFrame.lastSubmittedAt = now;
   trackFramesCreated += 1;
   if (playing && cadenceState === "playing") cadenceSubmittedFrames += 1;
+  if (peers.size === 0) {
+    closeVideoFrame(frame);
+    return true;
+  }
   if (pendingTrackFrame) discardPendingTrackFrame("");
   pendingTrackFrame = {
     frame,
@@ -1007,7 +1201,7 @@ function framePacerRate() {
       canvas.width, canvas.height, configured, "interaction",
     );
   }
-  if (noiseToggle.checked) {
+  if (noiseToggle.checked || awbToggle.checked) {
     const pixels = canvas.width * canvas.height;
     if (pixels >= 7_000_000) return Math.min(configured, 8);
     if (pixels >= 3_000_000) return Math.min(configured, 12);
@@ -1047,7 +1241,7 @@ function reportFramePacer(reason = "periodic", force = false) {
 
 const framePacer = new CamFramePacer.Pacer({
   onTick: (tick) => {
-    if (!sourceElement || !canvasTrack || peers.size === 0) return;
+    if (!sourceElement || !canvasTrack || (peers.size === 0 && !virtualCameraRunning)) return;
     if (!CamFramePublishPolicy.accepts("pacer", { sourceKind, playing })) return;
     const fresh = framePacerSourceSequence !== framePacerLastSourceSequence;
     let submitted = false;
@@ -1073,7 +1267,7 @@ const framePacer = new CamFramePacer.Pacer({
 });
 
 function refreshFramePacer(reason, immediate = false) {
-  const active = Boolean(sourceElement && canvasTrack && peers.size > 0
+  const active = Boolean(sourceElement && canvasTrack && (peers.size > 0 || virtualCameraRunning)
     && CamFramePublishPolicy.accepts("pacer", { sourceKind, playing }));
   framePacer.configure({
     active,
@@ -1131,18 +1325,39 @@ function renderFrame(force, frameMetadata = null, options = {}) {
   gl.uniform1i(uniforms.rotation, sourceRotation);
   gl.uniform1i(uniforms.mirrored, sourceMirrored ? 1 : 0);
   gl.uniform1f(uniforms.handheldRoll, handheld.roll);
-  if (noiseToggle.checked) noiseFrameIndex = (noiseFrameIndex + 1) % 1_000_000;
+  const colorAdjustment = configuredColorAdjustment();
+  gl.uniform1i(
+    uniforms.colorAdjustmentEnabled,
+    colorAdjustment[0] !== 0 || colorAdjustment[1] !== 0 ? 1 : 0,
+  );
+  gl.uniform2f(uniforms.colorAdjustment, colorAdjustment[0], colorAdjustment[1]);
+  gl.uniform1i(uniforms.vignetteEnabled, vignetteToggle.checked ? 1 : 0);
+  gl.uniform1f(uniforms.vignetteStrength, configuredVignetteStrength());
+  gl.uniform1f(uniforms.vignetteSize, normalizedControl(vignetteSizeInput));
+  gl.uniform1f(uniforms.vignetteFeather, normalizedControl(vignetteFeatherInput));
+  const awbBalance = configuredAwbBalance(now);
+  gl.uniform1i(uniforms.awbEnabled, awbToggle.checked ? 1 : 0);
+  gl.uniform2f(uniforms.awbBalance, awbBalance[0], awbBalance[1]);
+  if (noiseToggle.checked) advanceNoiseFrame();
   gl.uniform1i(uniforms.noiseEnabled, noiseToggle.checked ? 1 : 0);
   gl.uniform2f(
     uniforms.noiseOffset,
-    ((noiseFrameIndex * 17) % NOISE_TEXTURE_SIZE) / NOISE_TEXTURE_SIZE,
-    ((noiseFrameIndex * 31) % NOISE_TEXTURE_SIZE) / NOISE_TEXTURE_SIZE,
+    noiseCurrentOffset[0],
+    noiseCurrentOffset[1],
+  );
+  gl.uniform2f(
+    uniforms.noisePreviousOffset,
+    noisePreviousOffset[0],
+    noisePreviousOffset[1],
   );
   gl.uniform1f(uniforms.noiseAmount, configuredNoiseAmplitude());
-  gl.uniform1f(uniforms.noiseColor, (Number(noiseColorInput.value) || 0) / 100);
-  gl.uniform1f(uniforms.noiseLowLight, (Number(noiseLowLightInput.value) || 0) / 100);
-  gl.uniform1f(uniforms.noisePattern, (Number(noisePatternInput.value) || 0) / 100);
+  gl.uniform1f(uniforms.noiseColor, normalizedControl(noiseColorInput));
+  gl.uniform1f(uniforms.noiseLowLight, normalizedControl(noiseLowLightInput));
+  gl.uniform1f(uniforms.noisePattern, normalizedControl(noisePatternInput));
+  gl.uniform1f(uniforms.noisePersistence, normalizedControl(noisePersistenceInput));
+  gl.uniform1f(uniforms.noiseBanding, normalizedControl(noiseBandingInput));
   gl.drawArrays(gl.TRIANGLES, 0, 6);
+  observeOutputFrame(now);
   const renderTimeMs = performance.now() - renderStartedAt;
   if (options.measureCadence !== false) {
     cadenceRenderTimeMs += renderTimeMs;
@@ -1191,8 +1406,55 @@ function configuredMaximumFps() {
 }
 
 function configuredNoiseAmplitude() {
-  const normalized = Math.max(0, Math.min(100, Number(noiseAmountInput.value) || 0)) / 100;
+  const normalized = normalizedControl(noiseAmountInput);
   return normalized * normalized * 0.1;
+}
+
+function normalizedControl(input) {
+  return Math.max(0, Math.min(100, Number(input.value) || 0)) / 100;
+}
+
+function configuredColorAdjustment() {
+  return [brightnessInput, contrastInput].map((input) => (
+    Math.max(-100, Math.min(100, Number(input.value) || 0)) / 100
+  ));
+}
+
+function configuredVignetteStrength() {
+  const normalized = normalizedControl(vignetteStrengthInput);
+  return normalized * normalized * 0.8;
+}
+
+function configuredAwbBalance(now) {
+  if (!awbToggle.checked) return [0, 0];
+  const warmth = Math.max(-100, Math.min(100, Number(awbWarmthInput.value) || 0)) / 100;
+  const amount = normalizedControl(awbAmountInput);
+  const speed = normalizedControl(awbSpeedInput);
+  const frequency = 0.008 + speed * speed * 0.085;
+  const elapsedSeconds = Math.max(0, now - sensorEffectsStartedAt) / 1000;
+  const phase = ((noiseSeed >>> 0) / 0xffffffff) * Math.PI * 2;
+  const angle = elapsedSeconds * frequency * Math.PI * 2;
+  const temperatureWave = (
+    Math.sin(angle + phase)
+    + 0.45 * Math.sin(angle * 0.43 + phase * 1.7)
+    + 0.2 * Math.sin(angle * 1.91 + 1.3)
+  ) / 1.65;
+  const tintWave = (
+    Math.sin(angle * 0.71 + phase + 2.1)
+    + 0.3 * Math.sin(angle * 1.37 + 0.4)
+  ) / 1.3;
+  return [warmth * 0.7 + temperatureWave * amount * 0.42, tintWave * amount * 0.16];
+}
+
+function advanceNoiseFrame() {
+  const persistence = normalizedControl(noisePersistenceInput);
+  const step = 0.35 + (1 - persistence) * 4.65;
+  noisePreviousOffset = noiseCurrentOffset;
+  noiseFramePhase = (noiseFramePhase + step) % (NOISE_TEXTURE_SIZE * 1000);
+  noiseCurrentOffset = [
+    (noiseFramePhase % NOISE_TEXTURE_SIZE) / NOISE_TEXTURE_SIZE,
+    ((noiseFramePhase * 0.61803398875) % NOISE_TEXTURE_SIZE) / NOISE_TEXTURE_SIZE,
+  ];
 }
 
 function effectiveMediaFps() {
@@ -1716,6 +1978,19 @@ async function loadMedia(file) {
       portrait: { scale: 1, panX: 0, panY: 0 },
       landscape: { scale: 1, panX: 0, panY: 0 },
     };
+    if (autoMediaOutputToggle.checked) {
+      const mediaOutput = CamGeometry.mediaOutputSize(sourceWidth, sourceHeight);
+      applyOutputSize(
+        mediaOutput.width,
+        mediaOutput.height,
+        `media opened ${sourceWidth}x${sourceHeight}`,
+        { origin: "manual" },
+      );
+      savePreferences();
+    } else {
+      log(`Output preserved=${canvas.width}x${canvas.height} `
+        + `media=${sourceWidth}x${sourceHeight} reason=media auto-size disabled`);
+    }
     emptyState.hidden = true;
     updateRecent(file);
     updateOutputLabel();
@@ -1812,19 +2087,39 @@ function savePreferences() {
     height: manualOutput.height,
     fps: Number(fpsInput.value),
     blur: Number(blurInput.value),
+    brightness: Number(brightnessInput.value),
+    contrast: Number(contrastInput.value),
+    vignette: vignetteToggle.checked,
+    vignetteStrength: Number(vignetteStrengthInput.value),
+    vignetteSize: Number(vignetteSizeInput.value),
+    vignetteFeather: Number(vignetteFeatherInput.value),
+    awbDrift: awbToggle.checked,
+    awbWarmth: Number(awbWarmthInput.value),
+    awbAmount: Number(awbAmountInput.value),
+    awbSpeed: Number(awbSpeedInput.value),
     cameraNoise: noiseToggle.checked,
     noiseAmount: Number(noiseAmountInput.value),
     noiseColor: Number(noiseColorInput.value),
     noiseLowLight: Number(noiseLowLightInput.value),
     noisePattern: Number(noisePatternInput.value),
+    noisePersistence: Number(noisePersistenceInput.value),
+    noiseBanding: Number(noiseBandingInput.value),
     noiseSeed,
     followSite: followSiteToggle.checked,
+    useRequestedResolutionWithoutLimit: useRequestedResolutionWithoutLimitToggle.checked,
+    autoMediaOutput: autoMediaOutputToggle.checked,
     loop: document.getElementById("loopToggle").checked,
     mirrored: sourceMirrored,
     motionMode: motionMode.value,
     selectedMotionProfileId: motionProfileSelect.value,
     liveMotion: liveMotionSettings.motion,
     liveStabilization: liveMotionSettings.stabilization,
+    collapsedColumns: settingsColumns
+      .filter((column) => column.classList.contains("is-collapsed"))
+      .map((column) => column.dataset.column),
+    settingsView: virtualCameraTabButton.classList.contains("is-active")
+      ? "virtual-camera"
+      : "player",
     motion: Number(motionInput.value),
     stabilization: Number(stabilizationInput.value),
     recent,
@@ -1926,7 +2221,12 @@ async function lockSenderQuality(sender, width, height) {
   const senderState = sourceKind === "video" && playing ? "motion" : "stable";
   const contentFps = sourceKind === "video" ? effectiveMediaFps() : configuredFps;
   const senderFpsLimit = null;
-  const bitrateProfile = CamGeometry.videoBitrateProfile(width, height, contentFps);
+  const bitrateProfile = CamGeometry.videoBitrateProfile(
+    width,
+    height,
+    contentFps,
+    qualityProfile,
+  );
   try {
     const parameters = sender.getParameters();
     if (!parameters.encodings?.length) {
@@ -2068,6 +2368,7 @@ async function handleOffer(payload) {
       encoderStallRecoveryActive: false,
       bitrateProfile: null,
       inputFramesAtStart: trackFramesWritten,
+      everConnected: false,
       createdAt: performance.now(),
     });
     updateConnectionState();
@@ -2076,6 +2377,7 @@ async function handleOffer(payload) {
       log(`Peer id=${id} state=${pc.connectionState}`);
       const maintenance = peerMaintenance.get(id);
       if (!maintenance) return;
+      if (pc.connectionState === "connected") maintenance.everConnected = true;
       if (pc.connectionState === "disconnected") {
         clearTimeout(maintenance.disconnectTimer);
         maintenance.disconnectTimer = setTimeout(() => {
@@ -2129,6 +2431,7 @@ async function handleOffer(payload) {
       expectedOutput.width,
       expectedOutput.height,
       Math.max(1, Math.min(60, Number(fpsInput.value) || 30)),
+      qualityProfile,
     );
     const prioritizedOfferSdp = codecChoice.name === "default"
       ? sdp
@@ -2240,15 +2543,23 @@ async function handleOffer(payload) {
         + `route=${result.route || "pending"}`);
       updateConnectionState();
     }).catch((error) => {
+      const maintenance = peerMaintenance.get(id);
+      const peerNeverConnected = !maintenance?.everConnected && !readyPeers.has(id);
+      const canceled = !peers.has(id)
+        || String(error?.message || "").includes("Offer was canceled or superseded")
+        || peerNeverConnected;
       const actualCodec = String(peerMaintenance.get(id)?.actualCodec || "");
       const failedMime = actualCodec && actualCodec !== "unknown"
         ? actualCodec.toLowerCase()
         : codecChoice.codecs.length
           ? String(codecChoice.codecs[0].mimeType).toLowerCase()
           : "";
-      const maintenance = peerMaintenance.get(id);
       const receivedInputFrames = trackFramesWritten > Number(maintenance?.inputFramesAtStart || 0);
-      if (!error.routeOnly && !error.frameProducer && receivedInputFrames && failedMime) {
+      if (canceled) {
+        log(`Encoder codec preserved because offer was canceled or abandoned `
+          + `output=${outputKey} codec=${failedMime || "unknown"} `
+          + `connection=${pc.connectionState}`);
+      } else if (!error.routeOnly && !error.frameProducer && receivedInputFrames && failedMime) {
         encoderFailures.set(outputKey, { mime: failedMime, at: performance.now() });
         log(`Encoder codec marked failed output=${outputKey} codec=${failedMime}`);
       } else if (error.routeOnly) {
@@ -2414,6 +2725,10 @@ function applySiteConfiguration(config, reason) {
     config.constraints,
     config.orientation,
     fallback,
+    {
+      useRequestedResolutionWithoutLimit:
+        useRequestedResolutionWithoutLimitToggle.checked,
+    },
   );
   if (!resolved.applied) {
     log(`Site size unchanged reason=${resolved.reason}`
@@ -2424,6 +2739,11 @@ function applySiteConfiguration(config, reason) {
   }
   if (resolved.clamped) {
     log(`Site size normalized requested=${resolved.requestedWidth}x`
+      + `${resolved.requestedHeight} applied=${resolved.width}x${resolved.height} `
+      + `reason=${resolved.reason}`);
+  }
+  if (resolved.unrestricted) {
+    log(`Site resolution limit bypassed requested=${resolved.requestedWidth}x`
       + `${resolved.requestedHeight} applied=${resolved.width}x${resolved.height} `
       + `reason=${resolved.reason}`);
   }
@@ -2649,6 +2969,143 @@ scanQrButton.addEventListener("click", async () => {
 });
 document.getElementById("playButton").addEventListener("click", play);
 document.getElementById("pauseButton").addEventListener("click", pause);
+
+function settingsViewWidth() {
+  return virtualCameraTabButton.classList.contains("is-active") ? 320 : settingsColumnsWidth();
+}
+
+function selectSettingsView(view, persist = true) {
+  const virtual = view === "virtual-camera";
+  playerTabButton.classList.toggle("is-active", !virtual);
+  virtualCameraTabButton.classList.toggle("is-active", virtual);
+  playerTabButton.setAttribute("aria-selected", String(!virtual));
+  virtualCameraTabButton.setAttribute("aria-selected", String(virtual));
+  playerSettingsPanel.hidden = virtual;
+  virtualCameraPanel.hidden = !virtual;
+  window.camPlayer.setSettingsWidth(settingsViewWidth());
+  if (persist) savePreferences();
+}
+
+function applyVirtualCameraStatus(status = {}) {
+  const available = status.available !== false;
+  const installed = status.installed === true;
+  virtualCameraRunning = status.running === true;
+  virtualCameraInstalledValue.textContent = installed ? "Installed" : "Not installed";
+  virtualCameraRunningValue.textContent = virtualCameraRunning ? "Running" : "Stopped";
+  virtualCameraConsumersValue.textContent = String(Number(status.consumers) || 0);
+  virtualCameraFormatValue.textContent = status.width > 0 && status.height > 0
+    ? `${status.width}\u00d7${status.height}`
+    : "-";
+  virtualCameraNotice.textContent = available
+    ? installed ? "Ready" : "Install the camera before starting output"
+    : "Virtual camera components are not included in this build";
+  if (status.name && document.activeElement !== virtualCameraNameInput) {
+    virtualCameraNameInput.value = status.name;
+  }
+  installVirtualCameraButton.disabled = !available || installed || virtualCameraRunning;
+  renameVirtualCameraButton.disabled = !available || !installed || virtualCameraRunning;
+  uninstallVirtualCameraButton.disabled = !available || !installed || virtualCameraRunning;
+  startVirtualCameraButton.disabled = !available || !installed || virtualCameraRunning;
+  stopVirtualCameraButton.disabled = !virtualCameraRunning;
+  const negotiatedSize = status.width > 0 && status.height > 0
+    ? `${status.width}x${status.height}`
+    : "";
+  if (virtualCameraRunning && negotiatedSize && negotiatedSize !== virtualCameraLastNegotiatedSize) {
+    virtualCameraLastNegotiatedSize = negotiatedSize;
+    log(`Virtual camera client format=${negotiatedSize} consumers=${status.consumers || 0}`);
+    if (followSiteToggle.checked && peers.size === 0
+        && (canvas.width !== status.width || canvas.height !== status.height)) {
+      try {
+        applyOutputSize(status.width, status.height, "Windows virtual camera", { origin: "site" });
+      } catch (error) {
+        log(`Virtual camera format rejected ${error}`);
+      }
+    }
+  }
+  refreshFramePacer("virtual camera status", false);
+}
+
+async function refreshVirtualCameraStatus() {
+  try {
+    applyVirtualCameraStatus(await window.camPlayer.virtualCameraStatus());
+  } catch (error) {
+    virtualCameraNotice.textContent = error.message || String(error);
+  }
+}
+
+async function runVirtualCameraCommand(button, operation) {
+  const buttons = [installVirtualCameraButton, renameVirtualCameraButton,
+    uninstallVirtualCameraButton, startVirtualCameraButton, stopVirtualCameraButton];
+  buttons.forEach((item) => { item.disabled = true; });
+  try {
+    applyVirtualCameraStatus(await operation());
+  } catch (error) {
+    log(`Virtual camera command failed ${error}`);
+    showToast(error.message || "Virtual camera command failed");
+  } finally {
+    button.blur();
+    await refreshVirtualCameraStatus();
+  }
+}
+
+playerTabButton.addEventListener("click", () => selectSettingsView("player"));
+virtualCameraTabButton.addEventListener("click", () => selectSettingsView("virtual-camera"));
+installVirtualCameraButton.addEventListener("click", () => runVirtualCameraCommand(
+  installVirtualCameraButton,
+  () => window.camPlayer.installVirtualCamera(virtualCameraNameInput.value.trim()),
+));
+renameVirtualCameraButton.addEventListener("click", () => runVirtualCameraCommand(
+  renameVirtualCameraButton,
+  () => window.camPlayer.renameVirtualCamera(virtualCameraNameInput.value.trim()),
+));
+uninstallVirtualCameraButton.addEventListener("click", () => runVirtualCameraCommand(
+  uninstallVirtualCameraButton,
+  () => window.camPlayer.uninstallVirtualCamera(),
+));
+startVirtualCameraButton.addEventListener("click", () => runVirtualCameraCommand(
+  startVirtualCameraButton,
+  async () => {
+    const status = await window.camPlayer.startVirtualCamera();
+    virtualCameraRunning = true;
+    ensureStream();
+    updatePausedFrameHeartbeat();
+    return status;
+  },
+));
+stopVirtualCameraButton.addEventListener("click", () => runVirtualCameraCommand(
+  stopVirtualCameraButton,
+  async () => {
+    virtualCameraRunning = false;
+    const status = await window.camPlayer.stopVirtualCamera();
+    if (peers.size === 0) discardGeneratedStream("virtual camera stopped");
+    return status;
+  },
+));
+
+function setColumnCollapsed(column, collapsed, persist = false) {
+  const toggle = column.querySelector(".column-toggle");
+  const title = column.querySelector(".column-header h2")?.textContent?.trim() || "settings";
+  column.classList.toggle("is-collapsed", collapsed);
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+  toggle.textContent = collapsed ? "\u203a" : "\u2039";
+  toggle.title = `${collapsed ? "Expand" : "Collapse"} ${title}`;
+  toggle.setAttribute("aria-label", toggle.title);
+  if (persist) {
+    savePreferences();
+    window.camPlayer.setSettingsWidth(settingsViewWidth());
+  }
+}
+
+function settingsColumnsWidth() {
+  return settingsColumns.reduce((width, item) => (
+    width + (item.classList.contains("is-collapsed") ? 42 : 320)
+  ), 0);
+}
+for (const column of settingsColumns) {
+  column.querySelector(".column-toggle").addEventListener("click", () => {
+    setColumnCollapsed(column, !column.classList.contains("is-collapsed"), true);
+  });
+}
 document.getElementById("applySizeButton").addEventListener("click", () => {
   try {
     applyOutputSize(widthInput.value, heightInput.value, "manual", { origin: "manual" });
@@ -2666,11 +3123,18 @@ document.getElementById("fitPreviewButton").addEventListener("click", (event) =>
   showFullFrame();
   event.currentTarget.blur();
 });
-document.getElementById("rotateButton").addEventListener("click", () => {
-  sourceRotation = (sourceRotation + 1) % 4;
+function rotateSource(quarterTurns, reason) {
+  sourceRotation = (sourceRotation + quarterTurns + 4) % 4;
   regenerateBackground("source rotation");
   scheduleKeyFrame("source rotation", 0);
   savePreferences();
+  log(`Source rotation=${sourceRotation * 90} direction=${reason}`);
+}
+document.getElementById("rotateLeftButton").addEventListener("click", () => {
+  rotateSource(-1, "left");
+});
+document.getElementById("rotateButton").addEventListener("click", () => {
+  rotateSource(1, "right");
 });
 document.getElementById("mirrorButton").addEventListener("click", (event) => {
   sourceMirrored = !sourceMirrored;
@@ -3101,9 +3565,17 @@ recordMotionButton.addEventListener("click", async () => {
   log("Motion recording requested waitingFor=arcore timeoutSeconds=20");
 });
 cancelMotionRecordingButton.addEventListener("click", () => cancelMotionRecording("user"));
-openProfilesFolderButton.addEventListener("click", async () => {
+selectProfilesFolderButton.addEventListener("click", async () => {
   try {
-    await window.camPlayer.openProfilesFolder();
+    const result = await window.camPlayer.selectProfilesFolder();
+    if (!result) return;
+    await refreshMotionProfiles();
+    if (!motionProfiles.length && motionMode.value === "recorded") {
+      motionMode.value = "off";
+      await configureHandheld("profiles folder changed");
+    }
+    savePreferences();
+    showToast(`Profiles folder selected (${result.profiles})`);
   } catch (error) {
     showToast(error.message || String(error));
   }
@@ -3220,8 +3692,18 @@ document.addEventListener("drop", (event) => {
   if (files.length > 1) log(`Media drop received files=${files.length}; opening first only`);
   prepareAndLoadMediaPath(filePath, "drop");
 });
-for (const input of [fpsInput, followSiteToggle]) {
+function syncSiteResolutionControls() {
+  useRequestedResolutionWithoutLimitToggle.disabled = !followSiteToggle.checked;
+}
+
+for (const input of [
+  fpsInput,
+  followSiteToggle,
+  useRequestedResolutionWithoutLimitToggle,
+  autoMediaOutputToggle,
+]) {
   input.addEventListener("change", () => {
+    syncSiteResolutionControls();
     updateOutputLabel();
     renderFrame(true);
     if (input === fpsInput) {
@@ -3244,21 +3726,99 @@ blurInput.addEventListener("change", () => {
   regenerateBackground("blur committed");
   savePreferences();
 });
+const colorAdjustmentInputs = [brightnessInput, contrastInput];
+const colorAdjustmentOutputs = [brightnessValue, contrastValue];
+const vignetteInputs = [
+  vignetteStrengthInput,
+  vignetteSizeInput,
+  vignetteFeatherInput,
+];
+const vignetteOutputs = [
+  vignetteStrengthValue,
+  vignetteSizeValue,
+  vignetteFeatherValue,
+];
+const awbInputs = [awbWarmthInput, awbAmountInput, awbSpeedInput];
+const awbOutputs = [awbWarmthValue, awbAmountValue, awbSpeedValue];
 const noiseInputs = [
   noiseAmountInput,
   noiseColorInput,
   noiseLowLightInput,
   noisePatternInput,
+  noisePersistenceInput,
+  noiseBandingInput,
 ];
 
+function syncColorAdjustmentControls() {
+  for (let index = 0; index < colorAdjustmentInputs.length; index += 1) {
+    colorAdjustmentOutputs[index].value = colorAdjustmentInputs[index].value;
+  }
+}
+
+function syncEffectControls(toggle, controls, inputs, outputs, resetButtonId) {
+  controls.setAttribute("aria-disabled", String(!toggle.checked));
+  for (let index = 0; index < inputs.length; index += 1) {
+    inputs[index].disabled = !toggle.checked;
+    outputs[index].value = inputs[index].value;
+  }
+  document.getElementById(resetButtonId).disabled = !toggle.checked;
+}
+
+function syncVignetteControls() {
+  syncEffectControls(
+    vignetteToggle,
+    vignetteControls,
+    vignetteInputs,
+    vignetteOutputs,
+    "resetVignetteButton",
+  );
+}
+
+function syncAwbControls() {
+  syncEffectControls(awbToggle, awbControls, awbInputs, awbOutputs, "resetAwbButton");
+}
+
 function syncNoiseControls() {
-  noiseControls.setAttribute("aria-disabled", String(!noiseToggle.checked));
-  for (const input of noiseInputs) input.disabled = !noiseToggle.checked;
-  document.getElementById("resetNoiseButton").disabled = !noiseToggle.checked;
-  noiseAmountValue.value = noiseAmountInput.value;
-  noiseColorValue.value = noiseColorInput.value;
-  noiseLowLightValue.value = noiseLowLightInput.value;
-  noisePatternValue.value = noisePatternInput.value;
+  syncEffectControls(
+    noiseToggle,
+    noiseControls,
+    noiseInputs,
+    [
+      noiseAmountValue,
+      noiseColorValue,
+      noiseLowLightValue,
+      noisePatternValue,
+      noisePersistenceValue,
+      noiseBandingValue,
+    ],
+    "resetNoiseButton",
+  );
+}
+
+function applyVignetteControlChange(reason) {
+  syncVignetteControls();
+  renderFrame(true);
+  schedulePreferencesSave();
+  log(`Vignette enabled=${vignetteToggle.checked} strength=${vignetteStrengthInput.value} `
+    + `size=${vignetteSizeInput.value} feather=${vignetteFeatherInput.value} reason=${reason}`);
+}
+
+function applyColorAdjustmentChange(reason) {
+  syncColorAdjustmentControls();
+  renderFrame(true);
+  updatePausedFrameHeartbeat();
+  schedulePreferencesSave();
+  log(`Color adjustment brightness=${brightnessInput.value} contrast=${contrastInput.value} `
+    + `reason=${reason}`);
+}
+
+function applyAwbControlChange(reason) {
+  syncAwbControls();
+  renderFrame(true);
+  updatePausedFrameHeartbeat();
+  schedulePreferencesSave();
+  log(`AWB drift enabled=${awbToggle.checked} warmth=${awbWarmthInput.value} `
+    + `amount=${awbAmountInput.value} speed=${awbSpeedInput.value} reason=${reason}`);
 }
 
 function applyNoiseControlChange(reason) {
@@ -3268,8 +3828,57 @@ function applyNoiseControlChange(reason) {
   schedulePreferencesSave();
   log(`Camera noise enabled=${noiseToggle.checked} amount=${noiseAmountInput.value} `
     + `color=${noiseColorInput.value} lowLight=${noiseLowLightInput.value} `
-    + `pattern=${noisePatternInput.value} reason=${reason}`);
+    + `pattern=${noisePatternInput.value} persistence=${noisePersistenceInput.value} `
+    + `banding=${noiseBandingInput.value} reason=${reason}`);
 }
+
+for (const input of colorAdjustmentInputs) {
+  input.addEventListener("input", () => {
+    syncColorAdjustmentControls();
+    renderFrame(true);
+    updatePausedFrameHeartbeat();
+    schedulePreferencesSave();
+  });
+  input.addEventListener("change", () => applyColorAdjustmentChange("control committed"));
+}
+document.getElementById("resetColorAdjustmentButton").addEventListener("click", () => {
+  brightnessInput.value = "0";
+  contrastInput.value = "0";
+  applyColorAdjustmentChange("reset");
+});
+
+vignetteToggle.addEventListener("change", () => applyVignetteControlChange("toggle"));
+for (const input of vignetteInputs) {
+  input.addEventListener("input", () => {
+    syncVignetteControls();
+    renderFrame(true);
+    schedulePreferencesSave();
+  });
+  input.addEventListener("change", () => applyVignetteControlChange("control committed"));
+}
+document.getElementById("resetVignetteButton").addEventListener("click", () => {
+  vignetteStrengthInput.value = "18";
+  vignetteSizeInput.value = "70";
+  vignetteFeatherInput.value = "65";
+  applyVignetteControlChange("reset");
+});
+
+awbToggle.addEventListener("change", () => applyAwbControlChange("toggle"));
+for (const input of awbInputs) {
+  input.addEventListener("input", () => {
+    syncAwbControls();
+    renderFrame(true);
+    updatePausedFrameHeartbeat();
+    schedulePreferencesSave();
+  });
+  input.addEventListener("change", () => applyAwbControlChange("control committed"));
+}
+document.getElementById("resetAwbButton").addEventListener("click", () => {
+  awbWarmthInput.value = "0";
+  awbAmountInput.value = "12";
+  awbSpeedInput.value = "20";
+  applyAwbControlChange("reset");
+});
 
 noiseToggle.addEventListener("change", () => applyNoiseControlChange("toggle"));
 for (const input of noiseInputs) {
@@ -3285,6 +3894,8 @@ document.getElementById("resetNoiseButton").addEventListener("click", () => {
   noiseColorInput.value = "8";
   noiseLowLightInput.value = "25";
   noisePatternInput.value = "4";
+  noisePersistenceInput.value = "35";
+  noiseBandingInput.value = "3";
   applyNoiseControlChange("reset");
 });
 document.getElementById("copyLogButton").addEventListener("click", async () => {
@@ -3292,7 +3903,7 @@ document.getElementById("copyLogButton").addEventListener("click", async () => {
 });
 document.getElementById("clearLogButton").addEventListener("click", async () => {
   await window.camPlayer.clearLog();
-  logOutput.textContent = "";
+  showToast("Log cleared");
 });
 
 window.camPlayer.onOffer(handleOffer);
@@ -3344,7 +3955,6 @@ function renderNetworkInfo() {
     ) || `Port: ${currentServerInfo.port}`;
 }
 window.camPlayer.onServerInfo(applyServerInfo);
-window.camPlayer.onLog(appendLog);
 window.camPlayer.onHandheldMotion((sample) => {
   const now = performance.now();
   latestPhoneSample = sample;
@@ -3414,18 +4024,37 @@ async function initialize() {
     Number(preferences.preferencesVersion) >= 2 ? preferences.fps || 60 : 60,
   );
   blurInput.value = String(preferences.blur ?? 40);
+  brightnessInput.value = String(preferences.brightness ?? 0);
+  contrastInput.value = String(preferences.contrast ?? 0);
+  vignetteToggle.checked = preferences.vignette === true;
+  vignetteStrengthInput.value = String(preferences.vignetteStrength ?? 18);
+  vignetteSizeInput.value = String(preferences.vignetteSize ?? 70);
+  vignetteFeatherInput.value = String(preferences.vignetteFeather ?? 65);
+  awbToggle.checked = preferences.awbDrift === true;
+  awbWarmthInput.value = String(preferences.awbWarmth ?? 0);
+  awbAmountInput.value = String(preferences.awbAmount ?? 12);
+  awbSpeedInput.value = String(preferences.awbSpeed ?? 20);
   noiseToggle.checked = preferences.cameraNoise === true;
   noiseAmountInput.value = String(preferences.noiseAmount ?? 18);
   noiseColorInput.value = String(preferences.noiseColor ?? 8);
   noiseLowLightInput.value = String(preferences.noiseLowLight ?? 25);
   noisePatternInput.value = String(preferences.noisePattern ?? 4);
+  noisePersistenceInput.value = String(preferences.noisePersistence ?? 35);
+  noiseBandingInput.value = String(preferences.noiseBanding ?? 3);
   const storedNoiseSeed = Number(preferences.noiseSeed) >>> 0;
   if (storedNoiseSeed) {
     noiseSeed = storedNoiseSeed;
     uploadNoiseTexture(noiseTexture, noiseSeed);
   }
+  syncColorAdjustmentControls();
+  syncVignetteControls();
+  syncAwbControls();
   syncNoiseControls();
   followSiteToggle.checked = !!preferences.followSite;
+  useRequestedResolutionWithoutLimitToggle.checked =
+    preferences.useRequestedResolutionWithoutLimit === true;
+  autoMediaOutputToggle.checked = preferences.autoMediaOutput !== false;
+  syncSiteResolutionControls();
   document.getElementById("loopToggle").checked = preferences.loop !== false;
   sourceMirrored = preferences.mirrored === true;
   document.getElementById("mirrorButton")
@@ -3474,9 +4103,20 @@ async function initialize() {
   timelineTimer = setInterval(updateTimeline, 200);
   clearInterval(memoryTimer);
   memoryTimer = setInterval(logRuntimeMetrics, 30000);
+  clearInterval(outputFpsTimer);
+  outputFpsTimer = setInterval(refreshMeasuredOutputFps, 1000);
   setTimeout(logRuntimeMetrics, 5000);
   applyPreviewTransform();
-  logOutput.textContent = await window.camPlayer.readLogTail();
+  const collapsedColumns = new Set(
+    Array.isArray(preferences.collapsedColumns) ? preferences.collapsedColumns : ["advanced"],
+  );
+  for (const column of settingsColumns) {
+    setColumnCollapsed(column, collapsedColumns.has(column.dataset.column));
+  }
+  selectSettingsView(preferences.settingsView === "virtual-camera" ? "virtual-camera" : "player", false);
+  await refreshVirtualCameraStatus();
+  clearInterval(virtualCameraStatusTimer);
+  virtualCameraStatusTimer = setInterval(refreshVirtualCameraStatus, 2000);
   updateConnectionState();
   if (restoreAfterContextLoss) {
     try {
@@ -3506,6 +4146,8 @@ window.addEventListener("beforeunload", () => {
   stopPausedFrameHeartbeat();
   clearInterval(timelineTimer);
   clearInterval(memoryTimer);
+  clearInterval(outputFpsTimer);
+  clearInterval(virtualCameraStatusTimer);
   clearTimeout(backgroundBlurTimer);
   clearTimeout(senderQualityRefreshTimer);
   clearTimeout(keyFrameTimer);

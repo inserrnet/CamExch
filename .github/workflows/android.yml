@@ -67,6 +67,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout Microsoft DirectShow BaseClasses
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/Windows-classic-samples
+          ref: 434f6002bdf9cf9829406c3ff2b33387982d6168
+          path: windows-classic-samples
+          sparse-checkout: Samples/Win7Samples/multimedia/directshow/baseclasses
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -87,6 +95,14 @@ jobs:
 
       - name: Test Electron WebRTC lifecycle
         run: pnpm test:electron
+
+      - name: Build Windows virtual camera
+        shell: pwsh
+        run: |
+          cmake -S native -B native/build -A x64 `
+            -DBASECLASSES_DIR="$env:GITHUB_WORKSPACE/windows-classic-samples/Samples/Win7Samples/multimedia/directshow/baseclasses"
+          cmake --build native/build --config Release --parallel
+          cmake --install native/build --config Release --prefix native/bin/x64
 
       - name: Build portable Cam Player
         run: pnpm dist

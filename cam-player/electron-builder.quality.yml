@@ -1,0 +1,23 @@
+appId: com.camexch.camplayer.qualitytest
+productName: Cam Player Quality Test
+asar: true
+asarUnpack:
+  - node_modules/ffmpeg-static/**
+files:
+  - main.js
+  - preload.js
+  - qr-preload.js
+  - qr-overlay/**/*
+  - renderer/**/*
+  - lib/**/*
+  - package.json
+extraMetadata:
+  version: 0.6.14-quality.1
+  qualityProfile: quality-test
+win:
+  signAndEditExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+  artifactName: Cam-Player-Quality-Test-${version}-Windows-x64.${ext}

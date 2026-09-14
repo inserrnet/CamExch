@@ -27,6 +27,79 @@ test("rotates and safely caps an optional landscape request for portrait output"
   assert.match(resolved.reason, /capped for stable H264 streaming/);
 });
 
+test("uses the full ideal site resolution when the requested-size limit is disabled", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: {
+      width: { ideal: 3200 },
+      height: { ideal: 2400 },
+    },
+  }, "portrait", { width: 1440, height: 1920 }, {
+    useRequestedResolutionWithoutLimit: true,
+  });
+  assert.equal(resolved.width, 2400);
+  assert.equal(resolved.height, 3200);
+  assert.equal(resolved.applied, true);
+  assert.equal(resolved.clamped, undefined);
+  assert.equal(resolved.unrestricted, true);
+  assert.equal(resolved.reason, "ideal/ideal portrait requested resolution limit disabled");
+});
+
+test("exact site resolution takes priority regardless of the requested-size option", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: {
+      width: { exact: 1280, ideal: 1920 },
+      height: { exact: 720, ideal: 1080 },
+    },
+  }, "landscape", { width: 1440, height: 1920 }, {
+    useRequestedResolutionWithoutLimit: true,
+  });
+  assert.equal(resolved.width, 1280);
+  assert.equal(resolved.height, 720);
+  assert.equal(resolved.reason, "exact/exact landscape requested resolution limit disabled");
+});
+
+test("uses a large plain site resolution without the safety cap when enabled", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: { width: 4080, height: 3072 },
+  }, "portrait", { width: 1080, height: 1920 }, {
+    useRequestedResolutionWithoutLimit: true,
+  });
+  assert.equal(resolved.width, 3072);
+  assert.equal(resolved.height, 4080);
+  assert.equal(resolved.applied, true);
+  assert.equal(resolved.clamped, undefined);
+  assert.equal(resolved.unrestricted, true);
+  assert.equal(resolved.requestedWidth, 3072);
+  assert.equal(resolved.requestedHeight, 4080);
+});
+
+test("allows an ultra-high exact request when the requested-size limit is disabled", () => {
+  const resolved = geometry.resolveRequestedSize({
+    video: {
+      width: { exact: 4080 },
+      height: { exact: 3072 },
+    },
+  }, "landscape", { width: 1080, height: 1920 }, {
+    useRequestedResolutionWithoutLimit: true,
+  });
+  assert.equal(resolved.width, 4080);
+  assert.equal(resolved.height, 3072);
+  assert.equal(resolved.applied, true);
+  assert.equal(resolved.unsupported, undefined);
+  assert.equal(resolved.unrestricted, true);
+});
+
+test("sets media output once from source dimensions and rounds odd H264 edges up", () => {
+  assert.deepEqual(geometry.mediaOutputSize(5282, 6457), {
+    width: 5282,
+    height: 6458,
+  });
+  assert.deepEqual(geometry.mediaOutputSize(944, 960), {
+    width: 944,
+    height: 960,
+  });
+});
+
 test("normalizes odd site dimensions for H264 without rejecting the camera", () => {
   const resolved = geometry.resolveRequestedSize({
     video: {
@@ -309,6 +382,27 @@ test("keeps a quality floor below the WebRTC bitrate ceiling", () => {
       maximum: 12_165_120,
     },
   );
+});
+
+test("keeps the standard bitrate profile unchanged and isolates the quality test profile", () => {
+  assert.equal(geometry.targetVideoBitrate(1440, 1920, 24), 14_598_144);
+  assert.deepEqual(
+    geometry.videoBitrateProfile(1440, 1920, 24),
+    {
+      minimum: 4_379_443,
+      start: 8_758_886,
+      maximum: 14_598_144,
+    },
+  );
+  assert.deepEqual(
+    geometry.videoBitrateProfile(1440, 1920, 24, "quality-test"),
+    {
+      minimum: 16_422_912,
+      start: 25_380_864,
+      maximum: 29_859_840,
+    },
+  );
+  assert.equal(geometry.targetVideoBitrate(2400, 3200, 60, "quality-test"), 45_000_000);
 });
 
 test("uses adaptive frame rates without reducing source resolution", () => {

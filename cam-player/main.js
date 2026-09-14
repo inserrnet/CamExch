@@ -8,7 +8,6 @@ const {
   dialog,
   ipcMain,
   screen,
-  shell,
 } = require("electron");
 const crypto = require("crypto");
 const fs = require("fs");
@@ -22,6 +21,7 @@ const ffmpegStaticPath = require("ffmpeg-static");
 const { decodeQrImage } = require("./lib/qr-decoder");
 const { cropForNormalized } = require("./lib/qr-selection");
 const { validateProfile } = require("./lib/motion-profile");
+const { VirtualCameraManager } = require("./lib/virtual-camera-manager");
 const {
   isDiscoveryAddress,
   selectLockedAddress,
@@ -32,6 +32,12 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
 const PORT = 8791;
 const VERSION = app.getVersion();
+const QUALITY_PROFILE = require("./package.json").qualityProfile === "quality-test"
+  ? "quality-test"
+  : "standard";
+if (QUALITY_PROFILE === "quality-test") {
+  app.setPath("userData", path.join(app.getPath("appData"), "Cam Player Quality Test"));
+}
 const APP_SESSION_ID = crypto.randomUUID();
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_LOG_BYTES = 10 * 1024 * 1024;
@@ -61,6 +67,10 @@ let motionDispatchScheduled = false;
 let liveMotionRequested = false;
 let motionCaptureRequested = false;
 let sourceOwner = null;
+const PROFILE_CONFIG_DIRECTORY = path.join(app.getPath("appData"), "cam-player");
+const PROFILE_CONFIG_PATH = path.join(PROFILE_CONFIG_DIRECTORY, "profile-storage.json");
+let activeMotionProfileDirectory = "";
+let virtualCamera;
 
 function sourceDeviceId(request) {
   return String(request.headers["x-camexch-device"] || "").trim();
@@ -68,7 +78,11 @@ function sourceDeviceId(request) {
 
 function requireSourceOwner(request, response) {
   const deviceId = sourceDeviceId(request);
-  if (!deviceId || !sourceOwner || sourceOwner.deviceId !== deviceId) {
+  if (!sourceOwner) {
+    sendJson(response, 409, { error: "Cam Player has no active Source owner" });
+    return false;
+  }
+  if (!deviceId || sourceOwner.deviceId !== deviceId) {
     sendJson(response, 409, { error: "Cam Player is owned by another Source; press Start to claim it" });
     return false;
   }
@@ -116,14 +130,79 @@ function writeJsonAtomic(name, value) {
   fs.renameSync(temporary, destination);
 }
 
+function readJsonPath(filePath, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function writeJsonPathAtomic(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(value, null, 2));
+  fs.rmSync(filePath, { force: true });
+  fs.renameSync(temporary, filePath);
+}
+
+function profileDocument(filePath, strict = false) {
+  if (!fs.existsSync(filePath)) return { version: 1, profiles: [] };
+  let stored;
+  try {
+    stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    if (strict) throw new Error(`Invalid motion-profiles.json: ${error.message}`);
+    return { version: 1, profiles: [] };
+  }
+  if (!stored || !Array.isArray(stored.profiles)) {
+    if (strict) throw new Error("Invalid motion-profiles.json: profiles must be an array");
+    return { version: 1, profiles: [] };
+  }
+  const profiles = stored.profiles.filter(validateProfile);
+  if (strict && profiles.length !== stored.profiles.length) {
+    throw new Error("Invalid motion-profiles.json: one or more profiles are invalid");
+  }
+  return { version: 1, profiles };
+}
+
+function motionProfileFile() {
+  initializeMotionProfileStorage();
+  return path.join(activeMotionProfileDirectory, "motion-profiles.json");
+}
+
+function initializeMotionProfileStorage() {
+  if (activeMotionProfileDirectory) return activeMotionProfileDirectory;
+  fs.mkdirSync(PROFILE_CONFIG_DIRECTORY, { recursive: true });
+  const configured = readJsonPath(PROFILE_CONFIG_PATH, {});
+  const configuredDirectory = String(configured.directory || "").trim();
+  activeMotionProfileDirectory = configuredDirectory || PROFILE_CONFIG_DIRECTORY;
+  fs.mkdirSync(activeMotionProfileDirectory, { recursive: true });
+
+  const targetPath = path.join(activeMotionProfileDirectory, "motion-profiles.json");
+  const target = profileDocument(targetPath);
+  const merged = new Map(target.profiles.map((profile) => [profile.id, profile]));
+  const legacyPaths = [
+    path.join(app.getPath("appData"), "Cam Player Quality Test", "motion-profiles.json"),
+    path.join(PROFILE_CONFIG_DIRECTORY, "motion-profiles.json"),
+  ];
+  for (const legacyPath of legacyPaths) {
+    if (path.resolve(legacyPath) === path.resolve(targetPath) || !fs.existsSync(legacyPath)) continue;
+    for (const profile of profileDocument(legacyPath).profiles) {
+      if (!merged.has(profile.id)) merged.set(profile.id, profile);
+    }
+  }
+  writeJsonPathAtomic(targetPath, { version: 1, profiles: Array.from(merged.values()) });
+  writeJsonPathAtomic(PROFILE_CONFIG_PATH, { version: 1, directory: activeMotionProfileDirectory });
+  return activeMotionProfileDirectory;
+}
+
 function motionProfiles() {
-  const stored = readJson("motion-profiles.json", { version: 1, profiles: [] });
-  const profiles = Array.isArray(stored?.profiles) ? stored.profiles : [];
-  return profiles.filter(validateProfile);
+  return profileDocument(motionProfileFile()).profiles;
 }
 
 function saveMotionProfiles(profiles) {
-  writeJsonAtomic("motion-profiles.json", { version: 1, profiles });
+  writeJsonPathAtomic(motionProfileFile(), { version: 1, profiles });
 }
 
 function profileSummary(profile) {
@@ -656,19 +735,39 @@ function rebindServer(host, reason) {
 }
 
 function createWindow() {
+  const preferences = readJson("preferences.json", {});
+  const collapsed = new Set(
+    Array.isArray(preferences.collapsedColumns) ? preferences.collapsedColumns : ["advanced"],
+  );
+  const initialSettingsWidth = preferences.settingsView === "virtual-camera"
+    ? 320
+    : ["main", "effects", "advanced"]
+      .reduce((width, name) => width + (collapsed.has(name) ? 42 : 320), 0);
   mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 760,
-    minWidth: 760,
+    width: 900 + initialSettingsWidth,
+    height: 820,
+    minWidth: Math.min(screen.getPrimaryDisplay().workArea.width, 640 + initialSettingsWidth),
     minHeight: 520,
     backgroundColor: "#17191c",
-    title: "Cam Player",
+    title: app.getName(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+  mainWindow.__settingsWidth = initialSettingsWidth;
+  mainWindow.__playerWidth = Math.max(640, mainWindow.getBounds().width - initialSettingsWidth);
+  mainWindow.__expectedSettingsResizeWidth = null;
+  mainWindow.on("resize", () => {
+    if (mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
+    const width = mainWindow.getBounds().width;
+    if (mainWindow.__expectedSettingsResizeWidth === width) {
+      mainWindow.__expectedSettingsResizeWidth = null;
+      return;
+    }
+    mainWindow.__playerWidth = Math.max(640, width - mainWindow.__settingsWidth);
   });
   mainWindow.setMenuBarVisibility(false);
   mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
@@ -683,7 +782,9 @@ function createWindow() {
   mainWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
     log(`Renderer load failed code=${code} description=${description} url=${url}`);
   });
-  mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"), {
+    query: { qualityProfile: QUALITY_PROFILE },
+  });
   mainWindow.webContents.once("did-finish-load", () => {
     mainWindow.webContents.send("server-info", serverInfo());
   });
@@ -801,12 +902,23 @@ ipcMain.handle("delete-motion-profile", (_event, id) => {
   log(`Motion profile deleted id=${profileId}`);
   return true;
 });
-ipcMain.handle("open-profiles-folder", async () => {
-  const folder = app.getPath("userData");
+ipcMain.handle("select-profiles-folder", async () => {
+  initializeMotionProfileStorage();
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Select Motion profiles folder",
+    defaultPath: activeMotionProfileDirectory,
+    properties: ["openDirectory", "createDirectory"],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const folder = path.resolve(result.filePaths[0]);
   fs.mkdirSync(folder, { recursive: true });
-  const error = await shell.openPath(folder);
-  if (error) throw new Error(error);
-  return folder;
+  const filePath = path.join(folder, "motion-profiles.json");
+  const document = profileDocument(filePath, true);
+  if (!fs.existsSync(filePath)) writeJsonPathAtomic(filePath, document);
+  activeMotionProfileDirectory = folder;
+  writeJsonPathAtomic(PROFILE_CONFIG_PATH, { version: 1, directory: folder });
+  log(`Motion profiles folder selected path=${folder} profiles=${document.profiles.length}`);
+  return { folder, profiles: document.profiles.length };
 });
 ipcMain.handle("prepare-media", async (_event, filePath) => {
   const originalPath = String(filePath || "");
@@ -881,7 +993,34 @@ ipcMain.handle("copy-text", (_event, value) => {
   clipboard.writeText(String(value || ""));
   return true;
 });
+ipcMain.on("settings-width", (event, requestedWidth) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return;
+  const nextSettingsWidth = Math.max(126, Math.min(960, Math.round(Number(requestedWidth) || 126)));
+  mainWindow.__settingsWidth = nextSettingsWidth;
+  const bounds = mainWindow.getBounds();
+  const work = screen.getDisplayMatching(bounds).workArea;
+  mainWindow.setMinimumSize(Math.min(work.width, 640 + nextSettingsWidth), 520);
+  if (mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
+  const width = Math.min(work.width, Math.max(640 + nextSettingsWidth, mainWindow.__playerWidth + nextSettingsWidth));
+  if (width === bounds.width) return;
+  const x = Math.max(work.x, Math.min(bounds.x, work.x + work.width - width));
+  mainWindow.__expectedSettingsResizeWidth = width;
+  mainWindow.setBounds({ x, y: bounds.y, width, height: bounds.height }, false);
+});
 ipcMain.handle("scan-qr", () => beginQrScan());
+ipcMain.handle("virtual-camera-status", () => virtualCamera.status());
+ipcMain.handle("virtual-camera-install", (_event, name) => virtualCamera.install(name));
+ipcMain.handle("virtual-camera-uninstall", () => virtualCamera.uninstall());
+ipcMain.handle("virtual-camera-rename", (_event, name) => virtualCamera.rename(name));
+ipcMain.handle("virtual-camera-start", () => {
+  virtualCamera.start();
+  return virtualCamera.status();
+});
+ipcMain.handle("virtual-camera-stop", () => {
+  virtualCamera.stop("UI request");
+  return virtualCamera.status();
+});
+ipcMain.handle("virtual-camera-frame", (_event, value) => virtualCamera.sendFrame(value));
 ipcMain.on("qr-selection-cancel", (event) => {
   if (!activeQrScan || event.sender !== activeQrScan.window.webContents) return;
   log("QR selection cancelled");
@@ -929,9 +1068,11 @@ ipcMain.on("source-config-applied", (_event, { id, ...result }) => {
 });
 
 app.whenReady().then(() => {
+  initializeMotionProfileStorage();
+  virtualCamera = new VirtualCameraManager(app, log);
   createWindow();
   createServer();
-  log(`Application started version=${VERSION} pid=${process.pid} `
+  log(`Application started version=${VERSION} qualityProfile=${QUALITY_PROFILE} pid=${process.pid} `
     + `electron=${process.versions.electron} chromium=${process.versions.chrome}`);
 });
 
@@ -942,6 +1083,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   liveMotionRequested = false;
   motionCaptureRequested = false;
+  virtualCamera?.stop("application closing");
   if (activeQrScan) settleQrScan({ status: "cancelled" });
   for (const pending of pendingOffers.values()) {
     clearTimeout(pending.timeout);

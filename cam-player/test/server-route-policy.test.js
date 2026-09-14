@@ -34,3 +34,8 @@ test("wildcard listening is reserved for discovery", () => {
   assert.match(main, /serverTargetHost = host/);
   assert.doesNotMatch(main, /server\.listen\(PORT, "0\.0\.0\.0"/);
 });
+
+test("distinguishes an unclaimed Player from another Source owner", () => {
+  assert.match(main, /Cam Player has no active Source owner/);
+  assert.match(main, /Cam Player is owned by another Source; press Start to claim it/);
+});

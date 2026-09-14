@@ -12,14 +12,17 @@ const timeout = setTimeout(() => {
   app.exit(1);
 }, 30_000);
 
-ipcMain.once("noise-result", (_event, result) => {
+ipcMain.once("noise-result", (...args) => {
+  const result = args[1];
   clearTimeout(timeout);
   if (result?.ok) {
     process.stdout.write(`Camera noise render OK ${JSON.stringify(result)}\n`);
     app.exit(0);
     return;
   }
-  process.stderr.write(`Camera noise render failed ${result?.error || "unknown"}\n`);
+  process.stderr.write(
+    `Camera noise render failed ${result?.error || "unknown"} args=${JSON.stringify(args.slice(1))}\n`,
+  );
   app.exit(1);
 });
 
@@ -88,8 +91,8 @@ app.whenReady().then(async () => {
           gl.RGBA, gl.UNSIGNED_BYTE, data,
         );
       };
-      makeTexture(0, 1, 1, new Uint8Array([128, 128, 128, 255]));
-      makeTexture(1, 1, 1, new Uint8Array([128, 128, 128, 255]));
+      makeTexture(0, 1, 1, new Uint8Array([96, 96, 96, 255]));
+      makeTexture(1, 1, 1, new Uint8Array([96, 96, 96, 255]));
       const noise = new Uint8Array(512 * 512 * 4);
       let state = 0x6d2b79f5;
       for (let index = 0; index < noise.length; index += 1) {
@@ -113,10 +116,21 @@ app.whenReady().then(async () => {
       oneI("u_rotation", 0);
       oneI("u_mirrored", 0);
       oneF("u_handheld_roll", 0);
+      oneI("u_color_adjustment_enabled", 0);
+      twoF("u_color_adjustment", 0, 0);
+      oneI("u_vignette_enabled", 0);
+      oneF("u_vignette_strength", 0);
+      oneF("u_vignette_size", 0.7);
+      oneF("u_vignette_feather", 0.65);
+      oneI("u_awb_enabled", 0);
+      twoF("u_awb_balance", 0, 0);
       oneF("u_noise_color", 1);
       oneF("u_noise_low_light", 1);
       oneF("u_noise_pattern", 1);
+      oneF("u_noise_persistence", 0.35);
+      oneF("u_noise_banding", 0.03);
       twoF("u_noise_offset", 17 / 512, 31 / 512);
+      twoF("u_noise_previous_offset", 0, 0);
       const render = (enabled, amount) => {
         oneI("u_noise_enabled", enabled ? 1 : 0);
         const normalizedAmount = Math.max(0, Math.min(100, amount)) / 100;
@@ -144,13 +158,49 @@ app.whenReady().then(async () => {
         if (maximumPixelDifference > 6) changedPixels += 1;
       }
       const pixelCount = size * size;
+      oneI("u_noise_enabled", 0);
+      oneI("u_vignette_enabled", 1);
+      oneF("u_vignette_strength", 0.8);
+      oneF("u_vignette_size", 0.5);
+      oneF("u_vignette_feather", 0.5);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      const vignette = new Uint8Array(size * size * 4);
+      gl.readPixels(0, 0, size, size, gl.RGBA, gl.UNSIGNED_BYTE, vignette);
+      const centerOffset = ((size / 2) * size + size / 2) * 4;
+      const vignetteCenter = vignette[centerOffset];
+      const vignetteCorner = vignette[0];
+      oneI("u_vignette_enabled", 0);
+      oneI("u_awb_enabled", 1);
+      twoF("u_awb_balance", 0.6, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      const awb = new Uint8Array(4);
+      gl.readPixels(size / 2, size / 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, awb);
+      oneI("u_awb_enabled", 0);
+      oneI("u_color_adjustment_enabled", 1);
+      twoF("u_color_adjustment", 0.4, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      const brightened = new Uint8Array(4);
+      gl.readPixels(size / 2, size / 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, brightened);
+      twoF("u_color_adjustment", 0, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      const contrasted = new Uint8Array(4);
+      gl.readPixels(size / 2, size / 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, contrasted);
       const result = {
         ok: zeroDifference === 0
           && maximumDifference / pixelCount >= 8
-          && changedPixels / pixelCount >= 0.5,
+          && changedPixels / pixelCount >= 0.5
+          && vignetteCenter - vignetteCorner >= 30
+          && awb[0] - awb[2] >= 15
+          && brightened[0] - baseline[0] >= 40
+          && baseline[0] - contrasted[0] >= 25,
         zeroDifference,
         meanMaximumDifference: maximumDifference / pixelCount,
         changedRatio: changedPixels / pixelCount,
+        vignetteCenter,
+        vignetteCorner,
+        awbRgb: Array.from(awb.slice(0, 3)),
+        brightenedRgb: Array.from(brightened.slice(0, 3)),
+        contrastedRgb: Array.from(contrasted.slice(0, 3)),
       };
       ipcRenderer.send("noise-result", result);
     } catch (error) {

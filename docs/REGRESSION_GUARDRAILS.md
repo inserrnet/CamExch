@@ -34,6 +34,22 @@ schedulers, sessions, or routes can conflict in the complete pipeline.
 - Do not replace a known-good artifact until the new artifact has passed its
   required checks.
 
+## Browser Working Baseline
+
+- The user-selected Browser baseline is `0.6.34` (`versionCode 88`). New Browser
+  work starts from this behavior unless the user explicitly selects another
+  baseline.
+- Do not reintroduce the FaceTec-specific lifecycle, geometry-wait, retry, or
+  network/Permissions diagnostic changes that were released as Browser
+  `0.6.35` through `0.6.39`.
+- The recovered `0.6.34` `VirtualCameraScript.SCRIPT` is sourced from the saved
+  `CamExch-Browser-0.6.34-debug persona.apk`. Its UTF-8 runtime value is 149221
+  characters with SHA-256
+  `16f149f7f8441fea568bac62cf61122ddd432aa42071ec3a99d8c3fd5cf0da77`.
+- Keep `SOURCE_GEOMETRY_WAIT_MS=1200` and `SOURCE_IDLE_GRACE_MS=6000` unless a
+  later, explicitly approved change is validated against the `0.6.34`
+  behavior.
+
 ## Video Cadence Contract
 
 These rules are release blockers.
@@ -58,6 +74,10 @@ These rules are release blockers.
   frame without creating another submission clock.
 - Maximum FPS is a ceiling, not a forced output rate. Reduction is based on
   source `mediaTime`, never callback wall time or an encoder-side timer.
+- The FPS value shown in the Player `Output` status is the measured effective
+  output cadence, calculated from unique frames actually submitted by the sole
+  frame pacer over a rolling interval. It must never echo the configured
+  `Maximum FPS` ceiling. Keep `Maximum FPS` visible only as a user setting.
 - A source below the ceiling keeps its native cadence: `24 -> 24`, `30 -> 30`,
   and `60 -> 60`.
 - A source above the ceiling is reduced evenly using media timestamps, for
@@ -128,27 +148,69 @@ Historical regressions:
 
 ## Resolution And Geometry Contract
 
-- Never change the manually selected Cam Player output resolution unless
-  `Follow site and phone orientation` is enabled.
+- Outside the one-shot media-open initialization, never change the manually
+  selected Cam Player output resolution unless `Follow site and phone
+  orientation` is enabled.
 - Maximum FPS and resolution controls are independent.
+- When `Match output to opened file` is enabled, opening a photo or video sets
+  the manual Output once from that file's decoded dimensions. Odd dimensions
+  round up by one pixel for H.264; playback and metadata changes must not keep
+  rewriting Output afterward. When disabled, opening media preserves the
+  current manual Output.
+- `Use requested resolution without limit` bypasses the stable-size cap for
+  complete `plain`, `ideal`, `exact`, and range-based width/height requests.
+  It is off by default and uses its own preference key so an older ideal-only
+  setting cannot silently enable unrestricted output after an update.
+- With the unrestricted option disabled, optional requests retain the stable
+  H.264 cap and mandatory `exact` or `min` constraints retain priority within
+  the mandatory encoder limit.
 
-### Camera noise
+### Camera sensor effects
 
-- Camera noise is composed in the existing final WebGL fragment shader. It must
+- Brightness, contrast, vignette, AWB drift, and camera noise are composed in the existing final
+  WebGL fragment shader. They must
   not add a CPU pixel pass, GPU readback, second canvas, second encoder, or a
   second frame-submission timer. A bounded lookup texture may be generated once
   when Player starts; never generate per-pixel random data on the CPU per frame.
 - Playing video keeps decoded-frame ownership and its native cadence. Enabling
-  noise must not cause the static frame pacer to submit playing-video frames.
-- Photos and paused video use the sole deadline-based frame pacer. Noise may
-  raise its static cadence only through the resolution-bounded noise rate; old
-  frames are still replaced rather than queued.
-- Noise-disabled rendering must remain a cheap shader branch and preserve the
-  existing image output.
+  dynamic sensor effects must not cause the static frame pacer to submit
+  playing-video frames.
+- Photos and paused video use the sole deadline-based frame pacer. Noise and AWB
+  drift may raise its static cadence only through the resolution-bounded sensor
+  effect rate; old frames are still replaced rather than queued.
+- Every effect has an independent cheap disabled shader branch. With all effects
+  disabled, rendering must preserve the existing image output.
+- Brightness and contrast are static shader uniforms. Neutral values must be an
+  exact no-op and changing them must not add a timer, frame queue, readback, or
+  additional render pass.
+- AWB drift is continuous and time-based. It must not use abrupt random RGB
+  changes or introduce a dedicated timer.
+- Sensor noise keeps independent signal-dependent grain, chroma, fixed-pattern,
+  temporal-persistence, and row-banding components without CPU frame processing.
 - With follow-site disabled, site constraints do not overwrite output size.
+- With follow-site disabled, the fixed manual geometry is an explicit user
+  override. Browser must not manufacture an `OverconstrainedError` merely
+  because site `exact` width/height differ from that geometry; exposed
+  constraints must describe the effective fixed track instead of retaining an
+  impossible exact pair.
 - With follow-site enabled, apply the site's requested geometry in the phone's
   physical orientation and support live portrait/landscape changes without page
   reload or stale dimensions.
+- A live Source geometry change is complete only when a decoded video frame has
+  the configured dimensions. Generated-track `getSettings()` values may remain
+  stale in Android WebView and must not be the sole completion signal.
+- Never resolve a `getUserMedia()` request with mandatory `exact` geometry while
+  the decoded Source still has the previous dimensions. Wait for the requested
+  frame; if it does not arrive, recreate the Source connection and retry once.
+- After `applyConstraints()` changes Source geometry, update the shared WebRTC
+  geometry key and every managed track's exposed settings atomically. A later
+  `getUserMedia()` request must compare its requested geometry with the decoded
+  shared frame and repair any mismatch instead of reusing a stale key.
+- Keep the shared Source WebRTC session alive for at least 30 seconds after the
+  last page track stops. Verification SDKs may process a capture for several
+  seconds before requesting the camera again; closing the source during that
+  gap creates an ended-track/recorder race that may be reported as a permission
+  failure.
 - Arbitrary even resolutions are supported; do not hard-code example presets as
   limits.
 - Do not silently reduce source or output resolution to recover performance.
@@ -166,16 +228,32 @@ Historical regressions:
 - Available explicit modes are `F`, `R`, and `N`. Removed automatic mode `A`
   must not return through defaults, migration, UI, or fallback logic.
 - A clean Browser installation defaults to `F`.
-- `F` routes the request to Source/Cam Player and preserves the requested camera
-  identity and facing direction presented to the site.
+- `F` always routes every camera acquisition to Source/Cam Player, regardless of
+  requested `facingMode`, `deviceId`, front/rear identity, or capture mechanism.
+  It must never open or return a physical phone camera. This includes
+  `getUserMedia()` and HTML file inputs with `capture`.
 - `R` selects the managed physical rear-camera path.
 - `N` returns a native Android camera stream without Cam Player canvas or WebRTC
   substitution.
+- On a portrait phone, a portrait size requested from the primary rear camera
+  is transposed only at the Android `getUserMedia` boundary. The tested WebView
+  interprets rear-camera dimensions in sensor order; passing the pair through
+  unchanged produces a landscape `<video>` even when its clone initially
+  advertises portrait settings. Do not replace this conversion with a canvas
+  proxy, which adds an avoidable frame-processing path.
 - A request for a rear camera must not accidentally open the phone front camera,
   and a front request in `F` must not fall through to the phone front camera when
   Source is healthy.
 - Site `deviceId`, `facingMode`, width, height, frame-rate, and audio constraints
   must be logged before route selection.
+- Every page-facing video track and its clones expose the standard
+  `getCapabilities()`, `getSettings()`, `getConstraints()`, and
+  `applyConstraints()` methods. Generated WebView tracks must provide a
+  settings-derived `getCapabilities()` fallback when the engine omits it.
+- Virtual cameras returned by `enumerateDevices()` preserve the
+  `InputDeviceInfo` prototype when available and expose `getCapabilities()` and
+  `toJSON()`. Front and rear virtual devices report matching `facingMode`
+  values. Track settings report measured/native FPS before a configured maximum.
 - Camera switching must work repeatedly, including `F -> N/R -> F`.
 - Stopping an obsolete site track must not destroy the active replacement track.
 - Browser rotation must preserve the current page, tabs, active tab, and camera
@@ -183,6 +261,15 @@ Historical regressions:
 - File inputs must open Android's file picker and return the selected file to the
   requesting page.
 - The Browser must not append a custom product token to the system User-Agent.
+- User-Agent profiles must configure both the UA string and official WebView UA
+  metadata. JavaScript property substitution is not an acceptable replacement
+  for coherent `navigator.userAgentData` and HTTP Client Hints.
+- `System WebView` restores a fresh provider identity; `Chrome Android` removes
+  WebView-only UA and brand tokens while retaining the installed engine version.
+- Do not invent absent legacy `navigator.getUserMedia`, `webkitGetUserMedia`, or
+  `mozGetUserMedia` properties. A legacy method that really exists must accept a
+  site wrapper without a read-only assignment error and must still route video
+  through the permanent modern camera gateway.
 - Camera and microphone permission requests remain independently logged.
 
 ## Native Camera Contract
@@ -273,6 +360,22 @@ or WebRTC change.
 
 ## Generated Frame Transport
 
+- `Cam Player Quality Test 0.6.14-quality.1` is the current verified working
+  Player baseline. Preserve its quality-profile bitrate logic when making later
+  Player changes. The 2026-08-21 USB test with H.264 and a 24 FPS source held
+  approximately 24 submitted/sent FPS with zero generator drops, no pending
+  frame buildup, no packet loss, and no WebRTC freezes.
+- A 24 FPS media source should remain near 24 unique output frames per second.
+  Do not synthesize 60 FPS by duplicating playing-video frames or by adding a
+  second publisher. A page-facing 60 FPS capability is not evidence that the
+  source can produce 60 unique frames.
+- The optional Cam Player `quality-test` build changes only H.264 bitrate
+  targets and packaging identity. It must not change output geometry, source
+  cadence, frame submission, codec order, route selection, or Player settings.
+- A standard build with no explicit quality profile retains the established
+  bitrate calculation exactly. Experimental bitrate values must never become
+  the standard defaults merely by packaging the normal Player.
+
 - Playing video has exactly one frame publisher: the decoded-frame callback.
   The frame pacer must reject playing-video submissions and may publish only a
   paused frame, photo, or Motion-updated static composition. Do not restore a
@@ -281,6 +384,20 @@ or WebRTC change.
   incoming receiver track. Construct its processor with `maxBufferSize: 1`, do
   frame reads/writes in the worker, and give sites clones of its generated
   output track. Never create one worker or queue per `getUserMedia()` request.
+- A site's CSP may reject the optional `blob:` worker asynchronously. Stop only
+  that proxy and retain the healthy receiver track; never reset WebRTC or reject
+  `getUserMedia()` solely because the latest-frame worker is unavailable.
+- WebView file requests with `capture=true`, one `image/*` accept type, and no
+  multiple selection may launch full-resolution native image capture only in a
+  native camera mode such as `N`. In `F`, capture must stay on Source/Cam Player
+  and must return a JPEG of the current Player frame without launching a physical
+  phone camera. Ordinary uploads and multiple selection keep using the file
+  picker.
+- Closing or superseding an offer is not an encoder failure. Never blacklist a
+  codec unless an active peer with delivered input frames reports a genuine
+  encode/readiness failure.
+- An offer whose remote peer never reaches `connected` is abandoned transport,
+  not an encoder failure. Close it without blacklisting the selected codec.
 
 - Never construct a `VideoFrame` directly from the production WebGL canvas when
   its context uses `preserveDrawingBuffer: false`. Copy the just-rendered back
@@ -351,3 +468,82 @@ Do not publish artifacts until all of the following are true:
 
 When a regression is discovered, add its invariant and a reproducing test here
 before or together with the fix. Do not rely on conversation history alone.
+
+## Player Controls
+
+- Provide separate `Rotate 90 left` and `Rotate 90 right` commands. They must
+  be exact inverse operations, so one left rotation followed by one right
+  rotation restores the original source orientation without requiring three
+  additional rotations.
+
+## Motion Profile Storage
+
+- Production Cam Player releases must use the shared profile file at
+  `%APPDATA%\cam-player\motion-profiles.json`, independent of the executable
+  filename or packaging configuration.
+- A release that changes Electron `userData` must discover and migrate existing
+  Motion profiles automatically. Never make an existing profile library appear
+  empty merely because a standard or quality build selected another directory.
+- `Cam Player Quality Test` may keep isolated preferences and caches only while
+  it is explicitly a test build. If that build is promoted to the working
+  release, its Motion profile storage must be switched to or migrated from the
+  production `cam-player` directory.
+- The folder icon must be a `Select profiles folder` action using a directory
+  picker. Remember the selected directory and validate its
+  `motion-profiles.json`. Do not add or retain a separate action that merely
+  opens the active profile folder in Explorer.
+
+## Browser Camera Contract
+
+- In `F` mode every video request uses Source/Cam Player. A requested rear or
+  front facing mode changes only the page-facing identity; it must never open a
+  physical phone camera.
+- Keep `enumerateDevices()`, track `label`, `deviceId`, `groupId`,
+  `facingMode`, `getSettings()`, `getCapabilities()`, and `getConstraints()`
+  internally consistent. Direct track clones and `MediaStream.clone()` tracks
+  must preserve the same public identity.
+- Preserve the original constraint structure in `getConstraints()` while
+  Follow site is enabled. With the explicit fixed-output override, replace site
+  geometry with the effective manual geometry so `getConstraints()` and
+  `getSettings()` do not contradict each other. Bare numeric values and strings
+  are preferences; only `exact`, `min`, and `max` are mandatory and may produce
+  `OverconstrainedError` in normal follow mode.
+- `getSettings().frameRate` reports the measured inbound cadence when it is
+  available. A configured Player FPS value is a ceiling and must not be
+  reported as the current track cadence.
+- `getCapabilities()` exposes supported ranges and `getSettings()` exposes the
+  current values. Never collapse the capability ranges to the current frame
+  geometry or to a configured FPS ceiling.
+- Managed `ImageCapture` calls must capture the current Source frame and use
+  the same geometry as the managed track. They must not invoke a physical
+  Android camera while the route is `F`.
+- When a page requests audio with video, Browser must request Android microphone
+  permission and return a real audio track or the native microphone error. It
+  must never silently resolve the request as video-only.
+- Browser must declare both `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS`; Chromium
+  requires both permissions for full Android microphone capture functionality.
+- The physical `N` route must retain native track capabilities such as focus
+  modes and native `applyConstraints()` behavior.
+- A playing managed Source stream may request layout recovery only when its
+  child browsing context has a zero-width viewport. The top context must match
+  the message source to the exact iframe, must leave every non-zero iframe
+  untouched, and must restore the iframe's original inline geometry when the
+  stream or page is released.
+- A camera widget may report a collapsed viewport before attaching its stream.
+  Early recovery is allowed only for a child viewport wider than `200px` in the
+  other axis, and the replacement width must use the widest available ancestor
+  or top-level viewport rather than inheriting another collapsed wrapper.
+- A reported collapsed camera viewport with a usable height is recovered as a
+  complete fixed overlay at `(0, 0)`. Do not compare it with the document
+  element height: that value can exceed the visible WebView and incorrectly
+  select width-only recovery. Changing only width leaves the old zero-width
+  anchor in place and shifts the camera page sideways. All overridden styles
+  must be restored.
+# Windows virtual camera
+
+- The DirectShow camera uses the permanent CLSID `{6E4A7C7A-6400-4A91-A857-E17A46D99431}`. Renaming changes only its friendly name.
+- Windows output consumes the existing final WebGL composition. Do not add a second renderer, frame timer, or unbounded frame queue.
+- At most one Windows frame may be awaiting the native producer acknowledgement. A slow consumer drops intermediate frames instead of accumulating latency.
+- With no Android peer, the Windows camera may keep the existing generated-frame stream active. With both outputs active, Android remains the output-geometry owner and the DirectShow filter scales independently.
+- `Follow site and phone orientation` may adopt the DirectShow-negotiated size only when no Android peer is active. When it is off, manual Player output remains unchanged.
+- Install, uninstall, and rename stop Windows output first and require elevation. The registered filter binary lives under `%ProgramFiles%\\Cam Player Virtual Camera` so a portable Player can be moved afterward.
