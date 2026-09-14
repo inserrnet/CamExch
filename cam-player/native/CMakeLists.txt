@@ -10,7 +10,7 @@ endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN
   _CRT_SECURE_NO_WARNINGS STRSAFE_NO_DEPRECATE)
 
 set(BASECLASS_SOURCES
@@ -23,12 +23,14 @@ list(TRANSFORM BASECLASS_SOURCES PREPEND "${BASECLASSES_DIR}/")
 
 add_library(dshow_baseclasses STATIC ${BASECLASS_SOURCES})
 target_include_directories(dshow_baseclasses PUBLIC "${BASECLASSES_DIR}")
-target_compile_options(dshow_baseclasses PRIVATE /W0 /permissive-)
+target_compile_options(dshow_baseclasses PRIVATE /W0 /permissive /Zc:strictStrings-)
+set_target_properties(dshow_baseclasses PROPERTIES CXX_STANDARD 14)
 
 add_library(CamPlayerVirtualCamera SHARED
   src/virtual_camera_filter.cpp
   src/virtual_camera_filter.def)
 target_include_directories(CamPlayerVirtualCamera PRIVATE include)
+target_compile_options(CamPlayerVirtualCamera PRIVATE /permissive /Zc:strictStrings-)
 target_link_libraries(CamPlayerVirtualCamera PRIVATE dshow_baseclasses
   strmiids ole32 oleaut32 uuid winmm)
 set_target_properties(CamPlayerVirtualCamera PROPERTIES

@@ -4,6 +4,13 @@
 #include <ksmedia.h>
 #include <streams.h>
 
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cmath>
