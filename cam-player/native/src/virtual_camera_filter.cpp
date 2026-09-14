@@ -1,8 +1,8 @@
 #include <windows.h>
 #include <dshow.h>
+#include <streams.h>
 #include <ks.h>
 #include <ksmedia.h>
-#include <streams.h>
 
 #ifdef min
 #undef min
@@ -166,6 +166,8 @@ class VirtualCameraPin final : public CSourceStream,
  public:
   VirtualCameraPin(HRESULT* result, CSource* filter)
       : CSourceStream(NAME("Cam Player Camera Output"), result, filter, L"Capture") {}
+
+  DECLARE_IUNKNOWN;
 
   STDMETHODIMP NonDelegatingQueryInterface(REFIID iid, void** object) override {
     if (iid == IID_IAMStreamConfig) return GetInterface(static_cast<IAMStreamConfig*>(this), object);
