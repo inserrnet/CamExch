@@ -229,8 +229,9 @@ class VirtualCameraPin final : public CSourceStream,
 
   HRESULT FillBuffer(IMediaSample* sample) override {
     if (!sample) return E_POINTER;
-    REFERENCE_TIME stream_time = 0;
-    if (SUCCEEDED(m_pFilter->StreamTime(stream_time))) {
+    CRefTime current_stream_time;
+    if (SUCCEEDED(m_pFilter->StreamTime(current_stream_time))) {
+      const REFERENCE_TIME stream_time = current_stream_time;
       if (next_frame_start_ < 0 || stream_time - next_frame_start_ > frame_duration_ * 2) {
         next_frame_start_ = stream_time;
       } else if (next_frame_start_ > stream_time) {
