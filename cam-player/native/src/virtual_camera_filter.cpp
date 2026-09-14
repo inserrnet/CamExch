@@ -3,6 +3,7 @@
 #include <streams.h>
 #include <ks.h>
 #include <ksmedia.h>
+#include <initguid.h>
 
 #ifdef min
 #undef min
