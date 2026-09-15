@@ -76,7 +76,7 @@ class SharedFrameReader {
     InterlockedExchange(&control_->negotiated_height, height);
   }
 
-  bool CopyRgb32(BYTE* destination, LONG output_width, LONG output_height,
+  bool CopyRgb24(BYTE* destination, LONG output_width, LONG output_height,
                  LONG output_stride) {
     if (!OpenCurrentFrame()) return false;
     for (int attempt = 0; attempt < 2; ++attempt) {
@@ -101,11 +101,10 @@ class SharedFrameReader {
           const LONG sx = std::min(source_width - 1,
               static_cast<LONG>((static_cast<long long>(x) * source_width) / output_width));
           const BYTE* rgba = source_row + static_cast<std::size_t>(sx) * 4;
-          BYTE* bgra = row + static_cast<std::size_t>(x) * 4;
-          bgra[0] = rgba[2];
-          bgra[1] = rgba[1];
-          bgra[2] = rgba[0];
-          bgra[3] = 0xff;
+          BYTE* bgr = row + static_cast<std::size_t>(x) * 3;
+          bgr[0] = rgba[2];
+          bgr[1] = rgba[1];
+          bgr[2] = rgba[0];
         }
       }
       MemoryBarrier();
@@ -186,7 +185,7 @@ class VirtualCameraPin final : public CSourceStream,
 
   HRESULT CheckMediaType(const CMediaType* media_type) override {
     if (!media_type || *media_type->Type() != MEDIATYPE_Video
-        || *media_type->Subtype() != MEDIASUBTYPE_RGB32
+        || *media_type->Subtype() != MEDIASUBTYPE_RGB24
         || *media_type->FormatType() != FORMAT_VideoInfo
         || media_type->FormatLength() < sizeof(VIDEOINFOHEADER)) return E_INVALIDARG;
     const auto* info = reinterpret_cast<const VIDEOINFOHEADER*>(media_type->Format());
@@ -238,10 +237,10 @@ class VirtualCameraPin final : public CSourceStream,
     }
     BYTE* data = nullptr;
     if (FAILED(sample->GetPointer(&data)) || !data) return E_FAIL;
-    const LONG stride = width_ * 4;
+    const LONG stride = ((width_ * 3) + 3) & ~3L;
     const LONG bytes = stride * height_;
     if (sample->GetSize() < bytes) return E_FAIL;
-    if (!reader_.CopyRgb32(data, width_, height_, stride)) {
+    if (!reader_.CopyRgb24(data, width_, height_, stride)) {
       std::memset(data, 0, bytes);
     }
     sample->SetActualDataLength(bytes);
@@ -371,12 +370,15 @@ class VirtualCameraPin final : public CSourceStream,
     info->bmiHeader.biWidth = format.width;
     info->bmiHeader.biHeight = format.height;
     info->bmiHeader.biPlanes = 1;
-    info->bmiHeader.biBitCount = 32;
+    info->bmiHeader.biBitCount = 24;
     info->bmiHeader.biCompression = BI_RGB;
-    info->bmiHeader.biSizeImage = format.width * format.height * 4;
-    info->dwBitRate = format.width * format.height * 32 * format.fps;
+    const LONG stride = ((format.width * 3) + 3) & ~3L;
+    info->bmiHeader.biSizeImage = stride * format.height;
+    info->dwBitRate = static_cast<DWORD>(std::min<std::uint64_t>(
+        static_cast<std::uint64_t>(stride) * format.height * 8 * format.fps,
+        MAXDWORD));
     media_type->SetType(&MEDIATYPE_Video);
-    media_type->SetSubtype(&MEDIASUBTYPE_RGB32);
+    media_type->SetSubtype(&MEDIASUBTYPE_RGB24);
     media_type->SetFormatType(&FORMAT_VideoInfo);
     media_type->SetTemporalCompression(FALSE);
     media_type->SetSampleSize(info->bmiHeader.biSizeImage);
@@ -409,7 +411,7 @@ class VirtualCameraFilter final : public CSource {
 };
 
 WCHAR g_filter_name[] = L"Cam Player Camera";
-const AMOVIESETUP_MEDIATYPE kPinMediaTypes = {&MEDIATYPE_Video, &MEDIASUBTYPE_RGB32};
+const AMOVIESETUP_MEDIATYPE kPinMediaTypes = {&MEDIATYPE_Video, &MEDIASUBTYPE_RGB24};
 const AMOVIESETUP_PIN kOutputPin = {
   L"Capture", FALSE, TRUE, FALSE, FALSE, &CLSID_NULL, nullptr, 1, &kPinMediaTypes
 };
@@ -423,7 +425,7 @@ HRESULT RegisterCaptureCategory(bool install) {
                                     IID_IFilterMapper2, reinterpret_cast<void**>(&mapper));
   if (FAILED(result)) return result;
   if (install) {
-    REGPINTYPES media_type = {&MEDIATYPE_Video, &MEDIASUBTYPE_RGB32};
+    REGPINTYPES media_type = {&MEDIATYPE_Video, &MEDIASUBTYPE_RGB24};
     REGFILTERPINS2 pin = {};
     pin.dwFlags = REG_PINFLAG_B_OUTPUT;
     pin.cInstances = 1;

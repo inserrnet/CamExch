@@ -58,29 +58,39 @@ async function main() {
     const camera = devices.find((device) => device.kind === "videoinput"
       && device.label === "Cam Player Camera");
     if (!camera) return { devices: devices.map(({ kind, label }) => ({ kind, label })) };
-    const stream = await navigator.mediaDevices.getUserMedia({ video: {
-      deviceId: { exact: camera.deviceId }, width: { exact: 640 }, height: { exact: 480 },
-    }, audio: false });
     const video = document.getElementById("preview");
-    video.srcObject = stream;
-    await video.play();
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("No Chromium video frame")), 5000);
-      video.requestVideoFrameCallback(() => { clearTimeout(timeout); resolve(); });
+    const open = async (videoConstraints) => {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+      video.srcObject = stream;
+      await video.play();
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("No Chromium video frame")), 5000);
+        video.requestVideoFrameCallback(() => { clearTimeout(timeout); resolve(); });
+      });
+      const canvas = document.getElementById("sample");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext("2d");
+      context.drawImage(video, 0, 0);
+      const pixel = Array.from(context.getImageData(video.videoWidth / 2, video.videoHeight / 2, 1, 1).data);
+      const settings = stream.getVideoTracks()[0].getSettings();
+      const dimensions = [video.videoWidth, video.videoHeight];
+      stream.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+      return { settings, video: dimensions, pixel };
+    };
+    const defaultCapture = await open({ deviceId: { exact: camera.deviceId } });
+    const exactCapture = await open({
+      deviceId: { exact: camera.deviceId }, width: { exact: 640 }, height: { exact: 480 },
     });
-    const canvas = document.getElementById("sample");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const context = canvas.getContext("2d");
-    context.drawImage(video, 0, 0);
-    const pixel = Array.from(context.getImageData(video.videoWidth / 2, video.videoHeight / 2, 1, 1).data);
-    const settings = stream.getVideoTracks()[0].getSettings();
-    stream.getTracks().forEach((track) => track.stop());
-    return { label: camera.label, settings, video: [video.videoWidth, video.videoHeight], pixel };
+    return { label: camera.label, defaultCapture, exactCapture };
   })()`);
   console.log(JSON.stringify(result));
-  if (result.label !== "Cam Player Camera" || result.settings.width !== 640
-      || result.settings.height !== 480 || result.video[0] !== 640 || result.video[1] !== 480) {
+  if (result.label !== "Cam Player Camera"
+      || !result.defaultCapture?.video?.every((dimension) => dimension > 0)
+      || result.exactCapture?.settings?.width !== 640
+      || result.exactCapture?.settings?.height !== 480
+      || result.exactCapture?.video?.[0] !== 640 || result.exactCapture?.video?.[1] !== 480) {
     throw new Error("Chromium did not open the requested virtual camera format");
   }
   window.destroy();

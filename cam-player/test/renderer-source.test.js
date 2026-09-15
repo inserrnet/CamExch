@@ -163,6 +163,10 @@ test("publishes the final composition to a separately controlled Windows camera"
     path.join(__dirname, "..", "lib", "virtual-camera-manager.js"),
     "utf8",
   );
+  const nativeFilter = fs.readFileSync(
+    path.join(__dirname, "..", "native", "src", "virtual_camera_filter.cpp"),
+    "utf8",
+  );
   assert.match(indexHtml, /id="virtualCameraTabButton"/);
   assert.match(indexHtml, /id="virtualCameraPanel"/);
   assert.match(preload, /sendVirtualCameraFrame/);
@@ -171,6 +175,9 @@ test("publishes the final composition to a separately controlled Windows camera"
   assert.match(renderer, /publishVirtualCameraFrame\(frame\.clone\(\)/);
   assert.match(manager, /if \(this\.pendingAcknowledgement\) return Promise\.resolve\(false\)/);
   assert.match(manager, /app\.asar\.unpacked/);
+  assert.match(nativeFilter, /MEDIASUBTYPE_RGB24/);
+  assert.doesNotMatch(nativeFilter, /MEDIASUBTYPE_RGB32/);
+  assert.match(nativeFilter, /\(\(width_ \* 3\) \+ 3\) & ~3L/);
 });
 
 test("provides exact inverse 90 degree source rotations", () => {
