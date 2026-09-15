@@ -1,4 +1,7 @@
 <Project>
+  <PropertyGroup Condition="'$(Platform)' == 'x64'">
+    <Processor_Architecture>AMD64</Processor_Architecture>
+  </PropertyGroup>
   <Import Project="packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\build\native\Microsoft.Windows.WDK.x64.props"
           Condition="Exists('packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\build\native\Microsoft.Windows.WDK.x64.props') and '$(Platform)' == 'x64'" />
   <Import Project="packages\Microsoft.Windows.SDK.CPP.x64.10.0.26100.1\build\native\Microsoft.Windows.SDK.cpp.x64.props"
