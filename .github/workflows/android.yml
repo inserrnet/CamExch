@@ -128,8 +128,14 @@ jobs:
             if (-not $file) { throw "PnP camera package is missing $name" }
             Copy-Item $file.FullName (Join-Path $package $name) -Force
           }
-          $certificate = Get-ChildItem pnp-driver -Recurse -File -Filter *.cer | Select-Object -First 1
-          if ($certificate) { Copy-Item $certificate.FullName (Join-Path $package "CamPlayerPnpCamera.cer") -Force }
+          $certificate = Get-Item "pnp-driver/x64/Release/CamPlayerPnpCamera.cer" -ErrorAction Stop
+          $catalog = Get-Item "pnp-driver/x64/Release/avssamp/camplayerpnpcamera.cat" -ErrorAction Stop
+          $certificateInfo = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificate.FullName)
+          $catalogSigner = (Get-AuthenticodeSignature $catalog.FullName).SignerCertificate
+          if (-not $catalogSigner -or $catalogSigner.Thumbprint -ne $certificateInfo.Thumbprint) {
+            throw "PnP camera certificate does not match the catalog signer"
+          }
+          Copy-Item $certificate.FullName (Join-Path $package "CamPlayerPnpCamera.cer") -Force
 
       - name: Test Windows virtual camera
         run: |
