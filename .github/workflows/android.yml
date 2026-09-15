@@ -111,6 +111,20 @@ jobs:
             native/bin/x64/CamPlayerVirtualCamera.dll `
             node_modules/ffmpeg-static/ffmpeg.exe
 
+      - name: Test Windows virtual camera in Chromium
+        shell: pwsh
+        run: |
+          $control = "native/bin/x64/CamPlayerVirtualCameraControl.exe"
+          $filter = "native/bin/x64/CamPlayerVirtualCamera.dll"
+          & $control install $filter "Cam Player Camera"
+          if ($LASTEXITCODE -ne 0) { throw "Virtual camera installation failed" }
+          try {
+            pnpm exec electron test/virtual-camera-chromium-smoke.js $control
+            if ($LASTEXITCODE -ne 0) { throw "Chromium virtual camera test failed" }
+          } finally {
+            & $control uninstall
+          }
+
       - name: Build portable Cam Player
         run: pnpm dist
 
