@@ -163,7 +163,19 @@ bool ReadExact(HANDLE input, void* destination, DWORD bytes) {
   return true;
 }
 
-int Serve() {
+long ParseOrientation(const std::wstring& value) {
+  if (value == L"landscape") return kOrientationLandscape;
+  if (value == L"follow") return kOrientationFollowOutput;
+  return kOrientationPortrait;
+}
+
+const char* OrientationName(long orientation) {
+  if (orientation == kOrientationLandscape) return "landscape";
+  if (orientation == kOrientationFollowOutput) return "follow";
+  return "portrait";
+}
+
+int Serve(long orientation) {
   HANDLE control_mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
       0, sizeof(ControlBlock), kControlMappingName);
   if (!control_mapping) return 5;
@@ -173,6 +185,7 @@ int Serve() {
   ZeroMemory(control, sizeof(*control));
   control->version = kProtocolVersion;
   control->producer_pid = static_cast<LONG>(GetCurrentProcessId());
+  control->orientation = orientation;
 
   HANDLE frame_mapping = nullptr;
   FrameBlock* frame = nullptr;
@@ -240,6 +253,7 @@ int Serve() {
 int Status() {
   const bool installed = fs::exists(InstalledDll());
   LONG producer = 0, consumers = 0, width = 0, height = 0;
+  LONG orientation = kOrientationPortrait;
   HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, kControlMappingName);
   if (mapping) {
     auto* control = static_cast<ControlBlock*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0,
@@ -249,6 +263,7 @@ int Status() {
       consumers = control->consumers;
       width = control->negotiated_width;
       height = control->negotiated_height;
+      orientation = control->orientation;
       UnmapViewOfFile(control);
     }
     CloseHandle(mapping);
@@ -257,7 +272,8 @@ int Status() {
       + ",\"name\":\"" + JsonEscape(ReadName()) + "\",\"running\":"
       + (producer ? "true" : "false") + ",\"consumers\":" + std::to_string(consumers)
       + ",\"width\":" + std::to_string(width) + ",\"height\":"
-      + std::to_string(height) + "}\n");
+      + std::to_string(height) + ",\"orientation\":\""
+      + OrientationName(orientation) + "\"}\n");
   return 0;
 }
 
@@ -271,7 +287,9 @@ int wmain(int argc, wchar_t** argv) {
     else arguments.emplace_back(argv[index]);
   }
   if (arguments.empty()) return 2;
-  if (arguments[0] == L"serve") return Serve();
+  if (arguments[0] == L"serve") {
+    return Serve(ParseOrientation(arguments.size() > 1 ? arguments[1] : L"portrait"));
+  }
   if (arguments[0] == L"status") return Status();
   if (!elevated && !IsAdministrator()) return Elevate(arguments);
   return Mutate(arguments);

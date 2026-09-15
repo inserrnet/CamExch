@@ -1012,8 +1012,8 @@ ipcMain.handle("virtual-camera-status", () => virtualCamera.status());
 ipcMain.handle("virtual-camera-install", (_event, name) => virtualCamera.install(name));
 ipcMain.handle("virtual-camera-uninstall", () => virtualCamera.uninstall());
 ipcMain.handle("virtual-camera-rename", (_event, name) => virtualCamera.rename(name));
-ipcMain.handle("virtual-camera-start", () => {
-  virtualCamera.start();
+ipcMain.handle("virtual-camera-start", (_event, orientation) => {
+  virtualCamera.start(orientation);
   return virtualCamera.status();
 });
 ipcMain.handle("virtual-camera-stop", () => {

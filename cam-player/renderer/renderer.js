@@ -90,6 +90,7 @@ const virtualCameraRunningValue = document.getElementById("virtualCameraRunningV
 const virtualCameraConsumersValue = document.getElementById("virtualCameraConsumersValue");
 const virtualCameraFormatValue = document.getElementById("virtualCameraFormatValue");
 const virtualCameraNameInput = document.getElementById("virtualCameraNameInput");
+const virtualCameraOrientationSelect = document.getElementById("virtualCameraOrientationSelect");
 const installVirtualCameraButton = document.getElementById("installVirtualCameraButton");
 const renameVirtualCameraButton = document.getElementById("renameVirtualCameraButton");
 const uninstallVirtualCameraButton = document.getElementById("uninstallVirtualCameraButton");
@@ -2120,6 +2121,7 @@ function savePreferences() {
     settingsView: virtualCameraTabButton.classList.contains("is-active")
       ? "virtual-camera"
       : "player",
+    virtualCameraOrientation: virtualCameraOrientationSelect.value,
     motion: Number(motionInput.value),
     stabilization: Number(stabilizationInput.value),
     recent,
@@ -2992,6 +2994,7 @@ function applyVirtualCameraStatus(status = {}) {
   virtualCameraRunning = status.running === true;
   virtualCameraInstalledValue.textContent = installed ? "Installed" : "Not installed";
   virtualCameraRunningValue.textContent = virtualCameraRunning ? "Running" : "Stopped";
+  virtualCameraRunningValue.classList.toggle("is-running", virtualCameraRunning);
   virtualCameraConsumersValue.textContent = String(Number(status.consumers) || 0);
   virtualCameraFormatValue.textContent = status.width > 0 && status.height > 0
     ? `${status.width}\u00d7${status.height}`
@@ -3007,6 +3010,7 @@ function applyVirtualCameraStatus(status = {}) {
   uninstallVirtualCameraButton.disabled = !available || !installed || virtualCameraRunning;
   startVirtualCameraButton.disabled = !available || !installed || virtualCameraRunning;
   stopVirtualCameraButton.disabled = !virtualCameraRunning;
+  virtualCameraOrientationSelect.disabled = virtualCameraRunning;
   const negotiatedSize = status.width > 0 && status.height > 0
     ? `${status.width}x${status.height}`
     : "";
@@ -3050,6 +3054,7 @@ async function runVirtualCameraCommand(button, operation) {
 
 playerTabButton.addEventListener("click", () => selectSettingsView("player"));
 virtualCameraTabButton.addEventListener("click", () => selectSettingsView("virtual-camera"));
+virtualCameraOrientationSelect.addEventListener("change", savePreferences);
 installVirtualCameraButton.addEventListener("click", () => runVirtualCameraCommand(
   installVirtualCameraButton,
   () => window.camPlayer.installVirtualCamera(virtualCameraNameInput.value.trim()),
@@ -3065,7 +3070,7 @@ uninstallVirtualCameraButton.addEventListener("click", () => runVirtualCameraCom
 startVirtualCameraButton.addEventListener("click", () => runVirtualCameraCommand(
   startVirtualCameraButton,
   async () => {
-    const status = await window.camPlayer.startVirtualCamera();
+    const status = await window.camPlayer.startVirtualCamera(virtualCameraOrientationSelect.value);
     virtualCameraRunning = true;
     ensureStream();
     updatePausedFrameHeartbeat();
@@ -4019,6 +4024,9 @@ async function initialize() {
   sessionStorage.removeItem("camexchRestoreMedia");
   applyServerInfo(await window.camPlayer.getServerInfo());
   recent = Array.isArray(preferences.recent) ? preferences.recent : [];
+  virtualCameraOrientationSelect.value = ["portrait", "landscape", "follow"]
+    .includes(preferences.virtualCameraOrientation)
+    ? preferences.virtualCameraOrientation : "portrait";
   renderRecent();
   fpsInput.value = String(
     Number(preferences.preferencesVersion) >= 2 ? preferences.fps || 60 : 60,

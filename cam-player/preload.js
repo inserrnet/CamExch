@@ -26,7 +26,7 @@ contextBridge.exposeInMainWorld("camPlayer", {
   installVirtualCamera: (name) => ipcRenderer.invoke("virtual-camera-install", name),
   uninstallVirtualCamera: () => ipcRenderer.invoke("virtual-camera-uninstall"),
   renameVirtualCamera: (name) => ipcRenderer.invoke("virtual-camera-rename", name),
-  startVirtualCamera: () => ipcRenderer.invoke("virtual-camera-start"),
+  startVirtualCamera: (orientation) => ipcRenderer.invoke("virtual-camera-start", orientation),
   stopVirtualCamera: () => ipcRenderer.invoke("virtual-camera-stop"),
   sendVirtualCameraFrame: (value) => ipcRenderer.invoke("virtual-camera-frame", value),
   log: (message) => ipcRenderer.send("renderer-log", String(message)),

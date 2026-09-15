@@ -34,7 +34,7 @@ function waitForExit(child, timeoutMs) {
 
 async function main() {
   execFileSync(controlPath, ["install", filterPath, "Cam Player Camera CI"], { stdio: "inherit" });
-  const producer = spawn(controlPath, ["serve"], { stdio: ["pipe", "pipe", "inherit"] });
+  const producer = spawn(controlPath, ["serve", "portrait"], { stdio: ["pipe", "pipe", "inherit"] });
   try {
     const width = 64;
     const height = 48;
@@ -56,7 +56,7 @@ async function main() {
     const startedAt = Date.now();
     const capture = spawn(ffmpegPath, [
       "-hide_banner", "-loglevel", "warning", "-f", "dshow",
-      "-video_size", "640x480", "-framerate", "30",
+      "-video_size", "480x640", "-framerate", "30",
       "-i", "video=Cam Player Camera CI", "-frames:v", "30",
       "-f", "framemd5", "-",
     ], { stdio: ["ignore", "pipe", "pipe"] });
@@ -68,7 +68,7 @@ async function main() {
     const elapsedMs = Date.now() - startedAt;
     const frames = stdout.split(/\r?\n/).filter((line) => line.startsWith("0,")).length;
     const dimensions = stdout.match(/#dimensions 0: ([^\r\n]+)/)?.[1];
-    if (code !== 0 || frames !== 30 || dimensions !== "640x480") {
+    if (code !== 0 || frames !== 30 || dimensions !== "480x640") {
       throw new Error(`Capture failed: code=${code} frames=${frames} dimensions=${dimensions}\n${stderr}`);
     }
     if (elapsedMs < 700 || elapsedMs > 5_000 || /buffer .*too full/i.test(stderr)) {

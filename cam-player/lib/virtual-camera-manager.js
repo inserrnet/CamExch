@@ -5,6 +5,11 @@ const path = require("path");
 const { execFile, spawn } = require("child_process");
 
 const PACKET_MAGIC = 0x4d415243;
+const ORIENTATIONS = new Set(["portrait", "landscape", "follow"]);
+
+function normalizeOrientation(value) {
+  return ORIENTATIONS.has(value) ? value : "portrait";
+}
 
 function executablePath(app) {
   const root = app.isPackaged
@@ -85,10 +90,11 @@ class VirtualCameraManager {
     return this.status();
   }
 
-  start() {
+  start(orientation = "portrait") {
     if (this.running()) return true;
     if (!this.available()) throw new Error("Virtual camera components are not included in this build");
-    const child = spawn(executablePath(this.app), ["serve"], {
+    const normalizedOrientation = normalizeOrientation(orientation);
+    const child = spawn(executablePath(this.app), ["serve", normalizedOrientation], {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -109,7 +115,7 @@ class VirtualCameraManager {
       this.log(`Virtual camera stopped code=${code ?? "none"} signal=${signal || "none"}`);
     });
     child.on("error", (error) => this.log(`Virtual camera process failed ${error}`));
-    this.log("Virtual camera started");
+    this.log(`Virtual camera started orientation=${normalizedOrientation}`);
     return true;
   }
 
@@ -163,4 +169,4 @@ class VirtualCameraManager {
   }
 }
 
-module.exports = { VirtualCameraManager, executablePath, filterPath };
+module.exports = { VirtualCameraManager, executablePath, filterPath, normalizeOrientation };

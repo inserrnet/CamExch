@@ -69,6 +69,14 @@ class SharedFrameReader {
     return {width & ~1L, height & ~1L, fps};
   }
 
+  LONG Orientation() {
+    OpenControl();
+    if (!control_ || control_->version != kProtocolVersion) return kOrientationPortrait;
+    const LONG orientation = control_->orientation;
+    return orientation >= kOrientationFollowOutput && orientation <= kOrientationLandscape
+        ? orientation : kOrientationPortrait;
+  }
+
   void SetNegotiated(LONG width, LONG height) {
     OpenControl();
     if (!control_) return;
@@ -191,8 +199,12 @@ class VirtualCameraPin final : public CSourceStream,
     const auto* info = reinterpret_cast<const VIDEOINFOHEADER*>(media_type->Format());
     const LONG width = info->bmiHeader.biWidth;
     const LONG height = std::abs(info->bmiHeader.biHeight);
-    return width >= 2 && height >= 2 && width <= static_cast<LONG>(kMaxDimension)
-        && height <= static_cast<LONG>(kMaxDimension) ? S_OK : E_INVALIDARG;
+    if (width < 2 || height < 2 || width > static_cast<LONG>(kMaxDimension)
+        || height > static_cast<LONG>(kMaxDimension)) return E_INVALIDARG;
+    const LONG orientation = EffectiveOrientation();
+    const bool accepted = orientation == kOrientationPortrait
+        ? height > width : width > height;
+    return accepted ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
   }
 
   HRESULT DecideBufferSize(IMemAllocator* allocator, ALLOCATOR_PROPERTIES* properties) override {
@@ -335,15 +347,41 @@ class VirtualCameraPin final : public CSourceStream,
   }
 
  private:
+  LONG EffectiveOrientation() {
+    LONG orientation = reader_.Orientation();
+    if (orientation != kOrientationFollowOutput) return orientation;
+    const Format source = reader_.SourceFormat();
+    return source.width > source.height ? kOrientationLandscape : kOrientationPortrait;
+  }
+
   std::vector<Format> Formats() {
     const Format source = reader_.SourceFormat();
+    const LONG orientation = EffectiveOrientation();
     std::vector<Format> formats;
-    if (configured_format_.width > 0 && configured_format_.height > 0) {
+    const auto matches_orientation = [&](const Format& format) {
+      return orientation == kOrientationPortrait
+          ? format.height > format.width : format.width > format.height;
+    };
+    if (configured_format_.width > 0 && configured_format_.height > 0
+        && matches_orientation(configured_format_)) {
       formats.push_back(configured_format_);
     }
-    formats.insert(formats.end(), {source,
-      {640, 480, 30}, {1280, 720, 30}, {1920, 1080, 30},
-      {1080, 1920, 30}, {1920, 1920, 30}});
+    Format oriented_source = source;
+    if (!matches_orientation(oriented_source) && source.width != source.height) {
+      std::swap(oriented_source.width, oriented_source.height);
+    }
+    if (orientation == kOrientationPortrait) {
+      formats.insert(formats.end(), {
+        {360, 640, 30}, {480, 640, 30}, {720, 1280, 30},
+        {1080, 1920, 30}, {1440, 1920, 30}, {2160, 3840, 30},
+      });
+    } else {
+      formats.insert(formats.end(), {
+        {640, 360, 30}, {640, 480, 30}, {1280, 720, 30},
+        {1920, 1080, 30}, {1920, 1440, 30}, {3840, 2160, 30},
+      });
+    }
+    if (oriented_source.width != oriented_source.height) formats.push_back(oriented_source);
     std::vector<Format> unique;
     for (auto format : formats) {
       format.width &= ~1L;

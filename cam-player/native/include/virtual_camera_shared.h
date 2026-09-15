@@ -5,13 +5,19 @@
 namespace cam_player_vcam {
 
 inline constexpr wchar_t kControlMappingName[] =
-    L"Local\\CamPlayerVirtualCameraControl-v1";
+    L"Local\\CamPlayerVirtualCameraControl-v2";
 inline constexpr wchar_t kRegistryPath[] =
     L"SOFTWARE\\CamPlayer\\VirtualCamera";
 inline constexpr wchar_t kDefaultCameraName[] = L"Cam Player Camera";
-inline constexpr std::uint32_t kProtocolVersion = 1;
+inline constexpr std::uint32_t kProtocolVersion = 2;
 inline constexpr std::uint32_t kPacketMagic = 0x4D415243; // CRAM
 inline constexpr std::uint32_t kMaxDimension = 8192;
+
+enum OrientationMode : long {
+  kOrientationFollowOutput = 0,
+  kOrientationPortrait = 1,
+  kOrientationLandscape = 2,
+};
 
 struct ControlBlock {
   std::uint32_t version;
@@ -21,6 +27,7 @@ struct ControlBlock {
   volatile long source_width;
   volatile long source_height;
   volatile long fps_milli;
+  volatile long orientation;
   volatile long negotiated_width;
   volatile long negotiated_height;
   wchar_t frame_mapping_name[96];

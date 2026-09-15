@@ -519,6 +519,11 @@ dd {
   overflow-wrap: anywhere;
 }
 
+#virtualCameraRunningValue.is-running {
+  color: #45b97c;
+  font-weight: 600;
+}
+
 .mono {
   font-family: Consolas, monospace;
   font-size: 12px;

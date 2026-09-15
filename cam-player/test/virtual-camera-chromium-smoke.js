@@ -10,7 +10,7 @@ let server;
 
 function sendTestFrame() {
   return new Promise((resolve, reject) => {
-    producer = spawn(controlPath, ["serve"], { stdio: ["pipe", "pipe", "inherit"] });
+    producer = spawn(controlPath, ["serve", "portrait"], { stdio: ["pipe", "pipe", "inherit"] });
     producer.once("error", reject);
     producer.stdout.once("data", (data) => data[0] === 1
       ? resolve()
@@ -81,16 +81,17 @@ async function main() {
     };
     const defaultCapture = await open({ deviceId: { exact: camera.deviceId } });
     const exactCapture = await open({
-      deviceId: { exact: camera.deviceId }, width: { exact: 640 }, height: { exact: 480 },
+      deviceId: { exact: camera.deviceId }, width: { exact: 480 }, height: { exact: 640 },
     });
     return { label: camera.label, defaultCapture, exactCapture };
   })()`);
   console.log(JSON.stringify(result));
   if (result.label !== "Cam Player Camera"
       || !result.defaultCapture?.video?.every((dimension) => dimension > 0)
-      || result.exactCapture?.settings?.width !== 640
-      || result.exactCapture?.settings?.height !== 480
-      || result.exactCapture?.video?.[0] !== 640 || result.exactCapture?.video?.[1] !== 480) {
+      || result.defaultCapture.video[1] <= result.defaultCapture.video[0]
+      || result.exactCapture?.settings?.width !== 480
+      || result.exactCapture?.settings?.height !== 640
+      || result.exactCapture?.video?.[0] !== 480 || result.exactCapture?.video?.[1] !== 640) {
     throw new Error("Chromium did not open the requested virtual camera format");
   }
   window.destroy();

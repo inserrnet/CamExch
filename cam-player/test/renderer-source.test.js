@@ -178,6 +178,11 @@ test("publishes the final composition to a separately controlled Windows camera"
   assert.match(nativeFilter, /MEDIASUBTYPE_RGB24/);
   assert.doesNotMatch(nativeFilter, /MEDIASUBTYPE_RGB32/);
   assert.match(nativeFilter, /\(\(width_ \* 3\) \+ 3\) & ~3L/);
+  assert.match(indexHtml, /id="virtualCameraOrientationSelect"/);
+  assert.match(renderer, /startVirtualCamera\(virtualCameraOrientationSelect\.value\)/);
+  assert.match(renderer, /virtualCameraRunningValue\.classList\.toggle\("is-running"/);
+  assert.match(nativeFilter, /kOrientationPortrait/);
+  assert.match(nativeFilter, /VFW_E_TYPE_NOT_ACCEPTED/);
 });
 
 test("provides exact inverse 90 degree source rotations", () => {

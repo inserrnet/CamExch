@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const test = require("node:test");
 
-const { executablePath, filterPath } = require("../lib/virtual-camera-manager");
+const { executablePath, filterPath, normalizeOrientation } = require("../lib/virtual-camera-manager");
 
 test("resolves development virtual camera components together", () => {
   const app = { isPackaged: false };
@@ -21,4 +21,11 @@ test("resolves packaged components outside the asar archive", () => {
   } finally {
     Object.defineProperty(process, "resourcesPath", { value: previous, configurable: true });
   }
+});
+
+test("normalizes virtual camera orientation", () => {
+  assert.equal(normalizeOrientation("portrait"), "portrait");
+  assert.equal(normalizeOrientation("landscape"), "landscape");
+  assert.equal(normalizeOrientation("follow"), "follow");
+  assert.equal(normalizeOrientation("unexpected"), "portrait");
 });
