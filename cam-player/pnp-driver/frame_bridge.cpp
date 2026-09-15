@@ -14,12 +14,22 @@ PDRIVER_UNLOAD g_KsUnload = nullptr;
 PDRIVER_DISPATCH g_KsCreate = nullptr;
 PDRIVER_DISPATCH g_KsClose = nullptr;
 PDRIVER_DISPATCH g_KsWrite = nullptr;
-KSPIN_LOCK g_FrameLock;
+EX_PUSH_LOCK g_FrameLock;
 PUCHAR g_Frame = nullptr;
 ULONG g_FrameCapacity = 0;
 ULONG g_FrameWidth = 0;
 ULONG g_FrameHeight = 0;
 ULONG g_FrameStride = 0;
+
+void AcquireFrameLock() {
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&g_FrameLock);
+}
+
+void ReleaseFrameLock() {
+    ExReleasePushLockExclusive(&g_FrameLock);
+    KeLeaveCriticalRegion();
+}
 
 NTSTATUS Complete(_In_ PIRP Irp, _In_ NTSTATUS Status, _In_ ULONG_PTR Information = 0) {
     Irp->IoStatus.Status = Status;
@@ -75,8 +85,7 @@ NTSTATUS ControlWrite(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIRP Irp) {
         if (!replacement) return Complete(Irp, STATUS_INSUFFICIENT_RESOURCES);
     }
 
-    KIRQL oldIrql;
-    KeAcquireSpinLock(&g_FrameLock, &oldIrql);
+    AcquireFrameLock();
     PUCHAR retired = nullptr;
     if (replacement) {
         retired = g_Frame;
@@ -87,7 +96,7 @@ NTSTATUS ControlWrite(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIRP Irp) {
     g_FrameWidth = packet->Width;
     g_FrameHeight = packet->Height;
     g_FrameStride = packet->Stride;
-    KeReleaseSpinLock(&g_FrameLock, oldIrql);
+    ReleaseFrameLock();
     if (retired) ExFreePool(retired);
     return Complete(Irp, STATUS_SUCCESS, length);
 }
@@ -100,7 +109,7 @@ void ControlUnload(_In_ PDRIVER_OBJECT DriverObject) {
 } // namespace
 
 NTSTATUS CamPlayerFrameBridgeInitialize(_In_ PDRIVER_OBJECT DriverObject) {
-    KeInitializeSpinLock(&g_FrameLock);
+    ExInitializePushLock(&g_FrameLock);
     UNICODE_STRING deviceName;
     UNICODE_STRING symbolicName;
     UNICODE_STRING sddl;
@@ -153,10 +162,9 @@ BOOLEAN CamPlayerCopyFrame(PUCHAR destination, ULONG destinationBytes, LONG widt
     const ULONG outWidth = static_cast<ULONG>(width);
     const ULONG outHeight = static_cast<ULONG>(height < 0 ? -height : height);
     if (!destination || !outWidth || !outHeight) return FALSE;
-    KIRQL oldIrql;
-    KeAcquireSpinLock(&g_FrameLock, &oldIrql);
+    AcquireFrameLock();
     if (!g_Frame || !g_FrameWidth || !g_FrameHeight) {
-        KeReleaseSpinLock(&g_FrameLock, oldIrql);
+        ReleaseFrameLock();
         RtlZeroMemory(destination, destinationBytes);
         return FALSE;
     }
@@ -164,7 +172,7 @@ BOOLEAN CamPlayerCopyFrame(PUCHAR destination, ULONG destinationBytes, LONG widt
     if (bitsPerPixel == 24 && compression == KS_BI_RGB) {
         const ULONG rowBytes = ((outWidth * 3 + 3) / 4) * 4;
         if (static_cast<ULONGLONG>(rowBytes) * outHeight > destinationBytes) {
-            KeReleaseSpinLock(&g_FrameLock, oldIrql);
+            ReleaseFrameLock();
             return FALSE;
         }
         for (ULONG y = 0; y < outHeight; ++y) {
@@ -184,7 +192,7 @@ BOOLEAN CamPlayerCopyFrame(PUCHAR destination, ULONG destinationBytes, LONG widt
     } else if (bitsPerPixel == 16 && compression == FOURCC_YUV422) {
         const ULONG rowBytes = outWidth * 2;
         if (static_cast<ULONGLONG>(rowBytes) * outHeight > destinationBytes) {
-            KeReleaseSpinLock(&g_FrameLock, oldIrql);
+            ReleaseFrameLock();
             return FALSE;
         }
         for (ULONG y = 0; y < outHeight; ++y) {
@@ -208,11 +216,10 @@ BOOLEAN CamPlayerCopyFrame(PUCHAR destination, ULONG destinationBytes, LONG widt
             }
         }
     } else {
-        KeReleaseSpinLock(&g_FrameLock, oldIrql);
+        ReleaseFrameLock();
         RtlZeroMemory(destination, destinationBytes);
         return FALSE;
     }
-    KeReleaseSpinLock(&g_FrameLock, oldIrql);
+    ReleaseFrameLock();
     return TRUE;
 }
-
