@@ -822,7 +822,7 @@ CaptureFilterDescriptor = {
     &CaptureFilterDispatch,                 // Dispatch Table
     NULL,                                   // Automation Table
     KSFILTER_DESCRIPTOR_VERSION,            // Version
-    KSFILTER_FLAG_DISPATCH_LEVEL_PROCESSING,// Flags
+    0,                                      // Flags (process at PASSIVE_LEVEL)
     &KSNAME_Filter,                         // Reference GUID
     DEFINE_KSFILTER_PIN_DESCRIPTORS (CaptureFilterPinDescriptors),
     DEFINE_KSFILTER_CATEGORIES (CaptureFilterCategories),
