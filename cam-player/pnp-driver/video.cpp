@@ -1210,7 +1210,7 @@ FormatRGB24Bpp_Capture = {
         333667,         // MinFrameInterval, 100 nS units
         640000000,      // MaxFrameInterval, 100 nS units
         8 * 3 * 30 * 160 * 120,  // MinBitsPerSecond;
-        0xffffffff      // MaxBitsPerSecond;
+        0x7fffffffL     // MaxBitsPerSecond;
     }, 
         
     //
@@ -1297,7 +1297,7 @@ FormatUYU2_Capture = {
         333667,         // MinFrameInterval, 100 nS units
         640000000,      // MaxFrameInterval, 100 nS units
         8 * 2 * 30 * 160 * 120,  // MinBitsPerSecond;
-        0xffffffff      // MaxBitsPerSecond;
+        0x7fffffffL     // MaxBitsPerSecond;
     }, 
         
     //
