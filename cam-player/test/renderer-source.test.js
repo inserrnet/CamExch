@@ -174,6 +174,8 @@ test("publishes the final composition to a separately controlled Windows camera"
   assert.match(renderer, /virtualCameraFramePending/);
   assert.match(renderer, /publishVirtualCameraFrame\(frame\.clone\(\)/);
   assert.match(manager, /if \(this\.pendingAcknowledgement\) return Promise\.resolve\(false\)/);
+  assert.match(manager, /const child = this\.process/);
+  assert.doesNotMatch(manager, /this\.process\.stdin\.write/);
   assert.match(manager, /app\.asar\.unpacked/);
   assert.match(nativeFilter, /MEDIASUBTYPE_RGB24/);
   assert.doesNotMatch(nativeFilter, /MEDIASUBTYPE_RGB32/);
@@ -183,6 +185,21 @@ test("publishes the final composition to a separately controlled Windows camera"
   assert.match(renderer, /virtualCameraRunningValue\.classList\.toggle\("is-running"/);
   assert.match(nativeFilter, /kOrientationPortrait/);
   assert.match(nativeFilter, /VFW_E_TYPE_NOT_ACCEPTED/);
+});
+
+test("provides a verified emulator camera isolation mode in the virtual camera tab", () => {
+  const helper = fs.readFileSync(
+    path.join(__dirname, "..", "native", "scripts", "emulator-camera-mode.ps1"),
+    "utf8",
+  );
+  assert.match(indexHtml, /id="emulatorCameraModeStatus"/);
+  assert.match(indexHtml, /id="emulatorCameraModeButton"/);
+  assert.match(preload, /activateEmulatorCameraMode/);
+  assert.match(renderer, /Close camera consumers|emulatorCameraModeMessage/);
+  assert.match(helper, /Get-ActiveCameraConsumers/);
+  assert.match(helper, /Test-Isolation/);
+  assert.match(helper, /ProblemCode/);
+  assert.match(helper, /Restore-Manifest/);
 });
 
 test("provides exact inverse 90 degree source rotations", () => {

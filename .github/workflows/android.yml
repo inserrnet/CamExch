@@ -57,7 +57,7 @@ jobs:
             camera-diagnostics/build/outputs/apk/debug/*.apk
 
   cam-player:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     defaults:
       run:
@@ -103,6 +103,25 @@ jobs:
             -DBASECLASSES_DIR="$env:GITHUB_WORKSPACE/windows-classic-samples/Samples/Win7Samples/multimedia/directshow/baseclasses"
           cmake --build native/build --config Release --parallel
           cmake --install native/build --config Release --prefix native/bin/x64
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build PnP camera driver
+        shell: pwsh
+        run: |
+          msbuild pnp-driver\avssamp.vcxproj /restore /m `
+            /p:Configuration=Release /p:Platform=x64 /p:SignMode=TestSign
+          if ($LASTEXITCODE -ne 0) { throw "PnP camera driver build failed" }
+          $package = "native/bin/x64/pnp"
+          New-Item -ItemType Directory -Force $package | Out-Null
+          foreach ($name in @("CamPlayerPnpCamera.sys", "CamPlayerPnpCamera.inf", "CamPlayerPnpCamera.cat")) {
+            $file = Get-ChildItem pnp-driver -Recurse -File -Filter $name | Select-Object -First 1
+            if (-not $file) { throw "PnP camera package is missing $name" }
+            Copy-Item $file.FullName (Join-Path $package $name) -Force
+          }
+          $certificate = Get-ChildItem pnp-driver -Recurse -File -Filter *.cer | Select-Object -First 1
+          if ($certificate) { Copy-Item $certificate.FullName (Join-Path $package "CamPlayerPnpCamera.cer") -Force }
 
       - name: Test Windows virtual camera
         run: |

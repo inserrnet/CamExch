@@ -1,5 +1,9 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <devguid.h>
+#include <newdev.h>
+#include <setupapi.h>
+#include <wincrypt.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -16,6 +20,9 @@ namespace fs = std::filesystem;
 namespace {
 
 using RegistrationFunction = HRESULT(WINAPI*)();
+
+inline constexpr wchar_t kPnpHardwareId[] = L"SW\\{40FA78A5-9F4D-4D81-80BB-E8ED5939A0E1}\0";
+inline constexpr wchar_t kPnpControlPath[] = L"\\\\.\\CamPlayerPnpCamera";
 
 std::string Utf8(const std::wstring& value) {
   if (value.empty()) return {};
@@ -93,6 +100,149 @@ fs::path InstallDirectory() {
 
 fs::path InstalledDll() { return InstallDirectory() / L"CamPlayerVirtualCamera.dll"; }
 
+fs::path PnpInstallDirectory() {
+  wchar_t program_files[MAX_PATH] = {};
+  ExpandEnvironmentStringsW(L"%ProgramFiles%", program_files, ARRAYSIZE(program_files));
+  return fs::path(program_files) / L"Cam Player PnP Camera";
+}
+
+fs::path InstalledPnpInf() { return PnpInstallDirectory() / L"CamPlayerPnpCamera.inf"; }
+
+bool DeviceHasHardwareId(HDEVINFO devices, SP_DEVINFO_DATA* device) {
+  wchar_t ids[512] = {};
+  DWORD type = 0;
+  if (!SetupDiGetDeviceRegistryPropertyW(devices, device, SPDRP_HARDWAREID, &type,
+      reinterpret_cast<PBYTE>(ids), sizeof(ids), nullptr)) return false;
+  for (const wchar_t* id = ids; *id; id += wcslen(id) + 1) {
+    if (_wcsicmp(id, kPnpHardwareId) == 0) return true;
+  }
+  return false;
+}
+
+bool FindPnpDevice(HDEVINFO* result_set = nullptr, SP_DEVINFO_DATA* result_device = nullptr) {
+  HDEVINFO devices = SetupDiGetClassDevsW(&GUID_DEVCLASS_CAMERA, nullptr, nullptr, DIGCF_PRESENT);
+  if (devices == INVALID_HANDLE_VALUE) return false;
+  SP_DEVINFO_DATA device = {sizeof(device)};
+  bool found = false;
+  for (DWORD index = 0; SetupDiEnumDeviceInfo(devices, index, &device); ++index) {
+    if (DeviceHasHardwareId(devices, &device)) { found = true; break; }
+  }
+  if (!found) {
+    SetupDiDestroyDeviceInfoList(devices);
+    return false;
+  }
+  if (result_set) *result_set = devices;
+  if (result_device) *result_device = device;
+  if (!result_set) SetupDiDestroyDeviceInfoList(devices);
+  return true;
+}
+
+bool SetPnpFriendlyName(const std::wstring& name) {
+  HDEVINFO devices = INVALID_HANDLE_VALUE;
+  SP_DEVINFO_DATA device = {sizeof(device)};
+  if (!FindPnpDevice(&devices, &device)) return false;
+  const auto value = name.empty() ? std::wstring(kDefaultCameraName) : name.substr(0, 120);
+  const BOOL okay = SetupDiSetDeviceRegistryPropertyW(devices, &device, SPDRP_FRIENDLYNAME,
+      reinterpret_cast<const BYTE*>(value.c_str()),
+      static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
+  SetupDiDestroyDeviceInfoList(devices);
+  return okay == TRUE;
+}
+
+bool CopyPnpPackage(const fs::path& source_inf) {
+  std::error_code error;
+  fs::create_directories(PnpInstallDirectory(), error);
+  if (error) return false;
+  const fs::path source_directory = source_inf.parent_path();
+  for (const wchar_t* file : {L"CamPlayerPnpCamera.inf", L"CamPlayerPnpCamera.sys",
+                              L"CamPlayerPnpCamera.cat"}) {
+    fs::copy_file(source_directory / file, PnpInstallDirectory() / file,
+                  fs::copy_options::overwrite_existing, error);
+    if (error) return false;
+  }
+  const fs::path certificate = source_directory / L"CamPlayerPnpCamera.cer";
+  if (fs::exists(certificate)) {
+    fs::copy_file(certificate, PnpInstallDirectory() / certificate.filename(),
+                  fs::copy_options::overwrite_existing, error);
+    if (error) return false;
+  }
+  return true;
+}
+
+bool TrustPnpTestCertificate() {
+  const fs::path path = PnpInstallDirectory() / L"CamPlayerPnpCamera.cer";
+  if (!fs::exists(path)) return true;
+  PCCERT_CONTEXT certificate = nullptr;
+  DWORD encoding = 0;
+  DWORD content = 0;
+  DWORD format = 0;
+  if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, path.c_str(), CERT_QUERY_CONTENT_FLAG_CERT,
+      CERT_QUERY_FORMAT_FLAG_ALL, 0, &encoding, &content, &format, nullptr, nullptr,
+      reinterpret_cast<const void**>(&certificate))) return false;
+  bool okay = true;
+  for (const wchar_t* store_name : {L"ROOT", L"TrustedPublisher"}) {
+    HCERTSTORE store = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
+        CERT_SYSTEM_STORE_LOCAL_MACHINE, store_name);
+    if (!store || !CertAddCertificateContextToStore(
+        store, certificate, CERT_STORE_ADD_REPLACE_EXISTING, nullptr)) okay = false;
+    if (store) CertCloseStore(store, 0);
+  }
+  CertFreeCertificateContext(certificate);
+  return okay;
+}
+
+bool InstallPnpDevice(const fs::path& source_inf, const std::wstring& name, bool* reboot) {
+  if (!CopyPnpPackage(source_inf)) return false;
+  if (!TrustPnpTestCertificate()) return false;
+  BOOL needs_reboot = FALSE;
+  if (!DiInstallDriverW(nullptr, InstalledPnpInf().c_str(), DIIRFLAG_FORCE_INF, &needs_reboot)) {
+    return false;
+  }
+  if (!FindPnpDevice()) {
+    HDEVINFO devices = SetupDiCreateDeviceInfoList(&GUID_DEVCLASS_CAMERA, nullptr);
+    if (devices == INVALID_HANDLE_VALUE) return false;
+    SP_DEVINFO_DATA device = {sizeof(device)};
+    bool okay = SetupDiCreateDeviceInfoW(devices, L"CamPlayerPnpCamera", &GUID_DEVCLASS_CAMERA,
+        L"Cam Player PnP Camera", nullptr, DICD_GENERATE_ID, &device) == TRUE;
+    const DWORD hardware_bytes = static_cast<DWORD>((wcslen(kPnpHardwareId) + 2) * sizeof(wchar_t));
+    if (okay) okay = SetupDiSetDeviceRegistryPropertyW(devices, &device, SPDRP_HARDWAREID,
+        reinterpret_cast<const BYTE*>(kPnpHardwareId), hardware_bytes) == TRUE;
+    if (okay) okay = SetupDiCallClassInstaller(DIF_REGISTERDEVICE, devices, &device) == TRUE;
+    SetupDiDestroyDeviceInfoList(devices);
+    if (!okay) return false;
+    if (!UpdateDriverForPlugAndPlayDevicesW(nullptr, kPnpHardwareId,
+        InstalledPnpInf().c_str(), INSTALLFLAG_FORCE, &needs_reboot)) return false;
+  }
+  if (!SetPnpFriendlyName(name)) return false;
+  if (reboot) *reboot = needs_reboot == TRUE;
+  return true;
+}
+
+bool RemovePnpDevice(bool* reboot) {
+  HDEVINFO devices = INVALID_HANDLE_VALUE;
+  SP_DEVINFO_DATA device = {sizeof(device)};
+  BOOL needs_reboot = FALSE;
+  if (FindPnpDevice(&devices, &device)) {
+    SP_REMOVEDEVICE_PARAMS parameters = {};
+    parameters.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
+    parameters.ClassInstallHeader.InstallFunction = DIF_REMOVE;
+    parameters.Scope = DI_REMOVEDEVICE_GLOBAL;
+    if (!SetupDiSetClassInstallParamsW(devices, &device, &parameters.ClassInstallHeader,
+        sizeof(parameters)) || !SetupDiCallClassInstaller(DIF_REMOVE, devices, &device)) {
+      SetupDiDestroyDeviceInfoList(devices);
+      return false;
+    }
+    SetupDiDestroyDeviceInfoList(devices);
+  }
+  if (fs::exists(InstalledPnpInf())) {
+    DiUninstallDriverW(nullptr, InstalledPnpInf().c_str(), 0, &needs_reboot);
+  }
+  std::error_code error;
+  fs::remove_all(PnpInstallDirectory(), error);
+  if (reboot) *reboot = needs_reboot == TRUE;
+  return true;
+}
+
 std::wstring ReadName() {
   wchar_t value[128] = {};
   DWORD bytes = sizeof(value);
@@ -149,6 +299,23 @@ int Mutate(const std::vector<std::wstring>& arguments) {
     RegDeleteTreeW(HKEY_LOCAL_MACHINE, kRegistryPath);
     return 0;
   }
+  if (command == L"install-pnp") {
+    if (arguments.size() < 3) return 2;
+    bool reboot = false;
+    if (!InstallPnpDevice(arguments[1], arguments[2], &reboot)) return 5;
+    Print(std::string("{\"rebootRequired\":") + (reboot ? "true" : "false") + "}\n");
+    return 0;
+  }
+  if (command == L"rename-pnp") {
+    if (arguments.size() < 2 || !SetPnpFriendlyName(arguments[1])) return 5;
+    return 0;
+  }
+  if (command == L"uninstall-pnp") {
+    bool reboot = false;
+    if (!RemovePnpDevice(&reboot)) return 5;
+    Print(std::string("{\"rebootRequired\":") + (reboot ? "true" : "false") + "}\n");
+    return 0;
+  }
   return 2;
 }
 
@@ -194,6 +361,8 @@ int Serve(long orientation) {
   HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
   HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
   std::vector<BYTE> pixels;
+  std::vector<BYTE> pnp_packet;
+  HANDLE pnp = INVALID_HANDLE_VALUE;
   while (true) {
     PacketHeader packet = {};
     if (!ReadExact(input, &packet, sizeof(packet))) break;
@@ -202,6 +371,21 @@ int Serve(long orientation) {
         || packet.stride < packet.width * 4 || packet.bytes != packet.stride * packet.height) break;
     pixels.resize(packet.bytes);
     if (!ReadExact(input, pixels.data(), packet.bytes)) break;
+    if (pnp == INVALID_HANDLE_VALUE) {
+      pnp = CreateFileW(kPnpControlPath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+          nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+    if (pnp != INVALID_HANDLE_VALUE) {
+      pnp_packet.resize(sizeof(packet) + pixels.size());
+      std::memcpy(pnp_packet.data(), &packet, sizeof(packet));
+      std::memcpy(pnp_packet.data() + sizeof(packet), pixels.data(), pixels.size());
+      DWORD pnp_written = 0;
+      if (!WriteFile(pnp, pnp_packet.data(), static_cast<DWORD>(pnp_packet.size()),
+                     &pnp_written, nullptr)) {
+        CloseHandle(pnp);
+        pnp = INVALID_HANDLE_VALUE;
+      }
+    }
     if (!frame || capacity < packet.bytes) {
       if (frame) UnmapViewOfFile(frame);
       if (frame_mapping) CloseHandle(frame_mapping);
@@ -243,6 +427,7 @@ int Serve(long orientation) {
     WriteFile(output, &acknowledgement, 1, &written, nullptr);
   }
   control->producer_pid = 0;
+  if (pnp != INVALID_HANDLE_VALUE) CloseHandle(pnp);
   if (frame) UnmapViewOfFile(frame);
   if (frame_mapping) CloseHandle(frame_mapping);
   UnmapViewOfFile(control);
@@ -268,7 +453,14 @@ int Status() {
     }
     CloseHandle(mapping);
   }
+  const bool pnp_installed = FindPnpDevice();
+  HANDLE pnp = CreateFileW(kPnpControlPath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  const bool pnp_ready = pnp != INVALID_HANDLE_VALUE;
+  if (pnp_ready) CloseHandle(pnp);
   Print("{\"installed\":" + std::string(installed ? "true" : "false")
+      + ",\"pnpInstalled\":" + (pnp_installed ? "true" : "false")
+      + ",\"pnpReady\":" + (pnp_ready ? "true" : "false")
       + ",\"name\":\"" + JsonEscape(ReadName()) + "\",\"running\":"
       + (producer ? "true" : "false") + ",\"consumers\":" + std::to_string(consumers)
       + ",\"width\":" + std::to_string(width) + ",\"height\":"

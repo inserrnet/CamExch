@@ -524,6 +524,33 @@ dd {
   font-weight: 600;
 }
 
+.emulator-mode-status {
+  display: inline-flex;
+  min-width: 92px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  margin: 4px 0 2px;
+  border: 1px solid #596069;
+  border-radius: 4px;
+  color: #d8dce0;
+  background: #343940;
+  font-weight: 700;
+}
+
+.emulator-mode-status.is-active {
+  border-color: #36a269;
+  color: #fff;
+  background: #25794e;
+}
+
+.emulator-mode-status.is-waiting,
+.emulator-mode-status.is-incomplete {
+  border-color: #d3a52e;
+  color: #fff;
+  background: #876a1f;
+}
+
 .mono {
   font-family: Consolas, monospace;
   font-size: 12px;

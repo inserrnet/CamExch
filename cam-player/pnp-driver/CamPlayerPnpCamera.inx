@@ -1,0 +1,71 @@
+; Copyright (c) Microsoft Corporation.  All rights reserved.
+;
+; avssamp.INF -- This file contains installation information for the filter-based
+;                AVStream sample driver avssamp.sys
+;
+; Note:
+;
+;     This INF expects the following hierarchy in the installation folder:
+;
+;     \
+;         avssamp.inf
+;         avssamp.sys
+;
+
+[Version]
+Signature="$Windows NT$"
+Class=Camera
+ClassGuid={ca3e7ab9-b4c3-4ae6-8251-579ef933890f}
+Provider=%ProviderName%
+CatalogFile=CamPlayerPnpCamera.cat
+DriverVer=09/15/2026,0.1.0.0
+PnpLockdown=1
+
+[SourceDisksNames]
+1000 = %cdname%,,,
+
+[SourceDisksFiles]
+CamPlayerPnpCamera.sys = 1000
+
+[ControlFlags]
+ExcludeFromSelect=*
+
+[DestinationDirs]
+CamPlayerPnpCamera.CopyFiles=13
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$.10.0...16299
+
+[Standard.NT$ARCH$.10.0...16299]
+%CamPlayerPnpCamera.DeviceDesc%=CamPlayerPnpCamera,SW\{40FA78A5-9F4D-4D81-80BB-E8ED5939A0E1}
+
+[CamPlayerPnpCamera.NT]
+include=ks.inf,kscaptur.inf
+needs=KS.Registration,KSCAPTUR.Registration.NT
+CopyFiles=CamPlayerPnpCamera.CopyFiles
+
+[CamPlayerPnpCamera.CopyFiles]
+CamPlayerPnpCamera.sys
+
+[CamPlayerPnpCamera.NT.Services]
+AddService=CamPlayerPnpCamera, 0x00000002, CamPlayerPnpCamera.ServiceInstall
+
+[CamPlayerPnpCamera.ServiceInstall]
+DisplayName=%CamPlayerPnpCamera.DeviceDesc%
+ServiceType=%SERVICE_KERNEL_DRIVER%
+StartType=%SERVICE_DEMAND_START%
+ErrorControl=%SERVICE_ERROR_NORMAL%
+ServiceBinary=%13%\CamPlayerPnpCamera.sys
+
+[Strings]
+SERVICE_KERNEL_DRIVER=1
+SERVICE_DEMAND_START=3
+SERVICE_ERROR_NORMAL=1
+
+;localizable
+ProviderName="Cam Player"
+ManufacturerName="Cam Player"
+CamPlayerPnpCamera.DeviceDesc="Cam Player PnP Camera"
+
+cdname="Disk 1"
+

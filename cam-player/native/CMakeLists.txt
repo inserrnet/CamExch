@@ -39,7 +39,8 @@ set_target_properties(CamPlayerVirtualCamera PROPERTIES
 
 add_executable(CamPlayerVirtualCameraControl src/virtual_camera_control.cpp)
 target_include_directories(CamPlayerVirtualCameraControl PRIVATE include)
-target_link_libraries(CamPlayerVirtualCameraControl PRIVATE advapi32 ole32 shell32)
+target_link_libraries(CamPlayerVirtualCameraControl PRIVATE
+  advapi32 cfgmgr32 crypt32 newdev ole32 setupapi shell32)
 
 install(TARGETS CamPlayerVirtualCamera CamPlayerVirtualCameraControl
   RUNTIME DESTINATION . LIBRARY DESTINATION .)

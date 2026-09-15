@@ -219,7 +219,8 @@
           <h2>Windows virtual camera</h2>
           <div id="virtualCameraNotice" class="status">Checking components</div>
           <dl>
-            <dt>Installation</dt><dd id="virtualCameraInstalledValue">Checking</dd>
+            <dt>DirectShow</dt><dd id="virtualCameraInstalledValue">Checking</dd>
+            <dt>PnP driver</dt><dd id="pnpCameraInstalledValue">Checking</dd>
             <dt>Output</dt><dd id="virtualCameraRunningValue">Stopped</dd>
             <dt>Clients</dt><dd id="virtualCameraConsumersValue">0</dd>
             <dt>Client format</dt><dd id="virtualCameraFormatValue" class="mono">-</dd>
@@ -237,6 +238,13 @@
             <button id="renameVirtualCameraButton" class="command">Rename</button>
             <button id="uninstallVirtualCameraButton" class="command">Uninstall</button>
           </div>
+          <h3>PnP camera driver</h3>
+          <p class="hint">Use this backend for Android emulators and programs that require a Windows PnP camera.</p>
+          <div class="button-row">
+            <button id="installPnpCameraButton" class="command">Install PnP</button>
+            <button id="renamePnpCameraButton" class="command">Rename PnP</button>
+            <button id="uninstallPnpCameraButton" class="command">Uninstall PnP</button>
+          </div>
         </section>
         <section class="control-group">
           <h3>Output</h3>
@@ -252,6 +260,13 @@
             <button id="stopVirtualCameraButton" class="command" disabled>Stop</button>
           </div>
           <p class="hint">The Windows camera receives the same final image shown in Preview, including transforms, motion, and camera effects.</p>
+        </section>
+        <section class="control-group">
+          <h3>Emulator camera mode</h3>
+          <div id="emulatorCameraModeStatus" class="emulator-mode-status is-off">OFF</div>
+          <p id="emulatorCameraModeMessage" class="hint">Other cameras are available.</p>
+          <button id="emulatorCameraModeButton" class="command">Activate</button>
+          <p class="hint">Temporarily hides other Windows cameras so an emulator selects Cam Player Camera. Close every program using a camera before changing this mode.</p>
         </section>
       </div>
     </aside>

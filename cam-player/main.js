@@ -21,6 +21,7 @@ const ffmpegStaticPath = require("ffmpeg-static");
 const { decodeQrImage } = require("./lib/qr-decoder");
 const { cropForNormalized } = require("./lib/qr-selection");
 const { validateProfile } = require("./lib/motion-profile");
+const { EmulatorCameraModeManager } = require("./lib/emulator-camera-mode-manager");
 const { VirtualCameraManager } = require("./lib/virtual-camera-manager");
 const {
   isDiscoveryAddress,
@@ -71,6 +72,7 @@ const PROFILE_CONFIG_DIRECTORY = path.join(app.getPath("appData"), "cam-player")
 const PROFILE_CONFIG_PATH = path.join(PROFILE_CONFIG_DIRECTORY, "profile-storage.json");
 let activeMotionProfileDirectory = "";
 let virtualCamera;
+let emulatorCameraMode;
 
 function sourceDeviceId(request) {
   return String(request.headers["x-camexch-device"] || "").trim();
@@ -1012,6 +1014,9 @@ ipcMain.handle("virtual-camera-status", () => virtualCamera.status());
 ipcMain.handle("virtual-camera-install", (_event, name) => virtualCamera.install(name));
 ipcMain.handle("virtual-camera-uninstall", () => virtualCamera.uninstall());
 ipcMain.handle("virtual-camera-rename", (_event, name) => virtualCamera.rename(name));
+ipcMain.handle("virtual-camera-pnp-install", (_event, name) => virtualCamera.installPnp(name));
+ipcMain.handle("virtual-camera-pnp-uninstall", () => virtualCamera.uninstallPnp());
+ipcMain.handle("virtual-camera-pnp-rename", (_event, name) => virtualCamera.renamePnp(name));
 ipcMain.handle("virtual-camera-start", (_event, orientation) => {
   virtualCamera.start(orientation);
   return virtualCamera.status();
@@ -1021,6 +1026,9 @@ ipcMain.handle("virtual-camera-stop", () => {
   return virtualCamera.status();
 });
 ipcMain.handle("virtual-camera-frame", (_event, value) => virtualCamera.sendFrame(value));
+ipcMain.handle("emulator-camera-mode-status", () => emulatorCameraMode.status());
+ipcMain.handle("emulator-camera-mode-activate", () => emulatorCameraMode.activate());
+ipcMain.handle("emulator-camera-mode-deactivate", () => emulatorCameraMode.deactivate());
 ipcMain.on("qr-selection-cancel", (event) => {
   if (!activeQrScan || event.sender !== activeQrScan.window.webContents) return;
   log("QR selection cancelled");
@@ -1070,6 +1078,7 @@ ipcMain.on("source-config-applied", (_event, { id, ...result }) => {
 app.whenReady().then(() => {
   initializeMotionProfileStorage();
   virtualCamera = new VirtualCameraManager(app, log);
+  emulatorCameraMode = new EmulatorCameraModeManager(app, log);
   createWindow();
   createServer();
   log(`Application started version=${VERSION} qualityProfile=${QUALITY_PROFILE} pid=${process.pid} `

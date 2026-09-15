@@ -5,6 +5,7 @@ const path = require("node:path");
 const { app, BrowserWindow, ipcMain } = require("electron");
 
 const artifactPath = path.join(__dirname, "..", "..", ".artifacts", "player-ui-layout.png");
+const virtualCameraArtifactPath = path.join(__dirname, "..", "..", ".artifacts", "player-virtual-camera-ui.png");
 let window;
 let settingsWidth = 682;
 
@@ -23,6 +24,12 @@ ipcMain.handle("virtual-camera-status", () => ({
   consumers: 0,
   width: 0,
   height: 0,
+}));
+ipcMain.handle("emulator-camera-mode-status", () => ({
+  available: true,
+  state: "active",
+  message: "Only Cam Player Camera is available",
+  consumers: [],
 }));
 ipcMain.on("settings-width", (event, value) => {
   if (!window || event.sender !== window.webContents) return;
@@ -122,6 +129,17 @@ app.whenReady().then(async () => {
   }
   fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
   fs.writeFileSync(artifactPath, (await window.webContents.capturePage()).toPNG());
+  await window.webContents.executeJavaScript(`document.getElementById("virtualCameraTabButton").click()`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const emulatorMode = await window.webContents.executeJavaScript(`({
+    state: document.getElementById("emulatorCameraModeStatus").textContent,
+    message: document.getElementById("emulatorCameraModeMessage").textContent,
+    button: document.getElementById("emulatorCameraModeButton").textContent,
+  })`);
+  if (emulatorMode.state !== "ACTIVE" || emulatorMode.button !== "Deactivate") {
+    throw new Error(`Emulator camera mode state is not visible: ${JSON.stringify(emulatorMode)}`);
+  }
+  fs.writeFileSync(virtualCameraArtifactPath, (await window.webContents.capturePage()).toPNG());
   window.maximize();
   await new Promise((resolve) => setTimeout(resolve, 300));
   if (!window.isMaximized()) throw new Error("Native maximize was intercepted");
@@ -133,7 +151,7 @@ app.whenReady().then(async () => {
   if (movedX !== 80 || movedY !== 80) {
     throw new Error(`Player position was overwritten: ${movedX},${movedY}`);
   }
-  process.stdout.write(`${JSON.stringify(metrics)}\n${artifactPath}\n`);
+  process.stdout.write(`${JSON.stringify(metrics)}\n${artifactPath}\n${virtualCameraArtifactPath}\n`);
   window.destroy();
   app.quit();
 }).catch((error) => {

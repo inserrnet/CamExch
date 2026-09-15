@@ -1,6 +1,6 @@
 {
   "name": "cam-player",
-  "version": "0.6.23",
+  "version": "0.6.26",
   "description": "Low-latency LAN media source for CamExch",
   "qualityProfile": "standard",
   "main": "main.js",
@@ -29,7 +29,8 @@
     "asar": true,
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
-      "native/bin/**"
+      "native/bin/**",
+      "native/scripts/**"
     ],
     "files": [
       "main.js",
@@ -39,6 +40,7 @@
       "renderer/**/*",
       "lib/**/*",
       "native/bin/**/*",
+      "native/scripts/**/*",
       "package.json"
     ],
     "win": {

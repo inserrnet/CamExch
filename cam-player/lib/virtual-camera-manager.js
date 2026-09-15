@@ -22,6 +22,16 @@ function filterPath(app) {
   return path.join(path.dirname(executablePath(app)), "CamPlayerVirtualCamera.dll");
 }
 
+function pnpPackagePath(app) {
+  return path.join(path.dirname(executablePath(app)), "pnp", "CamPlayerPnpCamera.inf");
+}
+
+function pnpPackageAvailable(app) {
+  const directory = path.dirname(pnpPackagePath(app));
+  return ["CamPlayerPnpCamera.inf", "CamPlayerPnpCamera.sys", "CamPlayerPnpCamera.cat"]
+    .every((file) => fs.existsSync(path.join(directory, file)));
+}
+
 function run(executable, args) {
   return new Promise((resolve, reject) => {
     execFile(executable, args, { windowsHide: true }, (error, stdout, stderr) => {
@@ -43,9 +53,7 @@ class VirtualCameraManager {
   }
 
   available() {
-    return process.platform === "win32"
-      && fs.existsSync(executablePath(this.app))
-      && fs.existsSync(filterPath(this.app));
+    return process.platform === "win32" && fs.existsSync(executablePath(this.app));
   }
 
   async status() {
@@ -62,7 +70,13 @@ class VirtualCameraManager {
     }
     try {
       const output = await run(executablePath(this.app), ["status"]);
-      return { available: true, ...JSON.parse(output.trim()), running: this.running() };
+      return {
+        available: true,
+        directShowAvailable: fs.existsSync(filterPath(this.app)),
+        pnpAvailable: pnpPackageAvailable(this.app),
+        ...JSON.parse(output.trim()),
+        running: this.running(),
+      };
     } catch (error) {
       this.log(`Virtual camera status failed ${error}`);
       return { available: true, installed: false, running: this.running(), error: error.message };
@@ -74,6 +88,34 @@ class VirtualCameraManager {
     await run(executablePath(this.app), ["install", filterPath(this.app), String(name || "Cam Player Camera")]);
     this.log(`Virtual camera installed name=${String(name || "Cam Player Camera")}`);
     return this.status();
+  }
+
+  async installPnp(name) {
+    this.stop("PnP install requested");
+    if (!pnpPackageAvailable(this.app)) {
+      throw new Error("PnP camera driver components are not included in this build");
+    }
+    const output = await run(executablePath(this.app), [
+      "install-pnp", pnpPackagePath(this.app), String(name || "Cam Player Camera"),
+    ]);
+    const result = output.trim() ? JSON.parse(output.trim()) : {};
+    this.log(`PnP virtual camera installed name=${String(name || "Cam Player Camera")}`);
+    return { ...(await this.status()), ...result };
+  }
+
+  async renamePnp(name) {
+    this.stop("PnP rename requested");
+    await run(executablePath(this.app), ["rename-pnp", String(name || "Cam Player Camera")]);
+    this.log(`PnP virtual camera renamed name=${String(name || "Cam Player Camera")}`);
+    return this.status();
+  }
+
+  async uninstallPnp() {
+    this.stop("PnP uninstall requested");
+    const output = await run(executablePath(this.app), ["uninstall-pnp"]);
+    const result = output.trim() ? JSON.parse(output.trim()) : {};
+    this.log("PnP virtual camera uninstalled");
+    return { ...(await this.status()), ...result };
   }
 
   async rename(name) {
@@ -136,6 +178,10 @@ class VirtualCameraManager {
   sendFrame(value) {
     if (!this.running()) return Promise.resolve(false);
     if (this.pendingAcknowledgement) return Promise.resolve(false);
+    const child = this.process;
+    if (!child?.stdin || child.stdin.destroyed || child.stdin.writableEnded) {
+      return Promise.resolve(false);
+    }
     const pixels = Buffer.from(value?.pixels || []);
     const width = Number(value?.width) >>> 0;
     const height = Number(value?.height) >>> 0;
@@ -152,21 +198,36 @@ class VirtualCameraManager {
     header.writeUInt32LE(pixels.length, 20);
     header.writeBigUInt64LE(BigInt(Math.max(0, Math.round(Number(value.timestampUs) || 0))), 24);
     return new Promise((resolve, reject) => {
-      this.pendingAcknowledgement = { resolve, reject };
-      this.process.stdin.write(header, (headerError) => {
+      const acknowledgement = { resolve, reject };
+      const rejectCurrent = (error) => {
+        if (this.pendingAcknowledgement !== acknowledgement) return;
+        this.pendingAcknowledgement = null;
+        reject(error);
+      };
+      this.pendingAcknowledgement = acknowledgement;
+      child.stdin.write(header, (headerError) => {
         if (headerError) {
-          this.pendingAcknowledgement = null;
-          reject(headerError);
+          rejectCurrent(headerError);
           return;
         }
-        this.process.stdin.write(pixels, (pixelsError) => {
+        if (this.process !== child || child.stdin.destroyed || child.stdin.writableEnded) {
+          rejectCurrent(new Error("Virtual camera stopped"));
+          return;
+        }
+        child.stdin.write(pixels, (pixelsError) => {
           if (!pixelsError) return;
-          this.pendingAcknowledgement = null;
-          reject(pixelsError);
+          rejectCurrent(pixelsError);
         });
       });
     });
   }
 }
 
-module.exports = { VirtualCameraManager, executablePath, filterPath, normalizeOrientation };
+module.exports = {
+  VirtualCameraManager,
+  executablePath,
+  filterPath,
+  pnpPackagePath,
+  pnpPackageAvailable,
+  normalizeOrientation,
+};

@@ -86,6 +86,7 @@ const playerSettingsPanel = document.getElementById("playerSettingsPanel");
 const virtualCameraPanel = document.getElementById("virtualCameraPanel");
 const virtualCameraNotice = document.getElementById("virtualCameraNotice");
 const virtualCameraInstalledValue = document.getElementById("virtualCameraInstalledValue");
+const pnpCameraInstalledValue = document.getElementById("pnpCameraInstalledValue");
 const virtualCameraRunningValue = document.getElementById("virtualCameraRunningValue");
 const virtualCameraConsumersValue = document.getElementById("virtualCameraConsumersValue");
 const virtualCameraFormatValue = document.getElementById("virtualCameraFormatValue");
@@ -94,8 +95,14 @@ const virtualCameraOrientationSelect = document.getElementById("virtualCameraOri
 const installVirtualCameraButton = document.getElementById("installVirtualCameraButton");
 const renameVirtualCameraButton = document.getElementById("renameVirtualCameraButton");
 const uninstallVirtualCameraButton = document.getElementById("uninstallVirtualCameraButton");
+const installPnpCameraButton = document.getElementById("installPnpCameraButton");
+const renamePnpCameraButton = document.getElementById("renamePnpCameraButton");
+const uninstallPnpCameraButton = document.getElementById("uninstallPnpCameraButton");
 const startVirtualCameraButton = document.getElementById("startVirtualCameraButton");
 const stopVirtualCameraButton = document.getElementById("stopVirtualCameraButton");
+const emulatorCameraModeStatus = document.getElementById("emulatorCameraModeStatus");
+const emulatorCameraModeMessage = document.getElementById("emulatorCameraModeMessage");
+const emulatorCameraModeButton = document.getElementById("emulatorCameraModeButton");
 let toastTimer = null;
 
 function showToast(message) {
@@ -2985,14 +2992,55 @@ function selectSettingsView(view, persist = true) {
   playerSettingsPanel.hidden = virtual;
   virtualCameraPanel.hidden = !virtual;
   window.camPlayer.setSettingsWidth(settingsViewWidth());
+  if (virtual) refreshEmulatorCameraModeStatus();
   if (persist) savePreferences();
 }
+
+function applyEmulatorCameraModeStatus(status = {}) {
+  const state = ["active", "waiting", "incomplete"].includes(status.state) ? status.state : "off";
+  const labels = { active: "ACTIVE", waiting: "WAITING", incomplete: "INCOMPLETE", off: "OFF" };
+  emulatorCameraModeStatus.textContent = labels[state];
+  emulatorCameraModeStatus.className = `emulator-mode-status is-${state}`;
+  emulatorCameraModeMessage.textContent = status.message || "Other cameras are available.";
+  emulatorCameraModeButton.textContent = state === "active" || state === "incomplete" ? "Deactivate" : "Activate";
+  emulatorCameraModeButton.dataset.action = state === "active" || state === "incomplete" ? "deactivate" : "activate";
+  emulatorCameraModeButton.disabled = status.available === false;
+}
+
+async function refreshEmulatorCameraModeStatus() {
+  try {
+    applyEmulatorCameraModeStatus(await window.camPlayer.emulatorCameraModeStatus());
+  } catch (error) {
+    applyEmulatorCameraModeStatus({ state: "incomplete", message: error.message || String(error) });
+  }
+}
+
+emulatorCameraModeButton.addEventListener("click", async () => {
+  const action = emulatorCameraModeButton.dataset.action || "activate";
+  emulatorCameraModeButton.disabled = true;
+  emulatorCameraModeMessage.textContent = action === "activate"
+    ? "Checking camera consumers..." : "Checking camera consumers before restore...";
+  try {
+    const status = action === "activate"
+      ? await window.camPlayer.activateEmulatorCameraMode()
+      : await window.camPlayer.deactivateEmulatorCameraMode();
+    applyEmulatorCameraModeStatus(status);
+  } catch (error) {
+    applyEmulatorCameraModeStatus({ state: "incomplete", message: error.message || String(error) });
+  } finally {
+    emulatorCameraModeButton.blur();
+  }
+});
 
 function applyVirtualCameraStatus(status = {}) {
   const available = status.available !== false;
   const installed = status.installed === true;
+  const pnpInstalled = status.pnpInstalled === true;
   virtualCameraRunning = status.running === true;
   virtualCameraInstalledValue.textContent = installed ? "Installed" : "Not installed";
+  pnpCameraInstalledValue.textContent = pnpInstalled
+    ? status.pnpReady ? "Installed, ready" : "Installed, restart required"
+    : "Not installed";
   virtualCameraRunningValue.textContent = virtualCameraRunning ? "Running" : "Stopped";
   virtualCameraRunningValue.classList.toggle("is-running", virtualCameraRunning);
   virtualCameraConsumersValue.textContent = String(Number(status.consumers) || 0);
@@ -3000,7 +3048,7 @@ function applyVirtualCameraStatus(status = {}) {
     ? `${status.width}\u00d7${status.height}`
     : "-";
   virtualCameraNotice.textContent = available
-    ? installed ? "Ready" : "Install the camera before starting output"
+    ? installed || pnpInstalled ? "Ready" : "Install a camera backend before starting output"
     : "Virtual camera components are not included in this build";
   if (status.name && document.activeElement !== virtualCameraNameInput) {
     virtualCameraNameInput.value = status.name;
@@ -3008,7 +3056,11 @@ function applyVirtualCameraStatus(status = {}) {
   installVirtualCameraButton.disabled = !available || installed || virtualCameraRunning;
   renameVirtualCameraButton.disabled = !available || !installed || virtualCameraRunning;
   uninstallVirtualCameraButton.disabled = !available || !installed || virtualCameraRunning;
-  startVirtualCameraButton.disabled = !available || !installed || virtualCameraRunning;
+  installPnpCameraButton.disabled = !available || status.pnpAvailable !== true
+    || pnpInstalled || virtualCameraRunning;
+  renamePnpCameraButton.disabled = !available || !pnpInstalled || virtualCameraRunning;
+  uninstallPnpCameraButton.disabled = !available || !pnpInstalled || virtualCameraRunning;
+  startVirtualCameraButton.disabled = !available || (!installed && !pnpInstalled) || virtualCameraRunning;
   stopVirtualCameraButton.disabled = !virtualCameraRunning;
   virtualCameraOrientationSelect.disabled = virtualCameraRunning;
   const negotiatedSize = status.width > 0 && status.height > 0
@@ -3039,7 +3091,8 @@ async function refreshVirtualCameraStatus() {
 
 async function runVirtualCameraCommand(button, operation) {
   const buttons = [installVirtualCameraButton, renameVirtualCameraButton,
-    uninstallVirtualCameraButton, startVirtualCameraButton, stopVirtualCameraButton];
+    uninstallVirtualCameraButton, installPnpCameraButton, renamePnpCameraButton,
+    uninstallPnpCameraButton, startVirtualCameraButton, stopVirtualCameraButton];
   buttons.forEach((item) => { item.disabled = true; });
   try {
     applyVirtualCameraStatus(await operation());
@@ -3066,6 +3119,18 @@ renameVirtualCameraButton.addEventListener("click", () => runVirtualCameraComman
 uninstallVirtualCameraButton.addEventListener("click", () => runVirtualCameraCommand(
   uninstallVirtualCameraButton,
   () => window.camPlayer.uninstallVirtualCamera(),
+));
+installPnpCameraButton.addEventListener("click", () => runVirtualCameraCommand(
+  installPnpCameraButton,
+  () => window.camPlayer.installPnpVirtualCamera(virtualCameraNameInput.value.trim()),
+));
+renamePnpCameraButton.addEventListener("click", () => runVirtualCameraCommand(
+  renamePnpCameraButton,
+  () => window.camPlayer.renamePnpVirtualCamera(virtualCameraNameInput.value.trim()),
+));
+uninstallPnpCameraButton.addEventListener("click", () => runVirtualCameraCommand(
+  uninstallPnpCameraButton,
+  () => window.camPlayer.uninstallPnpVirtualCamera(),
 ));
 startVirtualCameraButton.addEventListener("click", () => runVirtualCameraCommand(
   startVirtualCameraButton,
