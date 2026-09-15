@@ -107,10 +107,16 @@ jobs:
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Set up NuGet
+        uses: NuGet/setup-nuget@v2
+
       - name: Build PnP camera driver
         shell: pwsh
         run: |
-          msbuild pnp-driver\avssamp.vcxproj /restore /m `
+          nuget restore pnp-driver\packages.config `
+            -PackagesDirectory pnp-driver\packages -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw "PnP camera WDK restore failed" }
+          msbuild pnp-driver\avssamp.vcxproj /m `
             /p:Configuration=Release /p:Platform=x64 /p:SignMode=TestSign
           if ($LASTEXITCODE -ne 0) { throw "PnP camera driver build failed" }
           $package = "native/bin/x64/pnp"

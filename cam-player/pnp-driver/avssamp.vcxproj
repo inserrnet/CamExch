@@ -75,9 +75,6 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" />
   </ImportGroup>
   <ItemGroup Label="WrappedTaskItems" />
-  <ItemGroup>
-    <PackageReference Include="Microsoft.Windows.WDK.x64" Version="10.0.26100.6584" />
-  </ItemGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <TargetName>CamPlayerPnpCamera</TargetName>
   </PropertyGroup>
