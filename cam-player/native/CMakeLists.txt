@@ -7,6 +7,7 @@ endif()
 if(NOT DEFINED BASECLASSES_DIR)
   message(FATAL_ERROR "Set BASECLASSES_DIR to the Microsoft DirectShow BaseClasses directory")
 endif()
+file(TO_CMAKE_PATH "${BASECLASSES_DIR}" BASECLASSES_DIR_CMAKE)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,10 +20,10 @@ set(BASECLASS_SOURCES
   perflog.cpp pstream.cpp pullpin.cpp refclock.cpp renbase.cpp schedule.cpp
   seekpt.cpp source.cpp strmctl.cpp sysclock.cpp transfrm.cpp transip.cpp
   videoctl.cpp vtrans.cpp winctrl.cpp winutil.cpp wxdebug.cpp wxlist.cpp wxutil.cpp)
-list(TRANSFORM BASECLASS_SOURCES PREPEND "${BASECLASSES_DIR}/")
+list(TRANSFORM BASECLASS_SOURCES PREPEND "${BASECLASSES_DIR_CMAKE}/")
 
 add_library(dshow_baseclasses STATIC ${BASECLASS_SOURCES})
-target_include_directories(dshow_baseclasses PUBLIC "${BASECLASSES_DIR}")
+target_include_directories(dshow_baseclasses PUBLIC "${BASECLASSES_DIR_CMAKE}")
 target_compile_options(dshow_baseclasses PRIVATE /W0 /permissive /Zc:strictStrings-)
 set_target_properties(dshow_baseclasses PROPERTIES CXX_STANDARD 14)
 
